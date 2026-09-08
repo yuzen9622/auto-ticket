@@ -1,0 +1,16 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+*.db
+*.db-wal
+*.db-shm
+.env
+.env.local
+data/
+.browser_profiles/
+.DS_Store
+
+.pi/
