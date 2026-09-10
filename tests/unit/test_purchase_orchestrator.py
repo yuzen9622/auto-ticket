@@ -18,6 +18,7 @@ from adapters.ticketing.kktix.adapter import (
     REASON_SELECTED,
     REASON_SOLD_OUT,
     REASON_TERMS_NOT_ACCEPTED,
+    KKTIXPageKind,
 )
 from domain.preference import SeatPreference, TicketPreference, TicketPriority
 from domain.task import PurchaseTaskSpec, UserContactProfile
@@ -110,7 +111,9 @@ class StubAdapter:
         verification_results: list[bool] | None = None,
         submit_ok: bool = True,
         payment_outcome: PaymentOutcome = PaymentOutcome.CHECKPOINT_REACHED,
+        probe_kinds: list[KKTIXPageKind] | None = None,
     ) -> None:
+        self.probe_kinds = list(probe_kinds or [])
         self.ticket_results = list(ticket_results or [(True, REASON_SELECTED)])
         self.seat_ok = seat_ok
         self.form_ok = form_ok
@@ -126,6 +129,10 @@ class StubAdapter:
             fallback_used=False, trace=("priority[0] -> SELECTED",),
         )
         self.last_payment_result: PaymentResult | None = None
+
+    async def probe_page(self, page: Any, url: str | None = None) -> KKTIXPageKind:
+        self.calls.append("probe" if url is None else "probe_navigate")
+        return self.probe_kinds.pop(0) if self.probe_kinds else KKTIXPageKind.REGISTRATION
 
     async def navigate_to_event(self, page: Any, url: str) -> bool:
         self.calls.append("navigate")
@@ -255,7 +262,7 @@ async def test_adapter_call_order(tmp_path: Path) -> None:
     orchestrator, _, _, _ = build(tmp_path, adapter)
     await orchestrator.run()
     assert adapter.calls == [
-        "navigate", "detect_sale", "select_tickets", "seat", "form",
+        "probe_navigate", "navigate", "detect_sale", "select_tickets", "seat", "form",
         "detect_verification", "submit_order", "payment",
     ]
 
@@ -359,6 +366,49 @@ async def test_wrong_page_fails_closed_instead_of_reporting_sold_out(tmp_path: P
     assert report.final_state != "SOLD_OUT"
     assert REASON_NOT_REGISTRATION_PAGE in str(report.error)
     assert adapter.calls.count("select_tickets") == 1
+
+
+async def test_session_gate_waits_for_the_human_then_proceeds(tmp_path: Path) -> None:
+    """被人機驗證擋住、被導到登入頁，都只是「還沒好」，等人處理完就繼續。"""
+    adapter = StubAdapter(probe_kinds=[
+        KKTIXPageKind.CHALLENGE, KKTIXPageKind.LOGIN, KKTIXPageKind.REGISTRATION,
+    ])
+    orchestrator, _, _, telemetry = build(tmp_path, adapter)
+    orchestrator.session_gate_poll_s = 0.0
+    seen: list[tuple[str, int]] = []
+
+    async def gate(kind: str, attempt: int) -> None:
+        seen.append((kind, attempt))
+
+    orchestrator.session_gate = gate
+    report = await orchestrator.run()
+    assert report.final_state == "COMPLETED"
+    assert seen == [("CHALLENGE", 1), ("LOGIN", 2)]
+    probes = [e for e in telemetry.events() if e.name == "session_probe"]
+    assert [p.detail["kind"] for p in probes] == ["CHALLENGE", "LOGIN", "REGISTRATION"]
+    assert [e for e in telemetry.events() if e.name == "session_ready"]
+
+
+async def test_session_gate_navigates_only_once(tmp_path: Path) -> None:
+    """重判目前頁面就好；每次都重新導航是對站台不必要的輪詢。"""
+    adapter = StubAdapter(probe_kinds=[KKTIXPageKind.LOGIN, KKTIXPageKind.REGISTRATION])
+    orchestrator, _, _, _ = build(tmp_path, adapter)
+    orchestrator.session_gate_poll_s = 0.0
+    await orchestrator.run()
+    assert adapter.calls.count("probe_navigate") == 1
+    assert adapter.calls.count("probe") == 1
+
+
+async def test_session_gate_fails_closed_when_never_ready(tmp_path: Path) -> None:
+    """逾時仍未就緒就中止，絕不帶著沒登入的頁面衝進開賣。"""
+    adapter = StubAdapter(probe_kinds=[KKTIXPageKind.LOGIN] * 20)
+    orchestrator, _, _, _ = build(tmp_path, adapter)
+    orchestrator.session_gate_poll_s = 0.0
+    orchestrator.session_gate_timeout_s = 0.0
+    report = await orchestrator.run()
+    assert report.final_state == "FAILED"
+    assert "page not ready before sale: LOGIN" in str(report.error)
+    assert "select_tickets" not in adapter.calls
 
 
 async def test_seat_failure_fails_closed(tmp_path: Path) -> None:

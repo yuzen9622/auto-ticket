@@ -6,13 +6,15 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+import asyncio
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any
 
 from adapters.payment.base import PaymentOutcome, PaymentProvider, PaymentResult
+from adapters.ticketing.kktix.adapter import KKTIXPageKind
 from adapters.verification.base import VerificationProvider
 from browser.context_factory import sanitize_path_component
 from browser.manager import PlaywrightManager
@@ -90,6 +92,9 @@ class PurchaseOrchestrator:
         detect_timeout_ms: int = 5000,
         wait_timeout: float | None = None,
         screenshot_drain_timeout: float = 30.0,
+        session_gate_timeout_s: float = 240.0,
+        session_gate_poll_s: float = 5.0,
+        session_gate: Callable[[str, int], Awaitable[None]] | None = None,
     ) -> None:
         self.spec = spec
         self.browser = browser
@@ -106,6 +111,10 @@ class PurchaseOrchestrator:
         self.wait_timeout = wait_timeout
         # 全頁截圖是逐張序列化的：預設 5 秒排空會在轉移多時被砍掉尾巴幾張。
         self.screenshot_drain_timeout = screenshot_drain_timeout
+        # 開賣前的「等人就緒」閘門：登入與人機驗證都必須由人自己在瀏覽器裡完成。
+        self.session_gate_timeout_s = session_gate_timeout_s
+        self.session_gate_poll_s = session_gate_poll_s
+        self.session_gate = session_gate
         self.fsm: PurchaseWorkflow | None = None
         self._rt = _Runtime()
 
@@ -166,12 +175,44 @@ class PurchaseOrchestrator:
         await self.browser.attach_cdp(page)
 
     async def _check_session(self, ctx: WarmupContext) -> None:
-        self.telemetry.record(
-            TimelineEventType.MARK,
-            "session_checked",
-            task_id=self.spec.task_id,
-            page_ready=self._rt.page is not None,
-        )
+        """開賣前的就緒閘門：確認真的停在可下單的登記頁。
+
+        先前這一階段只記一筆 mark 就通過，等於把「有沒有登入」「有沒有被人機驗證
+        擋住」留到 T=0 才發現——那時已經來不及。現在改成先探一次、沒好就等人處理，
+        逾時仍未就緒即 fail-closed，**絕不**帶著未就緒的頁面衝進開賣。
+
+        登入與人機驗證一律由人自己在瀏覽器裡完成；本方法只負責判讀與等待。
+        """
+        page = self._require_page()
+        deadline = self._loop_time() + self.session_gate_timeout_s
+        kind = await self.adapter.probe_page(page, self.spec.event_url)
+        attempt = 1
+        while True:
+            self.telemetry.record(
+                TimelineEventType.MARK,
+                "session_probe",
+                kind=str(getattr(kind, "value", kind)),
+                attempt=attempt,
+            )
+            if kind is KKTIXPageKind.REGISTRATION:
+                self.telemetry.record(
+                    TimelineEventType.MARK, "session_ready", attempts=attempt
+                )
+                return
+            if self._loop_time() >= deadline:
+                raise PurchaseStepError(
+                    "check_session", f"page not ready before sale: {getattr(kind, 'value', kind)}"
+                )
+            if self.session_gate is not None:
+                await self.session_gate(str(getattr(kind, "value", kind)), attempt)
+            await asyncio.sleep(self.session_gate_poll_s)
+            # 只重新判讀目前這一頁，不再導航——反覆輪詢對方站台既沒必要也不禮貌。
+            kind = await self.adapter.probe_page(page)
+            attempt += 1
+
+    @staticmethod
+    def _loop_time() -> float:
+        return asyncio.get_running_loop().time()
 
     async def _navigate_page(self, ctx: WarmupContext) -> None:
         page = self._require_page()

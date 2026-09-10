@@ -53,6 +53,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="run_purchase",
         description="KKTIX 購票流程研究執行器（預設 dry-run，不發動金流）",
+        epilog=(
+            "登入與人機驗證一律由人自己在瀏覽器裡完成："
+            "先 `scripts/login.py --profile <name>` 登好，再用 `--profile <name> --no-headless` 執行；"
+            "開賣前的就緒閘門會等你把頁面弄到可下單狀態，逾時仍未就緒即中止。"
+        ),
     )
     parser.add_argument("--task", type=Path, required=True, help="任務 JSON（PurchaseTaskSpec 欄位）")
     parser.add_argument(
@@ -72,6 +77,12 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="瀏覽器 profile 名稱（預設同 task_id）。登入狀態存在 .browser_profiles/<profile>／"
              "需要沿用已登入的 profile 時指定它",
+    )
+    parser.add_argument(
+        "--session-gate-timeout",
+        type=float,
+        default=240.0,
+        help="開賣前等待「人完成登入／人機驗證」的秒數上限（預設 240）；逾時即中止不下單",
     )
     parser.add_argument("--timeline", type=Path, default=None, help="Timeline JSON 輸出路徑")
     parser.add_argument("--screenshot-dir", type=Path, default=DEFAULT_SCREENSHOT_DIR)
@@ -134,6 +145,22 @@ async def run(args: argparse.Namespace) -> int:
     )
     scheduler = WarmupScheduler(telemetry)
     effective = spec if profile is None else spec.model_copy(update={"payment_profile": profile})
+    gate_hints = {
+        "CHALLENGE": "瀏覽器裡出現人機驗證，請自行通過（本程式不會代為繞過）",
+        "LOGIN": "被導到登入頁，請在瀏覽器裡自行登入",
+        "EVENT": "目前停在活動主頁，請自行點進購票登記頁",
+        "ORDER": "目前停在訂單頁，請確認是不是拿錯網址",
+        "UNKNOWN": "頁面無法辨識，請自行確認瀏覽器狀態",
+    }
+
+    async def announce_gate(kind: str, attempt: int) -> None:
+        log.warning(
+            "waiting_for_human",
+            page_kind=kind,
+            attempt=attempt,
+            hint=gate_hints.get(kind, "請自行確認瀏覽器狀態"),
+        )
+
     orchestrator = PurchaseOrchestrator(
         effective,
         browser=browser,
@@ -141,6 +168,8 @@ async def run(args: argparse.Namespace) -> int:
         adapter=adapter,
         telemetry=telemetry,
         timeline_path=args.timeline,
+        session_gate_timeout_s=args.session_gate_timeout,
+        session_gate=announce_gate,
     )
     log.info(
         "purchase_start",

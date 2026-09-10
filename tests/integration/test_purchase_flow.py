@@ -173,6 +173,8 @@ class Flow:
             timeline_path=self.timeline_path,
             detect_timeout_ms=20,
             wait_timeout=5.0,
+            session_gate_timeout_s=0.2,
+            session_gate_poll_s=0.0,
         )
 
     @property
@@ -255,11 +257,25 @@ async def test_declined_payment_ends_in_failed(flow: Flow) -> None:
 
 
 async def test_cloudflare_challenge_aborts_before_any_order(flow: Flow) -> None:
+    """人機驗證在開賣前的就緒閘門就被擋下，不會帶著挑戰頁衝進開賣。"""
     report = await flow.wire(start_html=CLOUDFLARE_HTML).run()
     assert report.final_state == "FAILED"
     assert report.aborted is True
-    errors = [e.name for e in flow.telemetry.events_of(TimelineEventType.ERROR)]
-    assert "cloudflare_challenge" in errors
+    probes = [e for e in flow.telemetry.events() if e.name == "session_probe"]
+    assert probes and all(p.detail["kind"] == "CHALLENGE" for p in probes)
+    assert "page not ready before sale: CHALLENGE" in str(report.error)
+    assert flow.page.clicks == []
+    assert [e.name for e in flow.telemetry.events() if e.name == "cloudflare_challenge"]
+
+
+async def test_login_redirect_also_blocks_before_the_sale(flow: Flow) -> None:
+    """沒登入被導去登入頁，同樣停在閘門，不會誤判成售罄。"""
+    report = await flow.wire(
+        start_html="<div id='signin'><form action='/users/sign_in'>"
+                   "<input type='password'></form></div>"
+    ).run()
+    assert report.final_state == "FAILED"
+    assert "page not ready before sale: LOGIN" in str(report.error)
     assert flow.page.clicks == []
 
 
