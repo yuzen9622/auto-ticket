@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="zh-Hant"><head><meta charset="utf-8"><title>報名 - 去識別化測試活動</title></head>
+<body>
+<div id="registrationsNewApp">
+  <h1 class="event-title">去識別化測試活動</h1>
+  <div class="ticket-list">
+    <div class="ticket-unit" id="ticket_1001">
+      <div class="ticket-name">全票 A 區</div>
+      <div class="ticket-price">NT$ 3,200</div>
+      <div class="ticket-status">剩餘 12 張</div>
+      <button class="btn-default minus" ng-click="quantityBtnClick(-1)">-</button>
+      <input class="ticket-quantity" type="number" value="0">
+      <button class="btn-default plus" ng-click="quantityBtnClick(1)">+</button>
+    </div>
+    <div class="ticket-unit" id="ticket_1002">
+      <div class="ticket-name">全票 B 區</div>
+      <div class="ticket-price">NT$ 2,400</div>
+      <div class="ticket-status">剩餘 3 張</div>
+      <button class="btn-default minus" ng-click="quantityBtnClick(-1)">-</button>
+      <input class="ticket-quantity" type="number" value="0">
+      <button class="btn-default plus" ng-click="quantityBtnClick(1)">+</button>
+    </div>
+    <div class="ticket-unit" id="ticket_1003">
+      <div class="ticket-name">搖滾站區</div>
+      <div class="ticket-price">NT$ 4,800</div>
+      <div class="ticket-status">已售完</div>
+      <input class="ticket-quantity" type="number" value="0">
+    </div>
+  </div>
+  <label>我同意活動條款 <input type="checkbox" id="person_agree_terms" name="agree_terms"></label>
+  <button class="btn-primary" ng-click="challenge(1)">電腦配位</button>
+  <button class="btn-primary" ng-click="challenge()">自行選位</button>
+  <div class="register-new-next-button-area"><button class="btn btn-primary btn-lg">下一步</button></div>
+</div>
+</body></html>

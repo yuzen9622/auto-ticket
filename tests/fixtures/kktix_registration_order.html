@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="zh-Hant"><head><meta charset="utf-8"><title>訂單資料</title></head>
+<body>
+<div id="orderApp">
+  <a class="reselect-ticket" href="#">重新選擇票種</a>
+  <input name="contact[name]" id="order_contact_name" value="">
+  <input name="contact[email]" id="order_contact_email" value="">
+  <input name="contact[phone]" id="order_contact_phone" value="">
+  <fieldset>
+    <input name="attendees[0][name]" value="">
+    <input name="attendees[0][phone]" value="">
+    <input name="attendees[0][id_number]" value="">
+  </fieldset>
+  <fieldset>
+    <input name="attendees[1][name]" value="">
+    <input name="attendees[1][phone]" value="">
+    <input name="attendees[1][id_number]" value="">
+  </fieldset>
+  <div class="custom-captcha-inner">
+    <p>請輸入主辦單位英文名稱的前三個字母</p>
+    <input name="captcha_answer" id="captcha_answer" value="">
+  </div>
+  <button type="submit" ng-click="confirmOrder()">確認表單資料</button>
+</div>
+</body></html>
