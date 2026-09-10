@@ -151,6 +151,12 @@ def test_context_options_disable_automation_markers() -> None:
     assert "--mute-audio" in opts["args"]
     assert opts["ignore_default_args"] == ["--enable-automation"]
     assert opts["headless"] is True
+
+
+def test_profile_can_request_a_headed_browser() -> None:
+    """有頭模式必須傳得下去：那是使用者手動登入 persistent profile 的唯一途徑。"""
+    opts = build_persistent_context_options(BrowserProfile(name="p", headless=False))
+    assert opts["headless"] is False
     assert opts["locale"] == "zh-TW"
     assert opts["timezone_id"] == "Asia/Taipei"
 

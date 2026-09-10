@@ -34,6 +34,8 @@ class BrowserProfile:
     locale: str = "zh-TW"
     timezone_id: str = "Asia/Taipei"
     user_agent: str = DEFAULT_MACOS_CHROME_USER_AGENT
+    headless: bool = True
+    """有頭模式是使用者自行登入該 profile 的唯一途徑，因此必須可由呼叫端覆寫。"""
 
     def __post_init__(self) -> None:
         if not PROFILE_NAME_RE.fullmatch(self.name):
@@ -53,7 +55,7 @@ def build_persistent_context_options(
         if a not in args:
             args.append(a)
     return {
-        "headless": True,
+        "headless": profile.headless,
         "args": args,
         "viewport": profile.viewport,
         "locale": profile.locale,
