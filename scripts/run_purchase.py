@@ -67,6 +67,12 @@ def build_parser() -> argparse.ArgumentParser:
         default=False,
         help=f"啟用真實刷卡；另需環境變數 AUTO_TICKET_ENABLE_REAL_PAYMENT=1 與 {CARD_ENV_NUMBER} 等卡片變數",
     )
+    parser.add_argument(
+        "--profile",
+        default=None,
+        help="瀏覽器 profile 名稱（預設同 task_id）。登入狀態存在 .browser_profiles/<profile>／"
+             "需要沿用已登入的 profile 時指定它",
+    )
     parser.add_argument("--timeline", type=Path, default=None, help="Timeline JSON 輸出路徑")
     parser.add_argument("--screenshot-dir", type=Path, default=DEFAULT_SCREENSHOT_DIR)
     parser.add_argument("--headless", action=argparse.BooleanOptionalAction, default=True)
@@ -116,7 +122,7 @@ async def run(args: argparse.Namespace) -> int:
         profile = None
 
     browser = PlaywrightManager(
-        BrowserProfile(name=spec.task_id, headless=args.headless),
+        BrowserProfile(name=args.profile or spec.task_id, headless=args.headless),
         telemetry,
         screenshot_dir=args.screenshot_dir,
     )
@@ -141,6 +147,8 @@ async def run(args: argparse.Namespace) -> int:
         task_id=spec.task_id,
         payment_provider=payment.name,
         dry_run=bool(args.dry_run),
+        browser_profile=browser.profile.name,
+        user_data_dir=str(browser.profile.user_data_dir),
         card_last4=masked_last4(profile),
     )
     try:
@@ -154,6 +162,7 @@ async def run(args: argparse.Namespace) -> int:
         final_state=report.final_state,
         sale_time_error_ms=report.sale_time_error_ms,
         screenshots=len(report.screenshots),
+        screenshots_expected=report.screenshots_expected,
     )
     print(json.dumps({
         "task_id": report.task_id,
@@ -162,6 +171,7 @@ async def run(args: argparse.Namespace) -> int:
         "ticket_trace": list(report.ticket_trace),
         "payment_outcome": report.payment.outcome.value if report.payment else None,
         "screenshots": list(report.screenshots),
+        "screenshots_expected": report.screenshots_expected,
         "timeline": str(report.timeline_path) if report.timeline_path else None,
         "stages": [list(s) for s in report.stages],
         "error": report.error,

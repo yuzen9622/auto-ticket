@@ -58,6 +58,8 @@ class PurchaseReport:
     ticket_trace: tuple[str, ...] = ()
     payment: PaymentResult | None = None
     screenshots: tuple[str, ...] = ()
+    screenshots_expected: int = 0
+    """掛上 hook 之後發生的轉移數。少於它就代表有截圖沒寫成，如實揭露不掩蓋。"""
     timeline_path: Path | None = None
     stages: tuple[tuple[str, str], ...] = ()
     aborted: bool = False
@@ -70,6 +72,7 @@ class _Runtime:
     screenshot_hook: Any | None = None
     error: str | None = None
     events_sent: list[str] = field(default_factory=list)
+    hooked_transitions: int = 0
 
 
 class PurchaseOrchestrator:
@@ -86,6 +89,7 @@ class PurchaseOrchestrator:
         timeline_path: Path | None = None,
         detect_timeout_ms: int = 5000,
         wait_timeout: float | None = None,
+        screenshot_drain_timeout: float = 30.0,
     ) -> None:
         self.spec = spec
         self.browser = browser
@@ -100,6 +104,8 @@ class PurchaseOrchestrator:
         self.timeline_path = timeline_path
         self.detect_timeout_ms = detect_timeout_ms
         self.wait_timeout = wait_timeout
+        # 全頁截圖是逐張序列化的：預設 5 秒排空會在轉移多時被砍掉尾巴幾張。
+        self.screenshot_drain_timeout = screenshot_drain_timeout
         self.fsm: PurchaseWorkflow | None = None
         self._rt = _Runtime()
 
@@ -114,6 +120,10 @@ class PurchaseOrchestrator:
         await self.scheduler.start()
         plan = await self.scheduler.schedule(self.spec, fsm=self.fsm)
         await self.scheduler.wait_until_finished(self.spec.task_id, self.wait_timeout)
+        # 截圖是背景任務：不排空就直接產報告，會少算最後幾張——研究輸出不該少報。
+        drain = getattr(self.browser, "drain_background_tasks", None)
+        if drain is not None:
+            await drain(timeout=self.screenshot_drain_timeout)
         if self.timeline_path is not None:
             self.telemetry.export_json(self.timeline_path)
         return self._build_report(plan)
@@ -131,6 +141,7 @@ class PurchaseOrchestrator:
     def _on_transition(self, source: str, target: str, event: str) -> None:
         hook = self._rt.screenshot_hook
         if hook is not None:
+            self._rt.hooked_transitions += 1
             hook(source, target, event)
 
     def _send(self, event_name: str) -> None:
@@ -268,13 +279,22 @@ class PurchaseOrchestrator:
         errors = [
             o for o in plan.outcomes if o.status == "FAILED" and o.error is not None
         ]
+        screenshots = self._screenshot_names()
+        if len(screenshots) < self._rt.hooked_transitions:
+            self.telemetry.record(
+                TimelineEventType.MARK,
+                "screenshots_incomplete",
+                expected=self._rt.hooked_transitions,
+                written=len(screenshots),
+            )
         return PurchaseReport(
             task_id=self.spec.task_id,
             final_state=fsm.current_state_id if fsm is not None else "UNKNOWN",
             sale_time_error_ms=(trigger.drift_us / 1000.0) if trigger is not None else None,
             ticket_trace=decision.trace if decision is not None else (),
             payment=getattr(self.adapter, "last_payment_result", None),
-            screenshots=self._screenshot_names(),
+            screenshots=screenshots,
+            screenshots_expected=self._rt.hooked_transitions,
             timeline_path=self.timeline_path,
             stages=tuple((o.stage.value, o.status) for o in plan.outcomes),
             aborted=bool(getattr(plan, "aborted", False)),

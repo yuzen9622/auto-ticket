@@ -194,6 +194,8 @@ class FakeBrowser:
         self.stopped = False
         self.attached: list[FakePage] = []
         self.transitions: list[tuple[str, str, str]] = []
+        self.drained = False
+        self.write_screenshots = True
         self._sequence = 0
 
     async def start(self) -> None:
@@ -208,12 +210,17 @@ class FakeBrowser:
     async def stop(self) -> None:
         self.stopped = True
 
+    async def drain_background_tasks(self, timeout: float = 5.0) -> None:
+        self.drained = True
+
     def make_screenshot_hook(self, experiment_id: str, page: FakePage) -> Any:
         from browser.context_factory import screenshot_filename
 
         def hook(source: str, target: str, event: str) -> None:
             self._sequence += 1
             self.transitions.append((source, target, event))
+            if not self.write_screenshots:
+                return  # 模擬背景截圖被逾時取消
             name = screenshot_filename(experiment_id, self._sequence, target)
             (self.screenshot_dir / name).write_bytes(b"\x89PNG\r\n\x1a\n")
 

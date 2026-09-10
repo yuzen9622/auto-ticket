@@ -272,7 +272,20 @@ async def test_report_lists_transition_screenshots(tmp_path: Path) -> None:
     orchestrator, _, browser, _ = build(tmp_path, StubAdapter())
     report = await orchestrator.run()
     assert len(browser.transitions) == len(report.screenshots)
+    assert report.screenshots_expected == len(browser.transitions)
     assert all(name.startswith("task-orch_") for name in report.screenshots)
+
+
+async def test_missing_screenshots_are_disclosed(tmp_path: Path) -> None:
+    """截圖被逾時砍掉時要留痕，不能讓報告看起來很完整。"""
+    orchestrator, _, browser, telemetry = build(tmp_path, StubAdapter())
+    browser.write_screenshots = False
+    report = await orchestrator.run()
+    assert report.screenshots == ()
+    assert report.screenshots_expected > 0
+    incomplete = [e for e in telemetry.events() if e.name == "screenshots_incomplete"]
+    assert incomplete[0].detail["expected"] == report.screenshots_expected
+    assert incomplete[0].detail["written"] == 0
 
 
 async def test_timeline_is_exported_when_path_given(tmp_path: Path) -> None:
@@ -281,6 +294,13 @@ async def test_timeline_is_exported_when_path_given(tmp_path: Path) -> None:
     report = await orchestrator.run()
     assert report.timeline_path == out
     assert json.loads(out.read_text(encoding="utf-8"))
+
+
+async def test_background_screenshots_are_drained_before_reporting(tmp_path: Path) -> None:
+    """截圖是背景任務；不排空就產報告會少算最後幾張。"""
+    orchestrator, _, browser, _ = build(tmp_path, StubAdapter())
+    await orchestrator.run()
+    assert browser.drained is True
 
 
 async def test_browser_is_started_and_cdp_attached(tmp_path: Path) -> None:
