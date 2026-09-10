@@ -47,6 +47,18 @@ class UserContactProfile(DomainBaseModel):
     email: str = Field(pattern=r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 
+class AttendeeProfile(DomainBaseModel):
+    """實名制活動的個別參加人資料。
+
+    KKTIX 的實名制活動會為每張票要求一組 `attendees[i]` 欄位；數量由頁面決定，
+    不得臆造。`id_number` 只在活動確實索取時提供。
+    """
+
+    name: str = Field(min_length=1)
+    phone: str = Field(pattern=r"^[0-9+\-() ]{8,20}$")
+    id_number: str | None = None
+
+
 class PurchaseTaskSpec(DomainBaseModel):
     model_config = ConfigDict(
         validate_assignment=True,
@@ -60,6 +72,7 @@ class PurchaseTaskSpec(DomainBaseModel):
     sale_start_at: UtcDatetime
     ticket_preference: TicketPreference
     contact_profile: UserContactProfile
+    attendees: tuple[AttendeeProfile, ...] = ()
     payment_method: PaymentMethod = PaymentMethod.CREDIT_CARD
     payment_profile: CreditCardProfile | None = None
     max_retries: int = Field(default=3, ge=0)
