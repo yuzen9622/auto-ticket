@@ -14,7 +14,7 @@ from typing import Any
 
 from bs4 import BeautifulSoup
 
-from adapters.ticketing.kktix.selectors import css_only
+from adapters.ticketing.kktix.selectors import KKTIXSelectors, css_only
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -29,7 +29,11 @@ class FakeTimeoutError(RuntimeError):
 
 def _is_unit(tag: Any) -> bool:
     classes = tag.get("class") or []
-    return "ticket-unit" in classes or "display-table" in classes or str(tag.get("id", "")).startswith("ticket_")
+    return (
+        "ticket-unit" in classes
+        or "display-table" in classes
+        or str(tag.get("id", "")).startswith("ticket_")
+    )
 
 
 class FakeLocator:
@@ -54,8 +58,17 @@ class FakeLocator:
     async def all(self) -> list[FakeLocator]:
         return [FakeLocator(self.page, self.selector, [e]) for e in self.elements]
 
-    async def wait_for(self, state: str = "visible", timeout: float | None = None) -> None:
+    async def wait_for(
+        self, state: str = "visible", timeout: float | None = None
+    ) -> None:
+        # 記下每一次等待的預算：「選配探測不得使用長預算」靠這裡才驗得到。
+        self.page.wait_timeouts.append((self.selector, timeout))
         if not self.elements:
+            # 真實 Playwright 的 wait_for 會在 timeout 內持續輪詢，元素可能稍後才渲染。
+            revealed = self.page.flush_pending_render(self.selector)
+            if revealed:
+                self.elements = revealed
+                return
             raise FakeTimeoutError(f"{self.selector} not visible")
 
     @property
@@ -69,6 +82,13 @@ class FakeLocator:
 
     async def input_value(self) -> str:
         return str(self.element.get("value", ""))
+
+    async def is_checked(self) -> bool:
+        return self.element.get("checked") is not None
+
+    async def get_attribute(self, name: str) -> str | None:
+        value = self.element.get(name)
+        return None if value is None else str(value)
 
     async def click(self) -> None:
         element = self.element
@@ -88,7 +108,9 @@ class FakeLocator:
 
 
 class FakePage:
-    def __init__(self, html: str, *, url: str = "https://registration.test/events/x") -> None:
+    def __init__(
+        self, html: str, *, url: str = "https://registration.test/events/x"
+    ) -> None:
         self.soup = BeautifulSoup(html, "html.parser")
         self.url = url
         self.clicks: list[str] = []
@@ -103,6 +125,10 @@ class FakePage:
         self.quantity_step = 1
         self.click_transitions: list[tuple[str, str]] = []
         self.evaluate_error: Exception | None = None
+        self._pending_render: str | None = None
+        self.wait_timeouts: list[tuple[str, float | None]] = []
+        # 導頁進行中的 `content()` 會拋錯：設此旗標可重现那一次失敗。
+        self.content_error_once: Exception | None = None
 
     @classmethod
     def from_fixture(cls, name: str, **kwargs: Any) -> FakePage:
@@ -124,10 +150,31 @@ class FakePage:
                     found.append(tag)
         return found
 
+    def _quantity_inputs(self, unit: Any) -> list[Any]:
+        found: list[Any] = []
+        seen: set[int] = set()
+        for part in css_only(KKTIXSelectors.TICKET_QUANTITY_INPUT):
+            for tag in self.select_within(unit, part):
+                if id(tag) not in seen:
+                    seen.add(id(tag))
+                    found.append(tag)
+        return found
+
     def locator(self, selector: str) -> FakeLocator:
         return FakeLocator(self, selector, self.select_within(self.soup, selector))
 
     # --------------------------------------------------------------- 行為
+
+    def render_after_wait(self, html: str) -> None:
+        """模擬非同步渲染：要等到有人真的 `wait_for` 落空，`html` 才會被掛上。"""
+        self._pending_render = html
+
+    def flush_pending_render(self, selector: str) -> list[Any]:
+        if self._pending_render is None:
+            return []
+        self.soup = BeautifulSoup(self._pending_render, "html.parser")
+        self._pending_render = None
+        return self.select_within(self.soup, selector)
 
     def on_click(self, trigger: str, next_html: str) -> None:
         """點到帶有 `trigger`（id／ng-click／class）的元素後，頁面換成 `next_html`。"""
@@ -136,7 +183,8 @@ class FakePage:
     def _maybe_navigate(self, element: Any) -> None:
         classes = " ".join(element.get("class") or [])
         signature = " ".join(
-            str(x) for x in (element.get("id", ""), element.get("ng-click", ""), classes)
+            str(x)
+            for x in (element.get("id", ""), element.get("ng-click", ""), classes)
         )
         for index, (trigger, next_html) in enumerate(self.click_transitions):
             if trigger in signature:
@@ -162,7 +210,8 @@ class FakePage:
             unit = unit.parent
         if unit is None:
             return
-        for candidate in self.select_within(unit, "input.ticket-quantity, input[type='number']"):
+        # 數量欄位一律跟著註冊表走：實站改版時這裡不該還拿舊字串假裝選得到。
+        for candidate in self._quantity_inputs(unit):
             current = int(str(candidate.get("value", "0")) or 0)
             candidate["value"] = str(max(0, current + delta))
             return
@@ -175,9 +224,14 @@ class FakePage:
         self.url = url
 
     async def content(self) -> str:
+        if self.content_error_once is not None:
+            error, self.content_error_once = self.content_error_once, None
+            raise error
         return str(self.soup)
 
-    async def wait_for_load_state(self, state: str = "load", timeout: float | None = None) -> None:
+    async def wait_for_load_state(
+        self, state: str = "load", timeout: float | None = None
+    ) -> None:
         if self.fail_load_state:
             raise FakeTimeoutError(f"load state {state} timed out")
         self.load_states.append(state)

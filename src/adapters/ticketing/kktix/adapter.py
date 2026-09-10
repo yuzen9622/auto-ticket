@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Any
 from adapters.payment.base import PaymentOutcome, PaymentProvider, PaymentResult
 from adapters.ticketing.base import TicketingAdapter
 from adapters.ticketing.kktix.dom import (
+    DEFAULT_OPTIONAL_PROBE_MS,
     contains_cloudflare_challenge,
     first_visible,
     ng_click,
@@ -51,15 +52,17 @@ REASON_TERMS_NOT_ACCEPTED = "TERMS_NOT_ACCEPTED"
 REASON_CLOUDFLARE = "CLOUDFLARE_CHALLENGE"
 REASON_NOT_REGISTRATION_PAGE = "NOT_REGISTRATION_PAGE"
 
-ALL_TICKET_REASONS = frozenset({
-    REASON_SELECTED,
-    REASON_SOLD_OUT,
-    REASON_NO_TICKET_UNITS,
-    REASON_PLUS_BUTTON_MISSING,
-    REASON_QUANTITY_MISMATCH,
-    REASON_TERMS_NOT_ACCEPTED,
-    REASON_NOT_REGISTRATION_PAGE,
-})
+ALL_TICKET_REASONS = frozenset(
+    {
+        REASON_SELECTED,
+        REASON_SOLD_OUT,
+        REASON_NO_TICKET_UNITS,
+        REASON_PLUS_BUTTON_MISSING,
+        REASON_QUANTITY_MISMATCH,
+        REASON_TERMS_NOT_ACCEPTED,
+        REASON_NOT_REGISTRATION_PAGE,
+    }
+)
 
 CLOUDFLARE_MARK = "cloudflare_challenge"
 # KKTIX 頁面帶著分析／廣告等長尾資源，`load` 事件常常遲遲不觸發。
@@ -101,6 +104,7 @@ class KKTIXAdapter(TicketingAdapter):
         verification: VerificationProvider | None = None,
         attendees: Sequence[AttendeeProfile] = (),
         timeout_ms: int = 5000,
+        probe_timeout_ms: int | None = None,
         navigation_timeout_ms: int = DEFAULT_NAVIGATION_TIMEOUT_MS,
         screenshot: Callable[[str], Awaitable[Any]] | None = None,
     ) -> None:
@@ -109,6 +113,14 @@ class KKTIXAdapter(TicketingAdapter):
         self.verification = verification
         self.attendees = tuple(attendees)
         self.timeout_ms = timeout_ms
+        # 「這個選配元素在不在」與「等這個必要元素出現」是兩件事：前者以不存在為常態，
+        # 給它整份 timeout 等於每次都把預算燒完——開賣瞬間這筆帳付不起。
+        # 且探測預算永遠不得超過元素預算：呼叫端把 timeout_ms 調小時它要跟著縮，
+        # 否則「快速探測」反而成為整條流程最漫長的一步。
+        self.probe_timeout_ms = min(
+            DEFAULT_OPTIONAL_PROBE_MS if probe_timeout_ms is None else probe_timeout_ms,
+            timeout_ms,
+        )
         self.navigation_timeout_ms = navigation_timeout_ms
         self.screenshot = screenshot
         self.last_ticket_decision: TicketDecision | None = None
@@ -174,9 +186,7 @@ class KKTIXAdapter(TicketingAdapter):
             timeout=self.navigation_timeout_ms,
         )
         await self._guard_cloudflare(page, "navigate")
-        self.telemetry.record(
-            TimelineEventType.MARK, "navigated", url=event_url
-        )
+        self.telemetry.record(TimelineEventType.MARK, "navigated", url=event_url)
         return True
 
     async def detect_sale_opened(self, page: Page, timeout_ms: int) -> bool:
@@ -230,13 +240,13 @@ class KKTIXAdapter(TicketingAdapter):
         """判斷目前頁面種類。順序不可調換：登記頁同樣有活動標題。"""
         if await self._has(page, KKTIXSelectors.REGISTRATION_APP):
             return KKTIXPageKind.REGISTRATION
-        if await self._has(page, KKTIXSelectors.LOGIN_PASSWORD_INPUT) or await self._has(
-            page, KKTIXSelectors.LOGIN_FORM
-        ):
+        if await self._has(
+            page, KKTIXSelectors.LOGIN_PASSWORD_INPUT
+        ) or await self._has(page, KKTIXSelectors.LOGIN_FORM):
             return KKTIXPageKind.LOGIN
-        if await self._has(page, KKTIXSelectors.EVENT_TICKET_TABLE_ROWS) or await self._has(
-            page, KKTIXSelectors.EVENT_TITLE
-        ):
+        if await self._has(
+            page, KKTIXSelectors.EVENT_TICKET_TABLE_ROWS
+        ) or await self._has(page, KKTIXSelectors.EVENT_TITLE):
             return KKTIXPageKind.EVENT
         if await self._has(page, KKTIXSelectors.CONTACT_NAME) or await self._has(
             page, KKTIXSelectors.RESELECT_TICKET_LINK
@@ -287,7 +297,9 @@ class KKTIXAdapter(TicketingAdapter):
             price_text = await self._text_of(row, KKTIXSelectors.EVENT_TICKET_ROW_PRICE)
             if not name or not price_text:
                 continue
-            status_text = await self._text_of(row, KKTIXSelectors.EVENT_TICKET_ROW_STATUS)
+            status_text = await self._text_of(
+                row, KKTIXSelectors.EVENT_TICKET_ROW_STATUS
+            )
             remaining_match = REMAINING_RE.search(status_text)
             options.append(
                 TicketOption(
@@ -295,7 +307,9 @@ class KKTIXAdapter(TicketingAdapter):
                     name=name,
                     price=self._parse_price(price_text),
                     available=not self._is_sold_out(f"{status_text} {name}"),
-                    remaining=int(remaining_match.group(1)) if remaining_match else None,
+                    remaining=int(remaining_match.group(1))
+                    if remaining_match
+                    else None,
                     status_text=status_text,
                 )
             )
@@ -316,7 +330,9 @@ class KKTIXAdapter(TicketingAdapter):
         for index, unit in enumerate(await self._collect_ticket_units(page)):
             name = await self._text_of(unit, KKTIXSelectors.TICKET_NAME)
             price_text = await self._text_of(unit, KKTIXSelectors.TICKET_PRICE)
-            status_text = await self._text_of(unit, KKTIXSelectors.EVENT_TICKET_ROW_STATUS)
+            status_text = await self._text_of(
+                unit, KKTIXSelectors.EVENT_TICKET_ROW_STATUS
+            )
             price = self._parse_price(price_text)
             sold_out = self._is_sold_out(f"{status_text} {name}")
             has_plus = await self._has(unit, KKTIXSelectors.TICKET_PLUS_BTN)
@@ -327,7 +343,9 @@ class KKTIXAdapter(TicketingAdapter):
                     name=name,
                     price=price,
                     available=has_plus and not sold_out,
-                    remaining=int(remaining_match.group(1)) if remaining_match else None,
+                    remaining=int(remaining_match.group(1))
+                    if remaining_match
+                    else None,
                     status_text=status_text,
                 )
             )
@@ -365,7 +383,9 @@ class KKTIXAdapter(TicketingAdapter):
             return False, REASON_SOLD_OUT
 
         unit = units[decision.option.index]
-        plus = await self._locate(unit, KKTIXSelectors.TICKET_PLUS_BTN, "ticket_plus_btn")
+        plus = await self._locate(
+            unit, KKTIXSelectors.TICKET_PLUS_BTN, "ticket_plus_btn"
+        )
         if plus is None:
             return False, REASON_PLUS_BUTTON_MISSING
         for _ in range(decision.quantity):
@@ -387,7 +407,9 @@ class KKTIXAdapter(TicketingAdapter):
             )
             return False, REASON_QUANTITY_MISMATCH
 
-        terms = await self._locate(page, KKTIXSelectors.TERMS_CHECKBOX, "terms_checkbox")
+        terms = await self._locate(
+            page, KKTIXSelectors.TERMS_CHECKBOX, "terms_checkbox"
+        )
         if terms is None:
             return False, REASON_TERMS_NOT_ACCEPTED
         await ng_click(page, terms, telemetry=self.telemetry)
@@ -405,42 +427,171 @@ class KKTIXAdapter(TicketingAdapter):
             self.telemetry.record(
                 TimelineEventType.MARK, DOWNGRADE_MARK, reason=seat.reason
             )
-        selectors = (
-            KKTIXSelectors.BTN_BEST_AVAILABLE
-            if seat.action is SeatAction.BEST_AVAILABLE
-            else KKTIXSelectors.BTN_PICK_SEAT
+        # 票種選擇頁有兩種形狀：劃位活動同時給「電腦配位／自行選位」，不劃位
+        # 活動只給一顆「下一步」。以「電腦配位是否存在」區分頁型，而不是盲目 fallback：
+        # 否則不劃位頁會把唯一那顆按鈕當成自行選位，劃位頁又可能誤點進尚未
+        # 實作的座位圖，而 timeline 還報成電腦配位成功。
+        # 用短預算：「電腦配位不存在」本身就是辨識不劃位頁的依據，不存在是常態而
+        # 不是意外。拿元素預算去等它，每一場不劃位活動都要在這裡白燒一整份。
+        auto_assign = await first_visible(
+            page,
+            KKTIXSelectors.BTN_BEST_AVAILABLE,
+            timeout_ms=self.probe_timeout_ms,
+            telemetry=self.telemetry,
+            field="seat_best_available",
         )
-        button = await self._locate(page, selectors, "seat_button")
-        if button is None:
+        if auto_assign is None:
             button = await self._locate(page, KKTIXSelectors.BTN_NEXT_STEP, "next_step")
+            effective, page_shape = "NEXT_STEP", "single_next_step"
+        elif seat.action is SeatAction.PICK_SEAT:
+            button = await self._locate(
+                page, KKTIXSelectors.BTN_PICK_SEAT, "seat_pick_seat"
+            )
+            effective, page_shape = SeatAction.PICK_SEAT.value, "reserved_seating"
+            if button is None:
+                button = auto_assign
+                effective = SeatAction.BEST_AVAILABLE.value
+        else:
+            button = auto_assign
+            effective, page_shape = SeatAction.BEST_AVAILABLE.value, "reserved_seating"
+
         if button is None:
             return False
         await ng_click(page, button, telemetry=self.telemetry)
         self.telemetry.record(
-            TimelineEventType.MARK, "seat_action", action=seat.action.value
+            TimelineEventType.MARK,
+            "seat_action",
+            action=effective,
+            requested=seat.action.value,
+            page_shape=page_shape,
         )
         return True
 
     # -------------------------------------------------------------- 4. 表單填寫
 
-    async def fill_contact_form(
-        self, page: Page, profile: UserContactProfile
-    ) -> bool:
+    async def fill_contact_form(self, page: Page, profile: UserContactProfile) -> bool:
         await self._guard_cloudflare(page, "contact_form")
+        # 先試動態表單：它只需一次 DOM 查詢且不等待，而静態候選全數落空時
+        # 每個欄位都要燒掉一整份 timeout——開賣瞬間沒有這麼多秒可以浪。
+        dynamic = await self._resolve_dynamic_contact_fields(page)
         for field_name, selectors, value in (
             ("contact_name", KKTIXSelectors.CONTACT_NAME, profile.name),
             ("contact_email", KKTIXSelectors.CONTACT_EMAIL, profile.email),
             ("contact_phone", KKTIXSelectors.CONTACT_PHONE, profile.phone),
         ):
-            locator = await self._locate(page, selectors, field_name)
+            locator = dynamic.get(field_name)
+            if locator is None:
+                locator = await self._locate(page, selectors, field_name)
             if locator is None:
                 self.telemetry.record(
                     TimelineEventType.MARK, "contact_field_missing", field=field_name
                 )
                 return False
+            existing = (await read_input_value(locator)).strip()
+            if existing:
+                # KKTIX 會拿登入帳號預填真實聯絡資料。覆寫等於拿任務檔裡的
+                # 佔位資料送出真實訂單，寧可保留頁面上的值並誘實記一筆。
+                self.telemetry.record(
+                    TimelineEventType.MARK,
+                    "contact_field_prefilled",
+                    field=field_name,
+                    matches_profile=existing == value,
+                )
+                continue
             await ng_fill(page, locator, value)
 
+        await self._accept_dynamic_consents(page)
         return await self._fill_attendees(page)
+
+    async def _accept_dynamic_consents(self, page: Page) -> None:
+        """勾選訂單頁動態產生的同意條款 checkbox。
+
+        沒勾就送不出去，而欄位 id 每場活動都不同。勾了什麼一律連同條款文字
+        記進 timeline：這是代替使用者按下的同意，必須可事後追查。
+        """
+        accepted: list[str] = []
+        seen: set[str] = set()
+
+        for label in await page.locator(
+            KKTIXSelectors.CONTACT_DYNAMIC_CONSENT_LABEL
+        ).all():
+            box = label.locator(KKTIXSelectors.CONTACT_DYNAMIC_CHECKBOX).first
+            if await box.count() == 0:
+                continue
+            seen.add(str(await box.get_attribute("name") or ""))
+            if await box.is_checked():
+                continue
+            await ng_click(page, box, telemetry=self.telemetry)
+            terms = " ".join((await label.inner_text()).split())
+            accepted.append(terms[:120])
+
+        # 沒被 label 包起來的同意欄位也得勾——漏一個就是整單送不出去。
+        for box in await page.locator(KKTIXSelectors.CONTACT_DYNAMIC_CHECKBOX).all():
+            name = str(await box.get_attribute("name") or "")
+            if name in seen or await box.is_checked():
+                continue
+            await ng_click(page, box, telemetry=self.telemetry)
+            accepted.append(name)
+
+        if accepted:
+            self.telemetry.record(
+                TimelineEventType.MARK,
+                "contact_consent_accepted",
+                count=len(accepted),
+                terms=tuple(accepted),
+            )
+
+    async def _resolve_dynamic_contact_fields(self, page: Page) -> dict[str, Locator]:
+        """把動態命名的聯絡人欄位依 label 文字歸位。
+
+        欄位 name 帶每場活動不同的數字 ID、三個欄位又共用同一個 ng-model，
+        所以只能靠 label。分類寫在這裡而不是塞進 selector，離線測試才驗得到分類邏輯。
+        """
+        # 點完配位會導頁到訂單頁，而 AngularJS 的聯絡人表單是非同步渲染的。
+        # 不等它出現就列舉 group 只會拿到空集合，接著静態選擇器再各燒一份
+        # timeout 後失敗——失敗原因還會被記成「欄位不存在」而不是「還沒渲染」。
+        appeared = await first_visible(
+            page,
+            KKTIXSelectors.CONTACT_DYNAMIC_INPUT,
+            timeout_ms=self.navigation_timeout_ms,
+            telemetry=self.telemetry,
+            field="contact_dynamic_input",
+        )
+        if appeared is None:
+            self.telemetry.record(
+                TimelineEventType.MARK,
+                "contact_form_not_rendered",
+                waited_ms=self.navigation_timeout_ms,
+            )
+            return {}
+
+        resolved: dict[str, Locator] = {}
+        for group in await page.locator(KKTIXSelectors.CONTACT_DYNAMIC_GROUP).all():
+            label = group.locator(KKTIXSelectors.CONTACT_DYNAMIC_LABEL).first
+            if await label.count() == 0:
+                continue
+            text = (await label.inner_text()).strip().lower()
+            field = next(
+                (
+                    name
+                    for name, words in KKTIXSelectors.CONTACT_LABEL_KEYWORDS
+                    if any(word in text for word in words)
+                ),
+                None,
+            )
+            if field is None or field in resolved:
+                continue
+            box = group.locator(KKTIXSelectors.CONTACT_DYNAMIC_INPUT).first
+            if await box.count() == 0:
+                continue
+            resolved[field] = box
+        if resolved:
+            self.telemetry.record(
+                TimelineEventType.MARK,
+                "contact_fields_resolved_dynamically",
+                fields=sorted(resolved),
+            )
+        return resolved
 
     async def submit_order(self, page: Page) -> bool:
         """送出訂單表單（確認表單資料）。
@@ -449,7 +600,9 @@ class KKTIXAdapter(TicketingAdapter):
         表單，狀態機卻要求「填表 -> 驗證 -> 付款」的順序，填寫與送出必須是兩個動作，
         否則驗證答案永遠來不及進入送出的那一次請求。
         """
-        button = await self._locate(page, KKTIXSelectors.BTN_CONFIRM_ORDER, "confirm_order")
+        button = await self._locate(
+            page, KKTIXSelectors.BTN_CONFIRM_ORDER, "confirm_order"
+        )
         if button is None:
             return False
         await ng_click(page, button, telemetry=self.telemetry)
@@ -489,7 +642,9 @@ class KKTIXAdapter(TicketingAdapter):
             for template in KKTIXSelectors.ATTENDEE_ID_TEMPLATE:
                 id_selector = template.format(index=index)
                 if await page.locator(id_selector).count() > 0:
-                    await ng_fill(page, page.locator(id_selector).first, attendee.id_number)
+                    await ng_fill(
+                        page, page.locator(id_selector).first, attendee.id_number
+                    )
                     break
         self.telemetry.record(
             TimelineEventType.MARK, "attendees_filled", count=required
@@ -505,8 +660,15 @@ class KKTIXAdapter(TicketingAdapter):
         取決於 `requires_verification`；把偵測與作答合併會讓 FSM 分流無從決定。
         """
         await self._guard_cloudflare(page, "verification_probe")
-        container = await self._locate(
-            page, KKTIXSelectors.CAPTCHA_CONTAINER, "captcha_container"
+        # 用短預算：驗證題跟聯絡人欄位同屬一張表單，而 fill_contact_form 已經等過
+        # 表單渲染。到這裡 DOM 早就在了，驗證題存在就一定查得到；再等 5 秒
+        # 只是在為「沒有驗證題」這个常態付費。
+        container = await first_visible(
+            page,
+            KKTIXSelectors.CAPTCHA_CONTAINER,
+            timeout_ms=self.probe_timeout_ms,
+            telemetry=self.telemetry,
+            field="captcha_container",
         )
         present = container is not None
         self.telemetry.record(
@@ -568,6 +730,8 @@ class KKTIXAdapter(TicketingAdapter):
         )
         if result.outcome is PaymentOutcome.SUBMITTED:
             self.telemetry.record(
-                TimelineEventType.MARK, "real_payment_submitted", provider=result.provider
+                TimelineEventType.MARK,
+                "real_payment_submitted",
+                provider=result.provider,
             )
         return result

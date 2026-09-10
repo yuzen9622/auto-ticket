@@ -26,6 +26,7 @@ from adapters.ticketing.kktix.dom import (
     ng_click,
     ng_fill,
 )
+from adapters.ticketing.kktix.selectors import KKTIXSelectors
 from adapters.verification.base import (
     VerificationChallenge,
     VerificationResult,
@@ -55,7 +56,9 @@ class StubVerification:
 class StubPayment:
     name = "stub_payment"
 
-    def __init__(self, outcome: PaymentOutcome = PaymentOutcome.CHECKPOINT_REACHED) -> None:
+    def __init__(
+        self, outcome: PaymentOutcome = PaymentOutcome.CHECKPOINT_REACHED
+    ) -> None:
         self.outcome = outcome
         self.calls: list[Any] = []
 
@@ -87,7 +90,9 @@ def make_adapter(
     )
 
 
-def preference(price: int = 3200, *, quantity: int = 2, fallback: bool = False) -> TicketPreference:
+def preference(
+    price: int = 3200, *, quantity: int = 2, fallback: bool = False
+) -> TicketPreference:
     return TicketPreference(
         quantity=quantity,
         priorities=[TicketPriority(price=price)],
@@ -108,17 +113,27 @@ def test_candidate_selectors_normalizes_both_shapes() -> None:
     assert candidate_selectors(["a", "b"]) == ("a", "b")
 
 
-async def test_first_visible_returns_the_first_matching_candidate(telemetry: TimelineRecorder) -> None:
+async def test_first_visible_returns_the_first_matching_candidate(
+    telemetry: TimelineRecorder,
+) -> None:
     page = FakePage("<div><button class='plus'>+</button></div>")
-    locator = await first_visible(page, ["button.plus", "button.minus"], telemetry=telemetry, timeout_ms=20)
+    locator = await first_visible(
+        page, ["button.plus", "button.minus"], telemetry=telemetry, timeout_ms=20
+    )
     assert locator is not None
     assert marks(telemetry, SELECTOR_FALLBACK_MARK) == []
 
 
-async def test_first_visible_records_rank_when_falling_back(telemetry: TimelineRecorder) -> None:
+async def test_first_visible_records_rank_when_falling_back(
+    telemetry: TimelineRecorder,
+) -> None:
     page = FakePage("<div><button class='minus'>-</button></div>")
     locator = await first_visible(
-        page, ["button.plus", "button.minus"], telemetry=telemetry, timeout_ms=20, field="qty"
+        page,
+        ["button.plus", "button.minus"],
+        telemetry=telemetry,
+        timeout_ms=20,
+        field="qty",
     )
     assert locator is not None
     fallback = marks(telemetry, SELECTOR_FALLBACK_MARK)
@@ -127,9 +142,14 @@ async def test_first_visible_records_rank_when_falling_back(telemetry: TimelineR
     assert fallback[0].detail["field"] == "qty"
 
 
-async def test_first_visible_returns_none_instead_of_raising(telemetry: TimelineRecorder) -> None:
+async def test_first_visible_returns_none_instead_of_raising(
+    telemetry: TimelineRecorder,
+) -> None:
     page = FakePage("<div></div>")
-    assert await first_visible(page, ["button.plus"], telemetry=telemetry, timeout_ms=20) is None
+    assert (
+        await first_visible(page, ["button.plus"], telemetry=telemetry, timeout_ms=20)
+        is None
+    )
 
 
 async def test_ng_click_dispatches_angular_events() -> None:
@@ -195,7 +215,9 @@ async def test_navigate_to_event_visits_url(telemetry: TimelineRecorder) -> None
     assert marks(telemetry, "navigated")
 
 
-async def test_navigation_does_not_wait_for_the_load_event(telemetry: TimelineRecorder) -> None:
+async def test_navigation_does_not_wait_for_the_load_event(
+    telemetry: TimelineRecorder,
+) -> None:
     """KKTIX 的長尾資源會讓 load 遲遲不觸發；等它就是白等滿逾時後失敗。"""
     page = FakePage.from_fixture("kktix_registration_new.html")
     await make_adapter(telemetry).navigate_to_event(page, "https://reg.test/e/1")
@@ -213,7 +235,9 @@ async def test_navigation_timeout_is_separate_from_element_timeout(
     assert page.goto_kwargs[0]["timeout"] == adapter.navigation_timeout_ms == 30000
 
 
-async def test_cloudflare_challenge_aborts_and_screenshots(telemetry: TimelineRecorder) -> None:
+async def test_cloudflare_challenge_aborts_and_screenshots(
+    telemetry: TimelineRecorder,
+) -> None:
     shots: list[str] = []
 
     async def screenshot(name: str) -> None:
@@ -221,24 +245,35 @@ async def test_cloudflare_challenge_aborts_and_screenshots(telemetry: TimelineRe
 
     adapter = make_adapter(telemetry, screenshot=screenshot)
     with pytest.raises(CloudflareChallengeError):
-        await adapter.navigate_to_event(FakePage(CLOUDFLARE_HTML), "https://reg.test/e/1")
+        await adapter.navigate_to_event(
+            FakePage(CLOUDFLARE_HTML), "https://reg.test/e/1"
+        )
     assert shots == ["cloudflare_challenge_navigate"]
     assert marks(telemetry, "cloudflare_challenge")
 
 
-async def test_cloudflare_guard_also_applies_to_ticket_selection(telemetry: TimelineRecorder) -> None:
+async def test_cloudflare_guard_also_applies_to_ticket_selection(
+    telemetry: TimelineRecorder,
+) -> None:
     adapter = make_adapter(telemetry)
     with pytest.raises(CloudflareChallengeError):
         await adapter.select_tickets(FakePage(CLOUDFLARE_HTML), preference())
 
 
-async def test_detect_sale_opened_true_on_registration_page(telemetry: TimelineRecorder) -> None:
+async def test_detect_sale_opened_true_on_registration_page(
+    telemetry: TimelineRecorder,
+) -> None:
     page = FakePage.from_fixture("kktix_registration_new.html")
     assert await make_adapter(telemetry).detect_sale_opened(page, 20) is True
 
 
-async def test_detect_sale_opened_false_without_registration_app(telemetry: TimelineRecorder) -> None:
-    assert await make_adapter(telemetry).detect_sale_opened(FakePage("<div></div>"), 20) is False
+async def test_detect_sale_opened_false_without_registration_app(
+    telemetry: TimelineRecorder,
+) -> None:
+    assert (
+        await make_adapter(telemetry).detect_sale_opened(FakePage("<div></div>"), 20)
+        is False
+    )
 
 
 # ------------------------------------------------------------------ 頁面判別
@@ -246,7 +281,10 @@ async def test_detect_sale_opened_false_without_registration_app(telemetry: Time
 
 async def test_detect_page_kind_registration(telemetry: TimelineRecorder) -> None:
     page = FakePage.from_fixture("kktix_registration_new.html")
-    assert await make_adapter(telemetry).detect_page_kind(page) is KKTIXPageKind.REGISTRATION
+    assert (
+        await make_adapter(telemetry).detect_page_kind(page)
+        is KKTIXPageKind.REGISTRATION
+    )
 
 
 async def test_detect_page_kind_event_main_page(telemetry: TimelineRecorder) -> None:
@@ -265,7 +303,9 @@ async def test_detect_page_kind_unknown(telemetry: TimelineRecorder) -> None:
     assert await make_adapter(telemetry).detect_page_kind(page) is KKTIXPageKind.UNKNOWN
 
 
-async def test_event_page_tickets_are_read_from_the_table(telemetry: TimelineRecorder) -> None:
+async def test_event_page_tickets_are_read_from_the_table(
+    telemetry: TimelineRecorder,
+) -> None:
     page = FakePage.from_fixture("kktix_event_page.html")
     options = await make_adapter(telemetry).read_ticket_options(page)
     assert [o.name for o in options] == ["預售全區站席", "搖滾區站席", "學生優惠票"]
@@ -300,7 +340,9 @@ async def test_selecting_on_the_event_page_is_not_reported_as_sold_out(
     page = FakePage.from_fixture("kktix_event_page.html")
     ok, reason = await make_adapter(telemetry).select_tickets(page, preference(2800))
     assert (ok, reason) == (False, REASON_NOT_REGISTRATION_PAGE)
-    assert marks(telemetry, "wrong_page_for_selection")[0].detail["page_kind"] == "EVENT"
+    assert (
+        marks(telemetry, "wrong_page_for_selection")[0].detail["page_kind"] == "EVENT"
+    )
 
 
 async def test_selecting_on_a_login_redirect_is_not_reported_as_sold_out(
@@ -309,7 +351,9 @@ async def test_selecting_on_a_login_redirect_is_not_reported_as_sold_out(
     page = FakePage("<div>請先登入 KKTIX 帳號</div>")
     ok, reason = await make_adapter(telemetry).select_tickets(page, preference())
     assert (ok, reason) == (False, REASON_NOT_REGISTRATION_PAGE)
-    assert marks(telemetry, "wrong_page_for_selection")[0].detail["page_kind"] == "UNKNOWN"
+    assert (
+        marks(telemetry, "wrong_page_for_selection")[0].detail["page_kind"] == "UNKNOWN"
+    )
 
 
 # ------------------------------------------------------------------ 票種讀取
@@ -323,14 +367,18 @@ async def test_read_ticket_options_parses_snapshot(telemetry: TimelineRecorder) 
     assert [o.remaining for o in options] == [12, 3, None]
 
 
-async def test_read_ticket_options_marks_sold_out_unit_unavailable(telemetry: TimelineRecorder) -> None:
+async def test_read_ticket_options_marks_sold_out_unit_unavailable(
+    telemetry: TimelineRecorder,
+) -> None:
     page = FakePage.from_fixture("kktix_registration_new.html")
     options = await make_adapter(telemetry).read_ticket_options(page)
     assert [o.available for o in options] == [True, True, False]
     assert options[2].status_text == "已售完"
 
 
-async def test_ticket_unit_selector_fallback_is_recorded(telemetry: TimelineRecorder) -> None:
+async def test_ticket_unit_selector_fallback_is_recorded(
+    telemetry: TimelineRecorder,
+) -> None:
     page = FakePage(
         "<div id='registrationsNewApp'><table><tbody>"
         "<tr id='ticket_9001'><td class='name'>單一票種</td><td class='price'>NT$ 500</td>"
@@ -342,7 +390,9 @@ async def test_ticket_unit_selector_fallback_is_recorded(telemetry: TimelineReco
     options = await make_adapter(telemetry).read_ticket_options(page)
     assert [o.price for o in options] == [500]
     fallback = marks(telemetry, SELECTOR_FALLBACK_MARK)
-    assert any(m.detail["field"] == "ticket_unit" and m.detail["rank"] == 2 for m in fallback)
+    assert any(
+        m.detail["field"] == "ticket_unit" and m.detail["rank"] == 2 for m in fallback
+    )
 
 
 # ------------------------------------------------------------------ 票種選取
@@ -354,7 +404,49 @@ async def test_select_tickets_happy_path(telemetry: TimelineRecorder) -> None:
     assert (ok, reason) == (True, REASON_SELECTED)
 
 
-async def test_select_tickets_clicks_plus_once_per_ticket(telemetry: TimelineRecorder) -> None:
+# 實站實測形狀（2026-09 kktix.com 登記頁）：數量欄位只有 ng-model，
+# 既無 `ticket-quantity` class 也不是 `type=number`。
+LIVE_SHAPE_HTML = (
+    "<div id='registrationsNewApp'><div class='ticket-list'>"
+    "<div class='ticket-unit'><div class='ticket-name'>全票</div>"
+    "<div class='ticket-price'>NT$ 3,200</div>"
+    "<button class='btn-default plus' ng-click='quantityBtnClick(1)'></button>"
+    "<input type='text' ng-model='ticketModel.quantity' value='0'>"
+    "</div></div>"
+    "<label>我已經閱讀並同意"
+    "<input type='checkbox' id='person_agree_terms' ng-model='conditions.agreeTerm'>"
+    "</label></div>"
+)
+
+
+async def test_select_tickets_handles_the_live_ng_model_quantity_field(
+    telemetry: TimelineRecorder,
+) -> None:
+    """舊候選全部落空的實站形狀：回讀必須成功，不得滑成 QUANTITY_MISMATCH。"""
+    page = FakePage(LIVE_SHAPE_HTML)
+    ok, reason = await make_adapter(telemetry).select_tickets(
+        page, preference(price=3200, quantity=1)
+    )
+    assert (ok, reason) == (True, REASON_SELECTED)
+    unit = (await page.locator(".ticket-list .ticket-unit").all())[0]
+    quantity = unit.locator("input[ng-model='ticketModel.quantity']").first
+    assert await quantity.input_value() == "1"
+    assert page.locator("#person_agree_terms").first.element.get("checked") == "checked"
+
+
+def test_quantity_selector_prefers_the_live_ng_model_candidate() -> None:
+    """順位即契約：實站形狀必須是第一順位，舊模板降為 fallback。"""
+    from adapters.ticketing.kktix.selectors import KKTIXSelectors
+
+    candidates = candidate_selectors(KKTIXSelectors.TICKET_QUANTITY_INPUT)
+    assert candidates[0] == "input[ng-model='ticketModel.quantity']"
+    assert "input.ticket-quantity" in candidates
+    assert "input[type='number']" in candidates
+
+
+async def test_select_tickets_clicks_plus_once_per_ticket(
+    telemetry: TimelineRecorder,
+) -> None:
     page = FakePage.from_fixture("kktix_registration_new.html")
     await make_adapter(telemetry).select_tickets(page, preference(quantity=3))
     unit = (await page.locator(".ticket-list .ticket-unit").all())[0]
@@ -367,7 +459,9 @@ async def test_select_tickets_accepts_terms(telemetry: TimelineRecorder) -> None
     assert page.locator("#person_agree_terms").first.element.get("checked") == "checked"
 
 
-async def test_select_tickets_records_decision_trace(telemetry: TimelineRecorder) -> None:
+async def test_select_tickets_records_decision_trace(
+    telemetry: TimelineRecorder,
+) -> None:
     page = FakePage.from_fixture("kktix_registration_new.html")
     adapter = make_adapter(telemetry)
     await adapter.select_tickets(page, preference())
@@ -379,7 +473,9 @@ async def test_select_tickets_records_decision_trace(telemetry: TimelineRecorder
 
 async def test_select_tickets_on_sold_out_page(telemetry: TimelineRecorder) -> None:
     page = FakePage.from_fixture("kktix_sold_out.html")
-    ok, reason = await make_adapter(telemetry).select_tickets(page, preference(fallback=True))
+    ok, reason = await make_adapter(telemetry).select_tickets(
+        page, preference(fallback=True)
+    )
     assert (ok, reason) == (False, REASON_SOLD_OUT)
 
 
@@ -389,7 +485,9 @@ async def test_select_tickets_without_units(telemetry: TimelineRecorder) -> None
     assert (ok, reason) == (False, REASON_NO_TICKET_UNITS)
 
 
-async def test_select_tickets_detects_quantity_readback_mismatch(telemetry: TimelineRecorder) -> None:
+async def test_select_tickets_detects_quantity_readback_mismatch(
+    telemetry: TimelineRecorder,
+) -> None:
     page = FakePage.from_fixture("kktix_registration_new.html")
     page.quantity_step = 0
     ok, reason = await make_adapter(telemetry).select_tickets(page, preference())
@@ -397,7 +495,9 @@ async def test_select_tickets_detects_quantity_readback_mismatch(telemetry: Time
     assert marks(telemetry, "quantity_readback_mismatch")
 
 
-async def test_select_tickets_requires_terms_checkbox(telemetry: TimelineRecorder) -> None:
+async def test_select_tickets_requires_terms_checkbox(
+    telemetry: TimelineRecorder,
+) -> None:
     page = FakePage(
         "<div id='registrationsNewApp'><div class='ticket-list'>"
         "<div class='ticket-unit' id='ticket_1'><div class='ticket-name'>A</div>"
@@ -429,17 +529,26 @@ async def test_select_tickets_reports_missing_plus_button(
 # -------------------------------------------------------------------- 座位
 
 
-async def test_seat_best_available_clicks_auto_assignment(telemetry: TimelineRecorder) -> None:
+async def test_seat_best_available_clicks_auto_assignment(
+    telemetry: TimelineRecorder,
+) -> None:
     page = FakePage.from_fixture("kktix_registration_new.html")
-    assert await make_adapter(telemetry).handle_seat_selection(page, SeatPreference()) is True
+    assert (
+        await make_adapter(telemetry).handle_seat_selection(page, SeatPreference())
+        is True
+    )
     assert "button[ng-click='challenge(1)']" in page.clicks
     assert marks(telemetry, "seat_action")[0].detail["action"] == "BEST_AVAILABLE"
 
 
-async def test_seat_specific_zone_downgrades_and_marks(telemetry: TimelineRecorder) -> None:
+async def test_seat_specific_zone_downgrades_and_marks(
+    telemetry: TimelineRecorder,
+) -> None:
     page = FakePage.from_fixture("kktix_registration_new.html")
     preference_ = SeatPreference(strategy="specific_zone", preferred_zones=["A1"])
-    assert await make_adapter(telemetry).handle_seat_selection(page, preference_) is True
+    assert (
+        await make_adapter(telemetry).handle_seat_selection(page, preference_) is True
+    )
     assert marks(telemetry, DOWNGRADE_MARK)
     assert marks(telemetry, "seat_action")[0].detail["action"] == "PICK_SEAT"
 
@@ -449,12 +558,76 @@ async def test_seat_falls_back_to_next_step_button(telemetry: TimelineRecorder) 
         "<div id='registrationsNewApp'><div class='register-new-next-button-area'>"
         "<button class='btn btn-primary btn-lg'>下一步</button></div></div>"
     )
-    assert await make_adapter(telemetry).handle_seat_selection(page, SeatPreference()) is True
+    assert (
+        await make_adapter(telemetry).handle_seat_selection(page, SeatPreference())
+        is True
+    )
 
 
-async def test_seat_returns_false_when_no_button_exists(telemetry: TimelineRecorder) -> None:
+# 票種選擇頁兩種形狀：不劃位只有「下一步」，劃位則「自行選位／電腦配位」並存。
+NEXT_STEP_ONLY_HTML = (
+    "<div id='registrationsNewApp'><div class='register-new-next-button-area'>"
+    "<button class='btn btn-primary btn-lg' ng-click='challenge()'>下一步</button>"
+    "</div></div>"
+)
+RESERVED_SEATING_HTML = (
+    "<div id='registrationsNewApp'><div class='register-new-next-button-area'>"
+    "<button class='btn btn-primary' ng-click='challenge()'>自行選位</button>"
+    "<button class='btn btn-primary' ng-click='challenge(1)'>電腦配位</button>"
+    "</div></div>"
+)
+
+
+async def test_seat_next_step_only_page_is_not_reported_as_pick_seat(
+    telemetry: TimelineRecorder,
+) -> None:
+    """不劃位頁的「下一步」也是 `challenge()`——不得因此被当成自行選位回報。"""
+    page = FakePage(NEXT_STEP_ONLY_HTML)
+    assert (
+        await make_adapter(telemetry).handle_seat_selection(page, SeatPreference())
+        is True
+    )
+    detail = marks(telemetry, "seat_action")[0].detail
+    assert detail["page_shape"] == "single_next_step"
+    assert detail["action"] == "NEXT_STEP"
+
+
+async def test_seat_reserved_page_prefers_auto_assignment_over_leftmost_button(
+    telemetry: TimelineRecorder,
+) -> None:
+    """劃位頁：自行選位在左、電腦配位在右，點到的必須是電腦配位。"""
+    page = FakePage(RESERVED_SEATING_HTML)
+    assert (
+        await make_adapter(telemetry).handle_seat_selection(page, SeatPreference())
+        is True
+    )
+    assert page.clicks == ["button[ng-click='challenge(1)']"]
+    detail = marks(telemetry, "seat_action")[0].detail
+    assert detail["page_shape"] == "reserved_seating"
+    assert detail["action"] == "BEST_AVAILABLE"
+
+
+async def test_seat_reserved_page_honours_explicit_pick_seat(
+    telemetry: TimelineRecorder,
+) -> None:
+    page = FakePage(RESERVED_SEATING_HTML)
+    preference_ = SeatPreference(strategy="same_zone")
+    assert (
+        await make_adapter(telemetry).handle_seat_selection(page, preference_) is True
+    )
+    assert page.clicks == ["button[ng-click='challenge()']"]
+    detail = marks(telemetry, "seat_action")[0].detail
+    assert (detail["action"], detail["requested"]) == ("PICK_SEAT", "PICK_SEAT")
+
+
+async def test_seat_returns_false_when_no_button_exists(
+    telemetry: TimelineRecorder,
+) -> None:
     page = FakePage("<div id='registrationsNewApp'></div>")
-    assert await make_adapter(telemetry).handle_seat_selection(page, SeatPreference()) is False
+    assert (
+        await make_adapter(telemetry).handle_seat_selection(page, SeatPreference())
+        is False
+    )
 
 
 # -------------------------------------------------------------------- 表單
@@ -466,12 +639,16 @@ def contact() -> UserContactProfile:
 
 def attendees(count: int = 2) -> tuple[AttendeeProfile, ...]:
     return tuple(
-        AttendeeProfile(name=f"參加人{i}", phone="0987654321", id_number=f"A12345678{i}")
+        AttendeeProfile(
+            name=f"參加人{i}", phone="0987654321", id_number=f"A12345678{i}"
+        )
         for i in range(count)
     )
 
 
-async def test_fill_contact_form_fills_contact_without_submitting(telemetry: TimelineRecorder) -> None:
+async def test_fill_contact_form_fills_contact_without_submitting(
+    telemetry: TimelineRecorder,
+) -> None:
     page = FakePage.from_fixture("kktix_registration_order.html")
     adapter = make_adapter(telemetry, attendees=attendees())
     assert await adapter.fill_contact_form(page, contact()) is True
@@ -492,7 +669,9 @@ async def test_submit_order_reports_missing_button(telemetry: TimelineRecorder) 
     assert await make_adapter(telemetry).submit_order(FakePage("<div></div>")) is False
 
 
-async def test_fill_contact_form_fills_every_attendee_field(telemetry: TimelineRecorder) -> None:
+async def test_fill_contact_form_fills_every_attendee_field(
+    telemetry: TimelineRecorder,
+) -> None:
     page = FakePage.from_fixture("kktix_registration_order.html")
     adapter = make_adapter(telemetry, attendees=attendees())
     await adapter.fill_contact_form(page, contact())
@@ -502,7 +681,9 @@ async def test_fill_contact_form_fills_every_attendee_field(telemetry: TimelineR
     assert marks(telemetry, "attendees_filled")[0].detail["count"] == 2
 
 
-async def test_fill_contact_form_refuses_to_guess_missing_attendees(telemetry: TimelineRecorder) -> None:
+async def test_fill_contact_form_refuses_to_guess_missing_attendees(
+    telemetry: TimelineRecorder,
+) -> None:
     page = FakePage.from_fixture("kktix_registration_order.html")
     adapter = make_adapter(telemetry, attendees=attendees(1))
     assert await adapter.fill_contact_form(page, contact()) is False
@@ -511,13 +692,277 @@ async def test_fill_contact_form_refuses_to_guess_missing_attendees(telemetry: T
     assert detail["provided"] == 1
 
 
-async def test_fill_contact_form_reports_missing_contact_field(telemetry: TimelineRecorder) -> None:
+def _dynamic_contact_html(*, name: str = "", email: str = "", phone: str = "") -> str:
+    """實站形狀（2026-09 kktix.com 訂單頁）：name 帶活動專屬數字 ID，
+    三個欄位共用同一個 ng-model，只有 label 文字能區分。"""
+
+    def group(kind: str, label: str, field: str, value: str) -> str:
+        return (
+            f"<div class='control-group {kind}'>"
+            f"<label class='control-label ng-binding'>* {label}</label>"
+            "<div class='controls form-inline ng-scope'><div class='ng-scope'>"
+            f"<input type='text' name='contact[{field}]' "
+            f"ng-model='contactModel[field.field_key]' value='{value}'>"
+            "</div></div></div>"
+        )
+
+    return (
+        "<div id='orderApp'><div class='contact-info'>"
+        + group("text", "姓名", "field_text_1007673", name)
+        + group("email", "Email", "field_email_1007674", email)
+        + group("text", "手機", "field_text_1007675", phone)
+        + "</div><button ng-click='confirmOrder()'>確認</button></div>"
+    )
+
+
+async def test_fill_contact_form_resolves_dynamically_named_fields(
+    telemetry: TimelineRecorder,
+) -> None:
+    """静態候選全數落空的實站表單：靠 label 文字歸位後必須填得進去。"""
+    page = FakePage(_dynamic_contact_html())
+    adapter = make_adapter(telemetry)
+    assert await adapter.fill_contact_form(page, contact()) is True
+    values = {
+        i.element.get("name"): i.element.get("value")
+        for i in await page.locator("input[name^='contact[']").all()
+    }
+    assert values == {
+        "contact[field_text_1007673]": "王小明",
+        "contact[field_email_1007674]": "a@b.test",
+        "contact[field_text_1007675]": "0912345678",
+    }
+    assert marks(telemetry, "contact_fields_resolved_dynamically")[0].detail[
+        "fields"
+    ] == ["contact_email", "contact_name", "contact_phone"]
+
+
+async def test_fill_contact_form_waits_for_the_async_rendered_order_form(
+    telemetry: TimelineRecorder,
+) -> None:
+    """點完配位會導頁，表單是非同步渲染：不等它就列舉欄位永遠拿到空集合。"""
+    page = FakePage("<div id='orderApp'></div>")
+    page.render_after_wait(_dynamic_contact_html())
+    assert await make_adapter(telemetry).fill_contact_form(page, contact()) is True
+    assert marks(telemetry, "contact_fields_resolved_dynamically")
+    assert not marks(telemetry, "contact_field_missing")
+
+
+async def test_fill_contact_form_separates_unrendered_form_from_missing_field(
+    telemetry: TimelineRecorder,
+) -> None:
+    """表單根本沒渲染出來要能跟「欄位不存在」區分，否則追因會走錯方向。"""
     page = FakePage("<div id='orderApp'></div>")
     assert await make_adapter(telemetry).fill_contact_form(page, contact()) is False
-    assert marks(telemetry, "contact_field_missing")[0].detail["field"] == "contact_name"
+    assert marks(telemetry, "contact_form_not_rendered")
+    assert (
+        marks(telemetry, "contact_field_missing")[0].detail["field"] == "contact_name"
+    )
 
 
-async def test_fill_contact_form_without_attendee_fields(telemetry: TimelineRecorder) -> None:
+async def test_fill_contact_form_never_overwrites_account_prefilled_values(
+    telemetry: TimelineRecorder,
+) -> None:
+    """KKTIX 用登入帳號預填真實資料時，不得拿任務檔的佔位資料覆寫。"""
+    page = FakePage(
+        _dynamic_contact_html(
+            name="曹宇鑑", email="real@example.com", phone="886965303635"
+        )
+    )
+    assert await make_adapter(telemetry).fill_contact_form(page, contact()) is True
+    assert page.fills == []
+    values = {
+        i.element.get("name"): i.element.get("value")
+        for i in await page.locator("input[name^='contact[']").all()
+    }
+    assert values["contact[field_text_1007673]"] == "曹宇鑑"
+    assert values["contact[field_email_1007674]"] == "real@example.com"
+    prefilled = marks(telemetry, "contact_field_prefilled")
+    assert {m.detail["field"] for m in prefilled} == {
+        "contact_name",
+        "contact_email",
+        "contact_phone",
+    }
+    assert all(m.detail["matches_profile"] is False for m in prefilled)
+
+
+# 選配探測的預算契約：以「不存在」為常態的檢查不得燒掉必要元素的長預算。
+
+
+async def test_detect_verification_probes_with_the_short_budget(
+    telemetry: TimelineRecorder,
+) -> None:
+    """沒驗證題是常態：不得為了確認「真的沒有」而等整份 timeout。"""
+    page = FakePage("<div id='orderApp'><p>no captcha here</p></div>")
+    # 必須用正式預設的元素預算：測試幫手的 timeout_ms 小到會被 min() 夾成與
+    # 探測預算同值，那樣這條斷言就算改回長預算也不會紅，形同虛設。
+    adapter = KKTIXAdapter(
+        telemetry=telemetry, payment=MockPaymentProvider(), timeout_ms=5000
+    )
+    assert adapter.probe_timeout_ms < adapter.timeout_ms
+    assert await adapter.detect_verification(page) is False
+    assert marks(telemetry, "verification_probe")[0].detail["present"] is False
+    waited = [t for sel, t in page.wait_timeouts if t is not None]
+    assert waited, "探測未發生，預算契約無法驗証"
+    assert sum(waited) <= adapter.probe_timeout_ms
+
+
+async def test_mock_payment_probes_absent_card_fields_with_the_short_budget() -> None:
+    """ATM 等非刷卡頁根本沒有卡片欄位，dry-run 不应為此白燒三份預算。"""
+    page = FakePage("<div id='paymentApp'><p>ATM 轉帳</p></div>")
+    provider = MockPaymentProvider(timeout_ms=2000, probe_timeout_ms=500)
+    result = await provider.pay(page, None)
+    assert result.detail["submitted"] is False
+    # 依証冊表列出卡片欄位的候選，避免用字串類似誤捕到付款 radio（它是錨點，刷長預算）。
+    card_selectors = {
+        candidate
+        for group in (
+            KKTIXSelectors.CARD_NUMBER_INPUT,
+            KKTIXSelectors.CARD_EXPIRY_INPUT,
+            KKTIXSelectors.CARD_CVV_INPUT,
+        )
+        for candidate in candidate_selectors(group)
+    }
+    card_waits = [
+        t for sel, t in page.wait_timeouts if t is not None and sel in card_selectors
+    ]
+    assert card_waits, "卡片欄位未被探測"
+    assert sum(card_waits) <= provider.probe_timeout_ms * 3
+    assert sum(card_waits) < provider.timeout_ms * 3
+
+
+def test_probe_budget_never_exceeds_the_element_budget(
+    telemetry: TimelineRecorder,
+) -> None:
+    """呼叫端把 timeout_ms 調小時，探測預算必須跟著縮，不得反過來成為矶頸。"""
+
+    def adapter_with(**kwargs: Any) -> KKTIXAdapter:
+        return KKTIXAdapter(
+            telemetry=telemetry, payment=MockPaymentProvider(), **kwargs
+        )
+
+    assert adapter_with(timeout_ms=5000).probe_timeout_ms == 500
+    assert adapter_with(timeout_ms=20).probe_timeout_ms == 20
+    assert adapter_with(timeout_ms=5000, probe_timeout_ms=120).probe_timeout_ms == 120
+    assert MockPaymentProvider(timeout_ms=2000).probe_timeout_ms == 500
+    assert MockPaymentProvider(timeout_ms=100).probe_timeout_ms == 100
+
+
+CONSENT_HTML = (
+    "<div class='control-group checkbox'>"
+    "<label class='control-label ng-binding'>* 同意條款</label>"
+    "<div class='controls form-inline ng-scope' ng-switch='field.field_type'>"
+    "<div ng-switch-when='checkbox' class='ng-scope'>"
+    "<label class='checkbox ng-binding ng-scope'>"
+    "<input type='checkbox' ng-model='contactModel[field.field_key][option.id]' "
+    "name='contact[field_checkbox_1010782]' value=''>"
+    "我同意KKTIX系統所分配之門票，購買後將不能更改或退款。"
+    "</label></div></div></div>"
+)
+
+
+async def test_fill_contact_form_accepts_dynamic_consent_checkbox(
+    telemetry: TimelineRecorder,
+) -> None:
+    """動態同意條款 checkbox 沒勾就送不出去，且勾了什麼必須留下條款文字。"""
+    page = FakePage(
+        _dynamic_contact_html().replace("</div><button", CONSENT_HTML + "</div><button")
+    )
+    assert await make_adapter(telemetry).fill_contact_form(page, contact()) is True
+    box = page.locator("input[name='contact[field_checkbox_1010782]']").first
+    assert await box.is_checked(), "同意條款未被勾選"
+    accepted = marks(telemetry, "contact_consent_accepted")[0].detail
+    assert accepted["count"] == 1
+    assert "不能更改或退款" in accepted["terms"][0]
+
+
+async def test_fill_contact_form_does_not_fill_text_into_a_checkbox(
+    telemetry: TimelineRecorder,
+) -> None:
+    """欄位標籤是主辦自己打的自由文字，checkbox 的標籤完全可能含「姓名」。
+
+    它同樣是 contact[...] 開頭，一旦被當成文字欄位就會被 ng_fill 填進字串。
+    """
+    # 刻意排在真正的姓名欄位之前：它不得偷走 contact_name 那個位子。
+    checkbox_group = (
+        "<div class='control-group checkbox'>"
+        "<label class='control-label ng-binding'>* 姓名公開</label>"
+        "<div class='controls form-inline ng-scope'>"
+        "<label class='checkbox ng-binding'>"
+        "<input type='checkbox' name='contact[field_checkbox_2001]' value=''>同意公開"
+        "</label></div></div>"
+    )
+    page = FakePage(
+        _dynamic_contact_html().replace(
+            "<div class='contact-info'>", "<div class='contact-info'>" + checkbox_group
+        )
+    )
+    assert await make_adapter(telemetry).fill_contact_form(page, contact()) is True
+    box = page.locator("input[name='contact[field_checkbox_2001]']").first
+    assert box.element.get("value") == "", "checkbox 被填了字串"
+    assert await box.is_checked(), "同意欄位應該被勾選而不是被填字"
+    values = {
+        i.element.get("name"): i.element.get("value")
+        for i in await page.locator("input[name^='contact[']").all()
+    }
+    assert values["contact[field_text_1007673]"] == "王小明"
+
+
+async def test_seat_shape_detection_uses_the_short_probe_budget(
+    telemetry: TimelineRecorder,
+) -> None:
+    """「電腦配位不存在」就是不劃位頁的辨識依據：不得為這個常態等整份預算。"""
+    page = FakePage(NEXT_STEP_ONLY_HTML)
+    adapter = KKTIXAdapter(
+        telemetry=telemetry, payment=MockPaymentProvider(), timeout_ms=5000
+    )
+    assert await adapter.handle_seat_selection(page, SeatPreference()) is True
+    best_available = set(candidate_selectors(KKTIXSelectors.BTN_BEST_AVAILABLE))
+    waited = [
+        t for sel, t in page.wait_timeouts if t is not None and sel in best_available
+    ]
+    assert waited, "未探測電腦配位，預算契約無法驗証"
+    assert sum(waited) <= adapter.probe_timeout_ms
+
+
+async def test_page_text_retries_once_while_the_page_is_navigating(
+    telemetry: TimelineRecorder,
+) -> None:
+    """點完會導頁的按鈕後立刻讀 content() 會拋錯，那是問得太早而不是壞頁面。"""
+    from adapters.ticketing.kktix.dom import page_text
+
+    page = FakePage(_dynamic_contact_html())
+    page.content_error_once = RuntimeError(
+        "Page.content: Unable to retrieve content because the page is navigating"
+    )
+    text = await page_text(page)
+    assert "contact[field_text_1007673]" in text
+    assert page.load_states == ["domcontentloaded"]
+
+
+async def test_fill_contact_form_survives_a_navigating_page(
+    telemetry: TimelineRecorder,
+) -> None:
+    """導頁中的 Cloudflare 閃存檢查不得把整條流程弄死。"""
+    page = FakePage(_dynamic_contact_html())
+    page.content_error_once = RuntimeError(
+        "Page.content: Unable to retrieve content because the page is navigating"
+    )
+    assert await make_adapter(telemetry).fill_contact_form(page, contact()) is True
+
+
+async def test_fill_contact_form_reports_missing_contact_field(
+    telemetry: TimelineRecorder,
+) -> None:
+    page = FakePage("<div id='orderApp'></div>")
+    assert await make_adapter(telemetry).fill_contact_form(page, contact()) is False
+    assert (
+        marks(telemetry, "contact_field_missing")[0].detail["field"] == "contact_name"
+    )
+
+
+async def test_fill_contact_form_without_attendee_fields(
+    telemetry: TimelineRecorder,
+) -> None:
     page = FakePage(
         "<div id='orderApp'><input name='contact[name]'><input name='contact[email]'>"
         "<input name='contact[phone]'><button ng-click='confirmOrder()'>確認</button></div>"
@@ -530,7 +975,9 @@ async def test_fill_contact_form_without_attendee_fields(telemetry: TimelineReco
 # -------------------------------------------------------------------- 驗證
 
 
-async def test_detect_verification_distinguishes_pages(telemetry: TimelineRecorder) -> None:
+async def test_detect_verification_distinguishes_pages(
+    telemetry: TimelineRecorder,
+) -> None:
     adapter = make_adapter(telemetry)
     order = FakePage.from_fixture("kktix_registration_order.html")
     registration = FakePage.from_fixture("kktix_registration_new.html")
@@ -538,7 +985,9 @@ async def test_detect_verification_distinguishes_pages(telemetry: TimelineRecord
     assert await adapter.detect_verification(registration) is False
 
 
-async def test_handle_verification_returns_true_when_absent(telemetry: TimelineRecorder) -> None:
+async def test_handle_verification_returns_true_when_absent(
+    telemetry: TimelineRecorder,
+) -> None:
     provider = StubVerification(VerificationResult(True, "42", "stub"))
     adapter = make_adapter(telemetry, verification=provider)
     page = FakePage.from_fixture("kktix_registration_new.html")
@@ -547,7 +996,9 @@ async def test_handle_verification_returns_true_when_absent(telemetry: TimelineR
     assert marks(telemetry, "verification_absent")
 
 
-async def test_handle_verification_fills_the_answer(telemetry: TimelineRecorder) -> None:
+async def test_handle_verification_fills_the_answer(
+    telemetry: TimelineRecorder,
+) -> None:
     provider = StubVerification(VerificationResult(True, "ATA", "stub"))
     adapter = make_adapter(telemetry, verification=provider)
     page = FakePage.from_fixture("kktix_registration_order.html")
@@ -556,14 +1007,20 @@ async def test_handle_verification_fills_the_answer(telemetry: TimelineRecorder)
     assert dict(page.fills)["input[name='captcha_answer']"] == "ATA"
 
 
-async def test_handle_verification_without_provider(telemetry: TimelineRecorder) -> None:
+async def test_handle_verification_without_provider(
+    telemetry: TimelineRecorder,
+) -> None:
     page = FakePage.from_fixture("kktix_registration_order.html")
     assert await make_adapter(telemetry).handle_verification(page) is False
     assert marks(telemetry, "verification_provider_missing")
 
 
-async def test_handle_verification_reports_unsolved(telemetry: TimelineRecorder) -> None:
-    provider = StubVerification(VerificationResult(False, None, "stub", {"reason": "timeout"}))
+async def test_handle_verification_reports_unsolved(
+    telemetry: TimelineRecorder,
+) -> None:
+    provider = StubVerification(
+        VerificationResult(False, None, "stub", {"reason": "timeout"})
+    )
     adapter = make_adapter(telemetry, verification=provider)
     page = FakePage.from_fixture("kktix_registration_order.html")
     assert await adapter.handle_verification(page) is False
@@ -573,7 +1030,9 @@ async def test_handle_verification_reports_unsolved(telemetry: TimelineRecorder)
 # -------------------------------------------------------------------- 付款
 
 
-async def test_execute_payment_returns_provider_result_verbatim(telemetry: TimelineRecorder) -> None:
+async def test_execute_payment_returns_provider_result_verbatim(
+    telemetry: TimelineRecorder,
+) -> None:
     provider = StubPayment(PaymentOutcome.CHECKPOINT_REACHED)
     adapter = make_adapter(telemetry, payment=provider)
     page = FakePage.from_fixture("kktix_payment.html")
@@ -583,7 +1042,9 @@ async def test_execute_payment_returns_provider_result_verbatim(telemetry: Timel
     assert marks(telemetry, "payment_result")[0].detail["provider"] == "stub_payment"
 
 
-async def test_execute_payment_flags_real_submission(telemetry: TimelineRecorder) -> None:
+async def test_execute_payment_flags_real_submission(
+    telemetry: TimelineRecorder,
+) -> None:
     adapter = make_adapter(telemetry, payment=StubPayment(PaymentOutcome.SUBMITTED))
     await adapter.execute_payment(FakePage.from_fixture("kktix_payment.html"), None)
     assert marks(telemetry, "real_payment_submitted")

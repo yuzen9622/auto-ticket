@@ -575,11 +575,18 @@ class KKTIXSelectors:
       "button[ng-click*='quantityBtnClick(-1)']",
       "button:has-text('-')",
   ]
-  TICKET_QUANTITY_INPUT = "input.ticket-quantity, input[type='number']"
+  # 實站實測（2026-09）：數量欄位是 `<input type="text" ng-model="ticketModel.quantity">`，
+  # 舊候選（class / type=number）在現行版完全落空，回讀失敗會被誤報成售罄。
+  TICKET_QUANTITY_INPUT = [
+      "input[ng-model='ticketModel.quantity']",
+      "input.ticket-quantity",
+      "input[type='number']",
+  ]
 
   # 同意條款 Checkbox (必須 dispatch click 事件以驅動 AngularJS Model)
   TERMS_CHECKBOX = [
       "#person_agree_terms",
+      "input[ng-model='conditions.agreeTerm']",
       "input[name='agree_terms']",
       "label:has-text('我同意') input",
   ]
@@ -1051,6 +1058,7 @@ playwright install chromium
 ```
 
 #### 3. 雙向同步守則
+
 - 當使用 `uv add <package>` 新增依賴時，執行：
 
   ```bash

@@ -23,6 +23,9 @@ else:
     Page = Any
 
 DEFAULT_PROBE_TIMEOUT_MS = 2000
+# 「選配元素在不在」的預算。這類檢查以不存在為常態（沒驗證題、ATM 頁沒卡片
+# 欄位……），拿必要元素的長預算去確認「真的沒有」就是白燒時間。
+DEFAULT_OPTIONAL_PROBE_MS = 500
 # 補送事件是「順手多做一件事」，不是主要動作：短逾時，失敗也不能拖垮流程。
 DEFAULT_DISPATCH_TIMEOUT_MS = 1000
 SELECTOR_FALLBACK_MARK = "selector_fallback"
@@ -130,8 +133,20 @@ async def read_input_value(locator: Locator) -> str:
     return str(await locator.input_value())
 
 
-async def page_text(page: Page) -> str:
-    return str(await page.content())
+async def page_text(
+    page: Page, *, settle_timeout_ms: int = DEFAULT_PROBE_TIMEOUT_MS
+) -> str:
+    """讀取頁面內容；導頁進行中先等 DOM 穩定再重試一次。
+
+    點完「下一步」這類會導頁的按鈕後立刻呼叫 `content()`，Playwright 會拋
+    「page is navigating and changing the content」——那不是壞頁面，只是問得太早。
+    重試失敗就讓例外往上拋，不吞。
+    """
+    try:
+        return str(await page.content())
+    except Exception:
+        await page.wait_for_load_state("domcontentloaded", timeout=settle_timeout_ms)
+        return str(await page.content())
 
 
 def contains_cloudflare_challenge(text: str) -> str | None:

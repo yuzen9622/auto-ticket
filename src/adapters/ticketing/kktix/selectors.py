@@ -61,13 +61,17 @@ class KKTIXSelectors:
         "button[ng-click*='quantityBtnClick(-1)']",
         "button:has-text('-')",
     ]
-    TICKET_QUANTITY_INPUT = "input.ticket-quantity, input[type='number']"
+    # 數量欄位。實站實測（2026-09）：實際是 `<input type="text" ng-model="ticketModel.quantity">`，
+    # 既無 `ticket-quantity` class 也不是 `type=number`——舊候選完全落空時會讓回讀失敗。
+    TICKET_QUANTITY_INPUT = [
+        "input[ng-model='ticketModel.quantity']",
+        "input.ticket-quantity",
+        "input[type='number']",
+    ]
 
     # 同意條款 Checkbox (必須 dispatch click 事件以驅動 AngularJS Model)
     TERMS_CHECKBOX = [
         "#person_agree_terms",
-        "input[name='agree_terms']",
-        "label:has-text('我同意') input",
     ]
 
     # 防機器人問答題 (Custom Quiz / Captcha)
@@ -117,6 +121,31 @@ class KKTIXSelectors:
         "input#order_contact_phone",
         "input[name*='contact_phone']",
     ]
+
+    # 動態聯絡人表單（實站實測 2026-09）。欄位 name 帶每場活動不同的數字 ID
+    # （如 contact[field_text_1007673]），且三個欄位共用同一個
+    # ng-model="contactModel[field.field_key]"——靠 name 或 ng-model 都無法辨識，
+    # 唯一穩定的依據是 control-group 內的 label 文字。
+    CONTACT_DYNAMIC_GROUP = "div.contact-info div.control-group"
+    CONTACT_DYNAMIC_LABEL = "label.control-label"
+    # 排除 checkbox／radio：它們同樣是 contact[...] 開頭，但拿 ng_fill 填字串進去是錯的。
+    CONTACT_DYNAMIC_INPUT = (
+        "input[name^='contact[']:not([type='checkbox']):not([type='radio']), "
+        "textarea[name^='contact[']"
+    )
+    # 動態同意條款 checkbox（實站實測 2026-09），例如「我同意 KKTIX 系統所分配之
+    # 門票，購買後將不能更改或退款」。沒勾就送不出去（欄位會出現「不能留空」），
+    # 而欄位 id 同樣每場活動不同。
+    CONTACT_DYNAMIC_CHECKBOX = "input[type='checkbox'][name^='contact[']"
+    CONTACT_DYNAMIC_CONSENT_LABEL = (
+        "label.checkbox:has(input[type='checkbox'][name^='contact['])"
+    )
+    # label 關鍵字 -> 邏輯欄位。順序即優先序，先命中者勝。
+    CONTACT_LABEL_KEYWORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
+        ("contact_email", ("email", "e-mail", "信箱", "電子郵件")),
+        ("contact_phone", ("手機", "電話", "phone", "mobile")),
+        ("contact_name", ("姓名", "名字", "name")),
+    )
 
     # 實名制參加人欄位 (Attendee Fields - 支援複數參加者 attendees[0], attendees[1])
     ATTENDEE_NAME_TEMPLATE = "input[name='attendees[{index}][name]']"

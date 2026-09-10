@@ -10,7 +10,12 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from adapters.payment.base import PaymentOutcome, PaymentResult
-from adapters.ticketing.kktix.dom import first_visible, ng_click, ng_fill
+from adapters.ticketing.kktix.dom import (
+    DEFAULT_OPTIONAL_PROBE_MS,
+    first_visible,
+    ng_click,
+    ng_fill,
+)
 from adapters.ticketing.kktix.selectors import KKTIXSelectors
 from domain.task import CreditCardProfile
 from telemetry.timeline import TimelineEventType, TimelineRecorder
@@ -39,14 +44,19 @@ class MockPaymentProvider:
         simulate: PaymentOutcome = PaymentOutcome.CHECKPOINT_REACHED,
         telemetry: TimelineRecorder | None = None,
         timeout_ms: int = 2000,
+        probe_timeout_ms: int | None = None,
     ) -> None:
         self.simulate = simulate
         self.telemetry = telemetry
         self.timeout_ms = timeout_ms
+        # 卡片欄位對 dry-run 而言是選配的（找不到就跳過），而 ATM 等非刷卡頁面
+        # 根本沒有這些欄位。給它們整份 timeout 等於每次 dry-run 都白燒三份預算。
+        self.probe_timeout_ms = min(
+            DEFAULT_OPTIONAL_PROBE_MS if probe_timeout_ms is None else probe_timeout_ms,
+            timeout_ms,
+        )
 
-    async def pay(
-        self, page: Page, profile: CreditCardProfile | None
-    ) -> PaymentResult:
+    async def pay(self, page: Page, profile: CreditCardProfile | None) -> PaymentResult:
         filled: list[str] = []
 
         radio = await first_visible(
@@ -62,12 +72,16 @@ class MockPaymentProvider:
         for field_name, selectors, value in (
             ("card_number", KKTIXSelectors.CARD_NUMBER_INPUT, TEST_CARD_NUMBER),
             ("card_expiry", KKTIXSelectors.CARD_EXPIRY_INPUT, TEST_CARD_EXPIRY),
-            ("card_security_code", KKTIXSelectors.CARD_CVV_INPUT, TEST_CARD_SECURITY_CODE),
+            (
+                "card_security_code",
+                KKTIXSelectors.CARD_CVV_INPUT,
+                TEST_CARD_SECURITY_CODE,
+            ),
         ):
             locator = await first_visible(
                 page,
                 selectors,
-                timeout_ms=self.timeout_ms,
+                timeout_ms=self.probe_timeout_ms,
                 telemetry=self.telemetry,
                 field=field_name,
             )
