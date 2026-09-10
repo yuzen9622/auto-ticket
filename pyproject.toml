@@ -14,23 +14,39 @@ dependencies = [
     "rapidfuzz>=3.14",
     "httpx>=0.28",
     "beautifulsoup4>=4.14",
+    # Batch 2 新增依賴（僅追加；不得回頭放寬上列任一約束、不得移除 [asyncio] extra）
+    "apscheduler>=3.10.4",
+    "ntplib>=0.4.0",
+    "playwright>=1.40.0",
+    "python-statemachine>=3.2.0",
+    "structlog>=24.1.0",
 ]
 
 [project.optional-dependencies]
 dev = [
     "pytest>=8.4",
     "pytest-asyncio>=1.2",
+    "ruff>=0.6",
 ]
 
 [dependency-groups]
 dev = [
     "pytest>=8.4",
     "pytest-asyncio>=1.2",
+    "ruff>=0.6",
 ]
 
 [tool.hatch.build.targets.wheel]
 sources = ["src"]
-packages = ["src/domain", "src/storage", "src/adapters"]
+packages = [
+    "src/domain",
+    "src/storage",
+    "src/adapters",
+    "src/telemetry",
+    "src/fsm",
+    "src/scheduler",
+    "src/browser",
+]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]
