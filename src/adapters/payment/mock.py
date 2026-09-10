@@ -57,7 +57,7 @@ class MockPaymentProvider:
             field="payment_radio_credit_card",
         )
         if radio is not None:
-            await ng_click(page, radio)
+            await ng_click(page, radio, telemetry=self.telemetry)
 
         for field_name, selectors, value in (
             ("card_number", KKTIXSelectors.CARD_NUMBER_INPUT, TEST_CARD_NUMBER),

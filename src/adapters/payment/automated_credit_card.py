@@ -78,7 +78,7 @@ class AutomatedCreditCardProvider:
         last4 = masked_last4(profile)
         radio = await self._locate(page, KKTIXSelectors.PAYMENT_RADIO_CREDIT_CARD, "payment_radio_credit_card")
         if radio is not None:
-            await ng_click(page, radio)
+            await ng_click(page, radio, telemetry=self.telemetry)
 
         fields = (
             ("card_number", KKTIXSelectors.CARD_NUMBER_INPUT, profile.card_number),
@@ -114,7 +114,7 @@ class AutomatedCreditCardProvider:
                 provider=PROVIDER_NAME,
                 card_last4=last4,
             )
-        await ng_click(page, button)
+        await ng_click(page, button, telemetry=self.telemetry)
 
         try:
             await page.wait_for_load_state("networkidle", timeout=self.timeout_ms)

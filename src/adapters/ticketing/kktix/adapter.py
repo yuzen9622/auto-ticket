@@ -330,7 +330,7 @@ class KKTIXAdapter(TicketingAdapter):
         if plus is None:
             return False, REASON_PLUS_BUTTON_MISSING
         for _ in range(decision.quantity):
-            await ng_click(page, plus)
+            await ng_click(page, plus, telemetry=self.telemetry)
 
         quantity_input = await self._locate(
             unit, KKTIXSelectors.TICKET_QUANTITY_INPUT, "ticket_quantity_input"
@@ -351,7 +351,7 @@ class KKTIXAdapter(TicketingAdapter):
         terms = await self._locate(page, KKTIXSelectors.TERMS_CHECKBOX, "terms_checkbox")
         if terms is None:
             return False, REASON_TERMS_NOT_ACCEPTED
-        await ng_click(page, terms)
+        await ng_click(page, terms, telemetry=self.telemetry)
 
         return True, REASON_SELECTED
 
@@ -376,7 +376,7 @@ class KKTIXAdapter(TicketingAdapter):
             button = await self._locate(page, KKTIXSelectors.BTN_NEXT_STEP, "next_step")
         if button is None:
             return False
-        await ng_click(page, button)
+        await ng_click(page, button, telemetry=self.telemetry)
         self.telemetry.record(
             TimelineEventType.MARK, "seat_action", action=seat.action.value
         )
@@ -413,7 +413,7 @@ class KKTIXAdapter(TicketingAdapter):
         button = await self._locate(page, KKTIXSelectors.BTN_CONFIRM_ORDER, "confirm_order")
         if button is None:
             return False
-        await ng_click(page, button)
+        await ng_click(page, button, telemetry=self.telemetry)
         self.telemetry.record(TimelineEventType.MARK, "order_submitted")
         return True
 

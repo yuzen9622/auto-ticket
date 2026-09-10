@@ -81,7 +81,9 @@ class FakeLocator:
         element["value"] = value
         self.page.fills.append((self.selector, value))
 
-    async def evaluate(self, script: str) -> None:
+    async def evaluate(self, script: str, *, timeout: float | None = None) -> None:
+        if self.page.evaluate_error is not None:
+            raise self.page.evaluate_error
         self.page.dispatches.append((self.element.name, script))
 
 
@@ -99,6 +101,7 @@ class FakePage:
         self.fail_load_state = False
         self.quantity_step = 1
         self.click_transitions: list[tuple[str, str]] = []
+        self.evaluate_error: Exception | None = None
 
     @classmethod
     def from_fixture(cls, name: str, **kwargs: Any) -> FakePage:

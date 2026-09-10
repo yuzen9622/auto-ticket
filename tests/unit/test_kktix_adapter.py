@@ -18,6 +18,7 @@ from adapters.ticketing.kktix.adapter import (
     KKTIXPageKind,
 )
 from adapters.ticketing.kktix.dom import (
+    DISPATCH_SKIPPED_MARK,
     SELECTOR_FALLBACK_MARK,
     candidate_selectors,
     contains_cloudflare_challenge,
@@ -145,6 +146,36 @@ async def test_ng_fill_sets_value_and_dispatches() -> None:
     await ng_fill(page, locator, "hello")
     assert await locator.input_value() == "hello"
     assert page.dispatches[0][0] == "input"
+
+
+async def test_ng_click_survives_the_element_vanishing_on_navigation(
+    telemetry: TimelineRecorder,
+) -> None:
+    """會導航的按鈕一點下去元素就沒了，補送事件必然失敗——那不是錯誤。"""
+    page = FakePage("<div><button class='go'>下一步</button></div>")
+    page.evaluate_error = RuntimeError("Locator.evaluate: Timeout 1000ms exceeded")
+    locator = page.locator("button.go").first
+    await ng_click(page, locator, telemetry=telemetry)
+    assert page.clicks == ["button.go"]
+    assert marks(telemetry, DISPATCH_SKIPPED_MARK)[0].detail["reason"] == "RuntimeError"
+
+
+async def test_ng_click_dispatch_failure_is_visible_even_without_navigation(
+    telemetry: TimelineRecorder,
+) -> None:
+    """補送失敗一律留痕，不得無聲吞掉。"""
+    page = FakePage("<div><input type='checkbox' id='t'></div>")
+    page.evaluate_error = RuntimeError("boom")
+    await ng_click(page, page.locator("input#t").first, telemetry=telemetry)
+    assert len(marks(telemetry, DISPATCH_SKIPPED_MARK)) == 1
+
+
+async def test_ng_fill_still_propagates_dispatch_failure() -> None:
+    """填值不會導航：那裡的補送失敗是真的異常，不得比照點擊放行。"""
+    page = FakePage("<div><input id='x'></div>")
+    page.evaluate_error = RuntimeError("boom")
+    with pytest.raises(RuntimeError):
+        await ng_fill(page, page.locator("input#x").first, "v")
 
 
 def test_cloudflare_detection_is_case_insensitive() -> None:

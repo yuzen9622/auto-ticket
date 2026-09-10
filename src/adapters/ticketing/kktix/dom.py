@@ -23,7 +23,10 @@ else:
     Page = Any
 
 DEFAULT_PROBE_TIMEOUT_MS = 2000
+# 補送事件是「順手多做一件事」，不是主要動作：短逾時，失敗也不能拖垮流程。
+DEFAULT_DISPATCH_TIMEOUT_MS = 1000
 SELECTOR_FALLBACK_MARK = "selector_fallback"
+DISPATCH_SKIPPED_MARK = "ng_dispatch_skipped"
 
 _NG_DISPATCH = (
     "el => {"
@@ -76,25 +79,51 @@ async def first_visible(
     return None
 
 
-async def ng_dispatch(locator: Locator) -> None:
+async def ng_dispatch(
+    locator: Locator, *, timeout_ms: int = DEFAULT_DISPATCH_TIMEOUT_MS
+) -> None:
     """補送 `input` / `change` 事件以驅動 AngularJS 的 $digest。"""
-    await locator.evaluate(_NG_DISPATCH)
+    await locator.evaluate(_NG_DISPATCH, timeout=timeout_ms)
 
 
-async def ng_click(page: Page, locator: Locator) -> None:
+async def ng_click(
+    page: Page,
+    locator: Locator,
+    *,
+    telemetry: TimelineRecorder | None = None,
+    timeout_ms: int = DEFAULT_DISPATCH_TIMEOUT_MS,
+) -> None:
     """點擊後補送事件。
 
     加減號按鈕綁 `ng-click`，點擊本身足夠；但條款 checkbox 必須額外 dispatch
     才會更新 model（見 `selectors.py` 的 TERMS_CHECKBOX 註記）。統一補送較安全。
+
+    **補送失敗不得中斷流程**：會導航的按鈕（配位、下一步、確認表單）一點下去
+    元素就從 DOM 消失，此時 evaluate 必然失敗——那代表點擊已經生效，不是錯誤。
+    但也不能無聲吞掉：記一筆 mark，讓「補送沒做到」在研究資料裡看得見。
     """
     await locator.click()
-    await ng_dispatch(locator)
+    try:
+        await ng_dispatch(locator, timeout_ms=timeout_ms)
+    except Exception as exc:
+        if telemetry is not None:
+            telemetry.record(
+                TimelineEventType.MARK,
+                DISPATCH_SKIPPED_MARK,
+                reason=type(exc).__name__,
+            )
 
 
-async def ng_fill(page: Page, locator: Locator, value: str) -> None:
+async def ng_fill(
+    page: Page,
+    locator: Locator,
+    value: str,
+    *,
+    timeout_ms: int = DEFAULT_DISPATCH_TIMEOUT_MS,
+) -> None:
     """填值後補送事件。"""
     await locator.fill(value)
-    await ng_dispatch(locator)
+    await ng_dispatch(locator, timeout_ms=timeout_ms)
 
 
 async def read_input_value(locator: Locator) -> str:
