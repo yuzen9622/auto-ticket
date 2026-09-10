@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""機械化不變式守門員（G1–G19）。
+"""機械化不變式守門員（G1–G27）。
 
 驗證那些靠人眼審查不可靠、但可以機械化證明的專案不變式：凍結模組零改動、
 測試不連外、無過時 API、打包與依賴約束完整，以及每個設計決策的靜態鎖定。
@@ -26,12 +26,15 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 
 # 已交付且凍結的模組與測試：本守門員負責證明它們沒有被順手改動。
 PROTECTED_PATHS = (
-    "src/domain",
     "src/storage",
-    "src/adapters",
+    "src/adapters/ticketing/base.py",
+    "src/adapters/ticketing/kktix/resolver.py",
+    "src/adapters/ticketing/kktix/selectors.py",
     "docs",
     "tests/conftest.py",
-    "tests/fixtures",
+    "tests/fixtures/kktix_event_page.html",
+    "tests/fixtures/kktix_event_page_no_jsonld.html",
+    "tests/fixtures/kktix_events_feed.json",
     "tests/unit/test_domain_models.py",
     "tests/unit/test_kktix_resolver.py",
     "tests/unit/test_storage.py",
@@ -39,7 +42,27 @@ PROTECTED_PATHS = (
     "tests/integration/test_resolve_to_persist.py",
 )
 # 本守門員負責的引擎模組與其測試。
-GUARDED_SRC_DIRS = ("src/telemetry", "src/fsm", "src/scheduler", "src/browser")
+GUARDED_SRC_DIRS = (
+    "src/telemetry",
+    "src/fsm",
+    "src/scheduler",
+    "src/browser",
+    "src/strategy",
+    "src/purchase",
+    "src/adapters/payment",
+    "src/adapters/verification",
+)
+# 納管的單檔（不整個目錄納管，避免把既有未清理的模組一起拉進門檻）。
+GUARDED_SRC_FILES = (
+    "src/adapters/ticketing/kktix/adapter.py",
+    "src/adapters/ticketing/kktix/dom.py",
+)
+ADAPTER_PATH = "src/adapters/ticketing/kktix/adapter.py"
+MOCK_PAYMENT_PATH = "src/adapters/payment/mock.py"
+AUTOMATED_PAYMENT_PATH = "src/adapters/payment/automated_credit_card.py"
+ORCHESTRATOR_PATH = "src/purchase/orchestrator.py"
+PAYMENT_BASE_PATH = "src/adapters/payment/base.py"
+LIVE_DIR = "tests/live"
 GUARDED_TEST_FILES = (
     "tests/netguard.py",
     "tests/unit/test_netguard.py",
@@ -50,7 +73,17 @@ GUARDED_TEST_FILES = (
     "tests/unit/test_cdp_rtt.py",
     "tests/unit/test_browser_manager.py",
     "tests/integration/test_scheduler_to_fsm.py",
+    "tests/fake_page.py",
+    "tests/unit/test_ticket_strategy.py",
+    "tests/unit/test_seat_strategy.py",
+    "tests/unit/test_verification.py",
+    "tests/unit/test_payment.py",
+    "tests/unit/test_kktix_adapter.py",
+    "tests/unit/test_purchase_orchestrator.py",
+    "tests/integration/test_purchase_flow.py",
 )
+# 沒有測試函式的測試輔助模組：不適用「必須掛 netguard fixture」這條。
+TEST_HELPERS_WITHOUT_TESTS = ("tests/netguard.py", "tests/fake_page.py")
 # [FROZEN-2] 白名單放行／阻擋案例本來就必須寫出真實網域字面值，改用較窄規則把關。
 G2_LITERAL_EXEMPT = ("tests/unit/test_clock_sync.py",)
 RESERVED_TEST_HOST_SUFFIXES = (
@@ -86,6 +119,21 @@ def iter_src_files() -> Iterator[str]:
     for d in GUARDED_SRC_DIRS:
         for p in sorted((REPO_ROOT / d).rglob("*.py")):
             yield str(p.relative_to(REPO_ROOT))
+    yield from GUARDED_SRC_FILES
+
+
+def iter_live_files() -> Iterator[str]:
+    for p in sorted((REPO_ROOT / LIVE_DIR).rglob("*.py")):
+        yield str(p.relative_to(REPO_ROOT))
+
+
+def is_docstring(module: ast.Module, node: ast.Constant) -> bool:
+    for parent in ast.walk(module):
+        if isinstance(parent, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+            body = getattr(parent, "body", [])
+            if body and isinstance(body[0], ast.Expr) and body[0].value is node:
+                return True
+    return False
 
 
 def iter_script_files() -> Iterator[str]:
@@ -224,7 +272,8 @@ def g7_packaging_and_deps() -> None:
     src = read("pyproject.toml")
     if 'sources = ["src"]' not in src:
         fail("G7", "pyproject.toml 缺少 [tool.hatch.build.targets.wheel].sources = [\"src\"]")
-    for pkg in ("src/domain", "src/storage", "src/adapters", *GUARDED_SRC_DIRS):
+    for pkg in ("src/domain", "src/storage", "src/adapters", "src/telemetry", "src/fsm",
+                "src/scheduler", "src/browser", "src/strategy", "src/purchase"):
         if f'"{pkg}"' not in src:
             fail("G7", f"pyproject.toml wheel packages 缺少 {pkg!r}")
     existing_constraints = (
@@ -249,7 +298,7 @@ def g7_packaging_and_deps() -> None:
 # ---------------------------------------------------------------- G8
 def g8_netguard_mounted() -> None:
     for rel in GUARDED_TEST_FILES:
-        if rel == "tests/netguard.py":
+        if rel in TEST_HELPERS_WITHOUT_TESTS:
             continue
         tree = parse(rel)
         imported = any(
@@ -504,6 +553,247 @@ def g19_readiness_single_owner() -> None:
             fail("G19", f"{rel} {marker!r} 發射點有 {lits.count(marker)} 個（必須恰一個 owner）")
 
 
+
+# --------------------------------------------------------------- G20
+# 領域模型解凍後只准新增：既有欄位的名稱與型別必須逐字保留。
+# 以「黃金清單」比對而非與 git HEAD 比對——後者在提交後會自動變成恆真。
+DOMAIN_FROZEN_FIELDS = {
+    "src/domain/task.py": {
+        "CreditCardProfile": {
+            "card_number": "str", "expiry_month": "str", "expiry_year": "str",
+            "cvv": "str", "cardholder_name": "str",
+        },
+        "UserContactProfile": {"name": "str", "phone": "str", "email": "str"},
+        "PurchaseTaskSpec": {
+            "task_id": "str", "event_title": "str", "event_url": "str",
+            "sale_start_at": "UtcDatetime", "ticket_preference": "TicketPreference",
+            "contact_profile": "UserContactProfile", "payment_method": "PaymentMethod",
+            "payment_profile": "CreditCardProfile | None", "max_retries": "int",
+            "timeout_seconds": "int",
+        },
+        "PurchaseTaskRecord": {
+            "id": "str", "event_id": "str | None", "status": "TaskStatus",
+            "spec": "dict[str, Any]", "scheduled_at": "UtcDatetime | None",
+            "started_at": "UtcDatetime | None", "finished_at": "UtcDatetime | None",
+            "error_message": "str | None", "created_at": "UtcDatetime",
+        },
+    },
+    "src/domain/preference.py": {
+        "TicketPriority": {"price": "int", "ticket_name_pattern": "str | None", "priority": "int"},
+        "SeatPreference": {
+            "adjacent": "bool",
+            "strategy": "Literal['best_available', 'same_zone', 'specific_zone']",
+            "preferred_zones": "list[str]",
+        },
+        "TicketPreference": {
+            "quantity": "int", "priorities": "list[TicketPriority]",
+            "seat_preference": "SeatPreference", "fallback_to_any": "bool",
+        },
+    },
+}
+
+
+def class_fields(tree: ast.Module) -> dict[str, dict[str, str]]:
+    result: dict[str, dict[str, str]] = {}
+    for node in tree.body:
+        if not isinstance(node, ast.ClassDef):
+            continue
+        result[node.name] = {
+            stmt.target.id: ast.unparse(stmt.annotation)
+            for stmt in node.body
+            if isinstance(stmt, ast.AnnAssign) and isinstance(stmt.target, ast.Name)
+        }
+    return result
+
+
+def g20_domain_additive_only() -> None:
+    for rel, expected_classes in DOMAIN_FROZEN_FIELDS.items():
+        actual = class_fields(parse(rel))
+        for cls, expected in expected_classes.items():
+            if cls not in actual:
+                fail("G20", f"{rel} 移除了既有領域類別 {cls!r}")
+                continue
+            for name, annotation in expected.items():
+                if name not in actual[cls]:
+                    fail("G20", f"{rel}:{cls} 移除了既有欄位 {name!r}")
+                elif actual[cls][name] != annotation:
+                    fail(
+                        "G20",
+                        f"{rel}:{cls}.{name} 型別由 {annotation!r} 改為 {actual[cls][name]!r}",
+                    )
+
+
+# --------------------------------------------------------------- G21
+def g21_netguard_scope() -> None:
+    """納管的離線測試檔一律掛 netguard；tests/live 一律不掛（那是唯一允許連外處）。"""
+    for rel in GUARDED_TEST_FILES:
+        if rel in TEST_HELPERS_WITHOUT_TESTS:
+            continue
+        if "netguard_autouse" not in read(rel):
+            fail("G21", f"{rel} 未掛載 netguard autouse fixture")
+    for rel in iter_live_files():
+        if "netguard" in read(rel):
+            fail("G21", f"{rel} 掛載了 netguard；實站套件必須能連外")
+
+
+# --------------------------------------------------------------- G22
+SELECTOR_LITERAL_PREFIXES = (".", "#", "[")
+
+
+def g22_no_selector_literals_in_adapter() -> None:
+    tree = parse(ADAPTER_PATH)
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Constant) and isinstance(node.value, str)):
+            continue
+        if is_docstring(tree, node):
+            continue
+        if node.value.startswith(SELECTOR_LITERAL_PREFIXES):
+            fail("G22", f"{ADAPTER_PATH}:{node.lineno} 出現選擇器字面值 {node.value!r}")
+    uses_registry = any(
+        isinstance(n, ast.Attribute)
+        and isinstance(n.value, ast.Name)
+        and n.value.id == "KKTIXSelectors"
+        for n in ast.walk(tree)
+    )
+    if not uses_registry:
+        fail("G22", f"{ADAPTER_PATH} 未經 KKTIXSelectors 取用任何選擇器")
+
+
+# --------------------------------------------------------------- G23
+def g23_mock_never_touches_submit_button() -> None:
+    """[FROZEN-3] Mock provider 連「確認付款」按鈕都不得引用，遑論點擊。"""
+    tree = parse(MOCK_PAYMENT_PATH)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Attribute) and node.attr == "BTN_CONFIRM_PAYMENT":
+            fail("G23", f"{MOCK_PAYMENT_PATH}:{node.lineno} 引用了送出付款按鈕")
+        if isinstance(node, ast.Constant) and node.value == "BTN_CONFIRM_PAYMENT":
+            fail("G23", f"{MOCK_PAYMENT_PATH}:{node.lineno} 以字串引用送出付款按鈕")
+
+
+# --------------------------------------------------------------- G24
+def enum_members(rel: str, class_name: str) -> set[str]:
+    for node in parse(rel).body:
+        if isinstance(node, ast.ClassDef) and node.name == class_name:
+            return {
+                stmt.targets[0].id
+                for stmt in node.body
+                if isinstance(stmt, ast.Assign)
+                and len(stmt.targets) == 1
+                and isinstance(stmt.targets[0], ast.Name)
+            }
+    return set()
+
+
+def g24_payment_mapping_is_a_single_table() -> None:
+    tree = parse(ORCHESTRATOR_PATH)
+    mapping: ast.Dict | None = None
+    for node in tree.body:
+        if not isinstance(node, ast.AnnAssign | ast.Assign):
+            continue
+        target = node.target if isinstance(node, ast.AnnAssign) else node.targets[0]
+        if not (isinstance(target, ast.Name) and target.id == "PAYMENT_OUTCOME_EVENTS"):
+            continue
+        for child in ast.walk(node):
+            if isinstance(child, ast.Dict):
+                mapping = child
+                break
+    if mapping is None:
+        fail("G24", f"{ORCHESTRATOR_PATH} 找不到 PAYMENT_OUTCOME_EVENTS 的 dict 常數")
+        return
+    keys: set[str] = set()
+    for key in mapping.keys:
+        if isinstance(key, ast.Attribute) and isinstance(key.value, ast.Name) and key.value.id == "PaymentOutcome":
+            keys.add(key.attr)
+        else:
+            fail("G24", f"{ORCHESTRATOR_PATH} 對應表出現非 PaymentOutcome 的鍵")
+    expected = enum_members(PAYMENT_BASE_PATH, "PaymentOutcome")
+    if keys != expected:
+        fail("G24", f"付款對應表未涵蓋全部結果：缺 {sorted(expected - keys)}，多 {sorted(keys - expected)}")
+
+
+# --------------------------------------------------------------- G25
+CARD_SECRET_ATTRS = {"card_number", "cvv"}
+SINK_NAME_PARTS = ("log", "logger", "print")
+
+
+def _leaks_card_secret(node: ast.AST) -> str | None:
+    for child in ast.walk(node):
+        if isinstance(child, ast.Attribute) and child.attr in CARD_SECRET_ATTRS:
+            return child.attr
+        if isinstance(child, ast.keyword) and child.arg in CARD_SECRET_ATTRS:
+            return str(child.arg)
+    return None
+
+
+def g25_no_card_secrets_in_sinks() -> None:
+    for rel in iter_src_files():
+        tree = parse(rel)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Raise) and node.exc is not None:
+                leak = _leaks_card_secret(node.exc)
+                if leak:
+                    fail("G25", f"{rel}:{node.lineno} 例外訊息帶入卡片機密 {leak!r}")
+                continue
+            if not isinstance(node, ast.Call):
+                continue
+            name = call_name(node)
+            is_sink = name.startswith("telemetry.record") or ".record" in name or any(
+                part in name.lower() for part in SINK_NAME_PARTS
+            )
+            if not is_sink:
+                continue
+            for arg in list(node.args) + list(node.keywords):
+                leak = _leaks_card_secret(arg)
+                if leak:
+                    fail("G25", f"{rel}:{node.lineno} 對 {name!r} 傳入卡片機密 {leak!r}")
+    automated = read(AUTOMATED_PAYMENT_PATH)
+    for switch in ("allow_real_payment", "AUTO_TICKET_ENABLE_REAL_PAYMENT"):
+        if switch not in automated:
+            fail("G25", f"{AUTOMATED_PAYMENT_PATH} 缺少真實刷卡開關 {switch!r}")
+
+
+# --------------------------------------------------------------- G26
+LIVE_FORBIDDEN_CALLS = ("submit_order", "execute_payment", "pay", "confirmOrder")
+LIVE_BANNED_MARKS = {"pytest.mark.skip", "pytest.mark.skipif", "pytest.mark.xfail"}
+
+
+def g26_live_suite_is_read_only() -> None:
+    """[FROZEN-4] 實站套件預設不跑靠 ignore，不靠跳過標記；且一律不得送出。"""
+    if "--ignore=tests/live" not in read("pyproject.toml"):
+        fail("G26", "pyproject.toml 的 addopts 缺少 --ignore=tests/live")
+    for rel in iter_live_files():
+        tree = parse(rel)
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                for deco in node.decorator_list:
+                    target = deco.func if isinstance(deco, ast.Call) else deco
+                    if ast.unparse(target) in LIVE_BANNED_MARKS:
+                        fail("G26", f"{rel}:{node.lineno} 用跳過標記代替 --live 旗標")
+            if isinstance(node, ast.Call):
+                name = call_name(node)
+                if name.rsplit(".", 1)[-1] in LIVE_FORBIDDEN_CALLS:
+                    fail("G26", f"{rel}:{node.lineno} 呼叫了送出動作 {name!r}")
+
+
+# --------------------------------------------------------------- G27
+def g27_strategy_layer_is_pure() -> None:
+    """決策層不得接觸 DOM：策略只吃快照，這是它能被大量決定性測試的前提。"""
+    for p in sorted((REPO_ROOT / "src/strategy").rglob("*.py")):
+        rel = str(p.relative_to(REPO_ROOT))
+        tree = parse(rel)
+        for node in ast.walk(tree):
+            names: list[str] = []
+            if isinstance(node, ast.Import):
+                names = [a.name for a in node.names]
+            elif isinstance(node, ast.ImportFrom):
+                names = [node.module or ""]
+            for n in names:
+                if n == "playwright" or n.startswith("playwright."):
+                    fail("G27", f"{rel}:{node.lineno} 決策層 import 了 playwright")
+            if isinstance(node, ast.Name) and node.id in {"Page", "Locator"}:
+                fail("G27", f"{rel}:{node.lineno} 決策層出現 DOM 型別 {node.id!r}")
+
+
 GATES = (
     g1_frozen_paths_untouched,
     g2_no_real_hosts_in_tests,
@@ -523,6 +813,14 @@ GATES = (
     g17_stage_serialized,
     g18_screenshot_hook_threadsafe,
     g19_readiness_single_owner,
+    g20_domain_additive_only,
+    g21_netguard_scope,
+    g22_no_selector_literals_in_adapter,
+    g23_mock_never_touches_submit_button,
+    g24_payment_mapping_is_a_single_table,
+    g25_no_card_secrets_in_sinks,
+    g26_live_suite_is_read_only,
+    g27_strategy_layer_is_pure,
 )
 
 
