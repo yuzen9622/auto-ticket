@@ -14,3 +14,7 @@ data/
 .DS_Store
 
 .pi/
+
+graphify-out/
+out/
+task.json
