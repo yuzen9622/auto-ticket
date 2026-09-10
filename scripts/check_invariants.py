@@ -1,11 +1,14 @@
 #!/usr/bin/env python
-"""Batch 2 機械化守門員（G1–G19）。
+"""機械化不變式守門員（G1–G19）。
 
-每條 gate 的 scope 都刻意收窄：只看 Batch 2 自己新增的原始碼與測試，
-以及 Batch 1 的保護清單。**嚴禁**擴大成全 repo 掃描——Batch 2 的新檔、
-`pyproject.toml`、`requirements.txt`、`uv.lock` 都是預期變更，全域比對必然假紅。
+驗證那些靠人眼審查不可靠、但可以機械化證明的專案不變式：凍結模組零改動、
+測試不連外、無過時 API、打包與依賴約束完整，以及每個設計決策的靜態鎖定。
 
-用法：`uv run --offline python scripts/check_batch2_guards.py`
+每條 gate 的 scope 都刻意收窄，只看它負責的那一小塊原始碼或測試。
+**嚴禁**擴大成全 repo 掃描——新檔與 `pyproject.toml` / `requirements.txt` / `uv.lock`
+的變更都屬預期範圍，全域比對必然假紅。
+
+用法：`uv run --offline python scripts/check_invariants.py`
 """
 
 from __future__ import annotations
@@ -21,6 +24,7 @@ from urllib.parse import urlsplit
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
+# 已交付且凍結的模組與測試：本守門員負責證明它們沒有被順手改動。
 PROTECTED_PATHS = (
     "src/domain",
     "src/storage",
@@ -34,8 +38,9 @@ PROTECTED_PATHS = (
     "tests/unit/test_timezone_invariant.py",
     "tests/integration/test_resolve_to_persist.py",
 )
-NEW_SRC_DIRS = ("src/telemetry", "src/fsm", "src/scheduler", "src/browser")
-NEW_TEST_FILES = (
+# 本守門員負責的引擎模組與其測試。
+GUARDED_SRC_DIRS = ("src/telemetry", "src/fsm", "src/scheduler", "src/browser")
+GUARDED_TEST_FILES = (
     "tests/netguard.py",
     "tests/unit/test_netguard.py",
     "tests/unit/test_timeline.py",
@@ -78,7 +83,7 @@ def parse(rel: str) -> ast.Module:
 
 
 def iter_src_files() -> Iterator[str]:
-    for d in NEW_SRC_DIRS:
+    for d in GUARDED_SRC_DIRS:
         for p in sorted((REPO_ROOT / d).rglob("*.py")):
             yield str(p.relative_to(REPO_ROOT))
 
@@ -112,25 +117,25 @@ def method_of(tree: ast.AST, class_name: str, method: str) -> ast.FunctionDef | 
 
 
 # ---------------------------------------------------------------- G1
-def g1_batch1_untouched() -> None:
+def g1_frozen_paths_untouched() -> None:
     paths = [p for p in PROTECTED_PATHS if (REPO_ROOT / p).exists()]
     diff = subprocess.run(
         ["git", "diff", "--exit-code", "HEAD", "--", *paths],
         cwd=REPO_ROOT, capture_output=True, text=True,
     )
     if diff.returncode != 0:
-        fail("G1", f"Batch 1 保護清單有未提交變更:\n{diff.stdout[:2000]}")
+        fail("G1", f"凍結模組有未提交變更:\n{diff.stdout[:2000]}")
     status = subprocess.run(
         ["git", "status", "--porcelain", "--", *paths],
         cwd=REPO_ROOT, capture_output=True, text=True,
     )
     if status.stdout.strip():
-        fail("G1", f"Batch 1 保護清單狀態不乾淨:\n{status.stdout}")
+        fail("G1", f"凍結模組狀態不乾淨:\n{status.stdout}")
 
 
 # ---------------------------------------------------------------- G2
 def g2_no_real_hosts_in_tests() -> None:
-    for rel in NEW_TEST_FILES:
+    for rel in GUARDED_TEST_FILES:
         src = read(rel)
         if FORBIDDEN_NTP_HOST in src:
             fail("G2", f"{rel} 出現真實 NTP 主機字面值 {FORBIDDEN_NTP_HOST!r}")
@@ -161,7 +166,7 @@ def g2_no_real_hosts_in_tests() -> None:
 # ---------------------------------------------------------------- G3
 def g3_no_real_playwright_in_tests() -> None:
     banned = ("async_playwright", "sync_playwright")
-    for rel in NEW_TEST_FILES:
+    for rel in GUARDED_TEST_FILES:
         tree = parse(rel)
         for node in ast.walk(tree):
             if not isinstance(node, ast.Call):
@@ -173,7 +178,7 @@ def g3_no_real_playwright_in_tests() -> None:
 
 # ---------------------------------------------------------------- G4
 def g4_no_deprecated_api() -> None:
-    targets = list(iter_src_files()) + list(NEW_TEST_FILES) + list(iter_script_files())
+    targets = list(iter_src_files()) + list(GUARDED_TEST_FILES) + list(iter_script_files())
     for rel in targets:
         tree = parse(rel)
         for node in ast.walk(tree):
@@ -186,7 +191,7 @@ def g4_no_deprecated_api() -> None:
 # ---------------------------------------------------------------- G5
 def g5_no_skipped_tests() -> None:
     banned = {"pytest.mark.skip", "pytest.mark.skipif", "pytest.mark.xfail"}
-    for rel in NEW_TEST_FILES:
+    for rel in GUARDED_TEST_FILES:
         tree = parse(rel)
         for node in ast.walk(tree):
             if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
@@ -219,10 +224,10 @@ def g7_packaging_and_deps() -> None:
     src = read("pyproject.toml")
     if 'sources = ["src"]' not in src:
         fail("G7", "pyproject.toml 缺少 [tool.hatch.build.targets.wheel].sources = [\"src\"]")
-    for pkg in ("src/domain", "src/storage", "src/adapters", *NEW_SRC_DIRS):
+    for pkg in ("src/domain", "src/storage", "src/adapters", *GUARDED_SRC_DIRS):
         if f'"{pkg}"' not in src:
             fail("G7", f"pyproject.toml wheel packages 缺少 {pkg!r}")
-    batch1_constraints = (
+    existing_constraints = (
         '"pydantic>=2.12"',
         '"sqlalchemy[asyncio]>=2.0.44"',
         '"aiosqlite>=0.21"',
@@ -230,20 +235,20 @@ def g7_packaging_and_deps() -> None:
         '"httpx>=0.28"',
         '"beautifulsoup4>=4.14"',
     )
-    for c in batch1_constraints:
+    for c in existing_constraints:
         if c not in src:
-            fail("G7", f"pyproject.toml 遺失或放寬了 Batch 1 依賴約束 {c}")
+            fail("G7", f"pyproject.toml 遺失或放寬了既有依賴約束 {c}")
     for c in ('"apscheduler>=3.10.4"', '"ntplib>=0.4.0"', '"playwright>=1.40.0"',
               '"python-statemachine>=3.2.0"', '"structlog>=24.1.0"'):
         if c not in src:
-            fail("G7", f"pyproject.toml 缺少 Batch 2 依賴 {c}")
+            fail("G7", f"pyproject.toml 缺少引擎依賴 {c}")
     if '"ruff>=' not in src:
         fail("G7", "pyproject.toml 的 dev 依賴缺少 ruff（驗收 #20/#34 需要）")
 
 
 # ---------------------------------------------------------------- G8
 def g8_netguard_mounted() -> None:
-    for rel in NEW_TEST_FILES:
+    for rel in GUARDED_TEST_FILES:
         if rel == "tests/netguard.py":
             continue
         tree = parse(rel)
@@ -500,7 +505,7 @@ def g19_readiness_single_owner() -> None:
 
 
 GATES = (
-    g1_batch1_untouched,
+    g1_frozen_paths_untouched,
     g2_no_real_hosts_in_tests,
     g3_no_real_playwright_in_tests,
     g4_no_deprecated_api,
@@ -528,11 +533,11 @@ def main() -> int:
         except FileNotFoundError as exc:
             fail(gate.__name__, f"缺少檔案: {exc}")
     if _failures:
-        print("FAILED batch-2 guards:", file=sys.stderr)
+        print("FAILED invariant guards:", file=sys.stderr)
         for f in _failures:
             print(f"  - {f}", file=sys.stderr)
         return 1
-    print("OK: all batch-2 guards passed")
+    print("OK: all invariant guards passed")
     return 0
 
 

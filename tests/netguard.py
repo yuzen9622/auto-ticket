@@ -4,9 +4,9 @@
 DNS（`getaddrinfo` / `gethostbyname` / `gethostbyname_ex`）。針對 AF_INET / AF_INET6
 拋出 NetworkAccessError；放行 AF_UNIX 等本機通信與 loopback 名稱解析。
 
-**適用範圍（不得誇大宣稱）**：Batch 2 新增的 9 個測試檔各自以 `netguard_autouse`
-fixture 掛載（G8 機械化驗證）。`tests/conftest.py` 屬 Batch 1 保護檔案，本批**不得**
-為了全域註冊而修改它，因此本模組不宣稱涵蓋 Batch 1 既有測試（那些測試本來就不連外）。
+**適用範圍（不得誇大宣稱）**：掛載方式是每個測試檔自行 import `netguard_autouse`
+fixture（由 G8 機械化驗證涵蓋完整）。`tests/conftest.py` 屬凍結檔案、不得為了全域註冊
+而修改，因此本模組**不宣稱**涵蓋未掛載的既有測試（那些測試本來就不連外）。
 """
 from __future__ import annotations
 
@@ -130,10 +130,10 @@ def no_network() -> Iterator[None]:
 
 @pytest.fixture(autouse=True)
 def netguard_autouse() -> Iterator[None]:
-    """Batch 2 每個測試檔以 `from tests.netguard import netguard_autouse  # noqa: F401` 掛載。
+    """每個測試檔以 `from tests.netguard import netguard_autouse  # noqa: F401` 掛載。
 
-    `tests/` 有 `__init__.py`（既有 Batch 1 結構），故 `tests.netguard` 為合法可 import 的
-    套件路徑，pytest 與 `python -c` 兩種入口皆可解析。
+    `tests/` 有 `__init__.py`，故 `tests.netguard` 為合法可 import 的套件路徑，
+    pytest 與 `python -c` 兩種入口皆可解析。
     """
     with no_network():
         yield

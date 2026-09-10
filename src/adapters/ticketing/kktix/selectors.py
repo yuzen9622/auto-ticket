@@ -23,7 +23,7 @@ class KKTIXSelectors:
     EVENT_TICKET_TABLE_ROWS = "div.tickets table tbody tr"
 
     # -------------------------------------------------------------------------
-    # 1b. Batch 1 主頁解析專用（offline metadata parsing）
+    # 1b. 主頁 metadata 離線解析專用（offline metadata parsing）
     # -------------------------------------------------------------------------
     # JSON-LD 結構化資料（event_start_at 的主要來源）
     EVENT_JSONLD_SCRIPT = "script[type='application/ld+json']"

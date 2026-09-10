@@ -14,7 +14,10 @@ else:
 
 
 class TicketingAdapter(ABC):
-    """Platform-specific purchase flow port (implemented from Batch 3 onward)."""
+    """Platform-specific purchase flow port.
+
+    Concrete implementations live under ``adapters/ticketing/<platform>/``.
+    """
 
     @abstractmethod
     async def navigate_to_event(self, page: Page, event_url: str) -> bool:
