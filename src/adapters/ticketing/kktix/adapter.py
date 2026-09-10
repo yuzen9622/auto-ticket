@@ -62,6 +62,10 @@ ALL_TICKET_REASONS = frozenset({
 })
 
 CLOUDFLARE_MARK = "cloudflare_challenge"
+# KKTIX 頁面帶著分析／廣告等長尾資源，`load` 事件常常遲遲不觸發。
+# 搶票要的是「DOM 可以操作了」，不是「所有資源都下載完了」——等 load 只會白等。
+NAVIGATION_WAIT_UNTIL = "domcontentloaded"
+DEFAULT_NAVIGATION_TIMEOUT_MS = 30000
 SOLD_OUT_MARKERS = ("售完", "售罄", "完售", "sold out", "已結束", "已額滿")
 REMAINING_RE = re.compile(r"(?:剩餘|剩下|remaining)\D{0,4}(\d+)", re.IGNORECASE)
 DIGITS_RE = re.compile(r"\d+")
@@ -93,6 +97,7 @@ class KKTIXAdapter(TicketingAdapter):
         verification: VerificationProvider | None = None,
         attendees: Sequence[AttendeeProfile] = (),
         timeout_ms: int = 5000,
+        navigation_timeout_ms: int = DEFAULT_NAVIGATION_TIMEOUT_MS,
         screenshot: Callable[[str], Awaitable[Any]] | None = None,
     ) -> None:
         self.telemetry = telemetry
@@ -100,6 +105,7 @@ class KKTIXAdapter(TicketingAdapter):
         self.verification = verification
         self.attendees = tuple(attendees)
         self.timeout_ms = timeout_ms
+        self.navigation_timeout_ms = navigation_timeout_ms
         self.screenshot = screenshot
         self.last_ticket_decision: TicketDecision | None = None
         self.last_payment_result: PaymentResult | None = None
@@ -158,7 +164,11 @@ class KKTIXAdapter(TicketingAdapter):
     # ------------------------------------------------------- 1. 導航與開賣偵測
 
     async def navigate_to_event(self, page: Page, event_url: str) -> bool:
-        await page.goto(event_url)
+        await page.goto(
+            event_url,
+            wait_until=NAVIGATION_WAIT_UNTIL,
+            timeout=self.navigation_timeout_ms,
+        )
         await self._guard_cloudflare(page, "navigate")
         self.telemetry.record(
             TimelineEventType.MARK, "navigated", url=event_url

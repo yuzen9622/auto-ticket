@@ -195,6 +195,24 @@ async def test_navigate_to_event_visits_url(telemetry: TimelineRecorder) -> None
     assert marks(telemetry, "navigated")
 
 
+async def test_navigation_does_not_wait_for_the_load_event(telemetry: TimelineRecorder) -> None:
+    """KKTIX 的長尾資源會讓 load 遲遲不觸發；等它就是白等滿逾時後失敗。"""
+    page = FakePage.from_fixture("kktix_registration_new.html")
+    await make_adapter(telemetry).navigate_to_event(page, "https://reg.test/e/1")
+    assert page.goto_kwargs[0]["wait_until"] == "domcontentloaded"
+
+
+async def test_navigation_timeout_is_separate_from_element_timeout(
+    telemetry: TimelineRecorder,
+) -> None:
+    """開頁比找元素慢得多：兩者共用一個逾時會讓真站導航必然失敗。"""
+    page = FakePage.from_fixture("kktix_registration_new.html")
+    adapter = make_adapter(telemetry)
+    await adapter.navigate_to_event(page, "https://reg.test/e/1")
+    assert adapter.timeout_ms == 20
+    assert page.goto_kwargs[0]["timeout"] == adapter.navigation_timeout_ms == 30000
+
+
 async def test_cloudflare_challenge_aborts_and_screenshots(telemetry: TimelineRecorder) -> None:
     shots: list[str] = []
 

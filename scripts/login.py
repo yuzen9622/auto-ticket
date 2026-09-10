@@ -27,6 +27,9 @@ from browser.context_factory import (  # noqa: E402
 )
 
 DEFAULT_URL = "https://kktix.com/users/sign_in"
+# KKTIX 的 `load` 事件常常因為長尾資源遲遲不觸發；等它只會白等 30 秒。
+NAVIGATION_WAIT_UNTIL = "domcontentloaded"
+NAVIGATION_TIMEOUT_MS = 30000
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -63,7 +66,13 @@ async def run(args: argparse.Namespace) -> int:
             str(profile.user_data_dir), **options
         )
         page = context.pages[0] if context.pages else await context.new_page()
-        await page.goto(args.url)
+        try:
+            await page.goto(
+                args.url, wait_until=NAVIGATION_WAIT_UNTIL, timeout=NAVIGATION_TIMEOUT_MS
+            )
+        except Exception as exc:
+            # 這支腳本的目的是把瀏覽器開起來讓人登入；開頁不順不該讓人連登都登不了。
+            print(f"[warn] 自動開啟起始頁失敗（{type(exc).__name__}）；請在瀏覽器網址列自行前往。")
         print("瀏覽器已開啟。請在裡面完成登入，然後回到這裡按 Enter。")
         await asyncio.to_thread(input, "登入完成後按 Enter> ")
         count, has_session = summarize_cookies(await context.cookies())

@@ -96,6 +96,7 @@ class FakePage:
         self.fills: list[tuple[str, str]] = []
         self.dispatches: list[tuple[str, str]] = []
         self.goto_urls: list[str] = []
+        self.goto_kwargs: list[dict[str, Any]] = []
         self.load_states: list[str] = []
         self.screenshots: list[str] = []
         self.fail_load_state = False
@@ -166,8 +167,11 @@ class FakePage:
             candidate["value"] = str(max(0, current + delta))
             return
 
-    async def goto(self, url: str) -> None:
+    async def goto(
+        self, url: str, *, wait_until: str | None = None, timeout: float | None = None
+    ) -> None:
         self.goto_urls.append(url)
+        self.goto_kwargs.append({"wait_until": wait_until, "timeout": timeout})
         self.url = url
 
     async def content(self) -> str:
