@@ -272,6 +272,7 @@ async def run(args: argparse.Namespace) -> int:
                 "final_state": report.final_state,
                 "sale_time_error_ms": report.sale_time_error_ms,
                 "ticket_trace": list(report.ticket_trace),
+                "ticket_failure_reasons": list(report.ticket_failure_reasons),
                 "payment_outcome": report.payment.outcome.value
                 if report.payment
                 else None,

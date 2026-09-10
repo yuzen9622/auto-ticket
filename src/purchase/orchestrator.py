@@ -14,7 +14,7 @@ from types import MappingProxyType
 from typing import Any
 
 from adapters.payment.base import PaymentOutcome, PaymentProvider, PaymentResult
-from adapters.ticketing.kktix.adapter import KKTIXPageKind
+from adapters.ticketing.kktix.adapter import REASON_SELECTED, KKTIXPageKind
 from adapters.verification.base import VerificationProvider
 from browser.context_factory import sanitize_path_component
 from browser.manager import PlaywrightManager
@@ -41,15 +41,17 @@ from telemetry.timeline import TimelineEventType, TimelineRecorder
 # 必須涵蓋 PaymentOutcome 全部成員，且**不得**散落成 if/else（由守門機械化比對）。
 # CHECKPOINT_REACHED 在研究語意上等同「成功抵達付款檢查點」，因此送 payment_success；
 # THREE_DS_REQUIRED 在本階段尚無互動通道，一律視為未完成。
-PAYMENT_OUTCOME_EVENTS: Mapping[PaymentOutcome, str] = MappingProxyType({
-    PaymentOutcome.SUBMITTED: "payment_success",
-    PaymentOutcome.CHECKPOINT_REACHED: "payment_success",
-    PaymentOutcome.DECLINED: "payment_declined",
-    PaymentOutcome.THREE_DS_REQUIRED: "payment_declined",
-    PaymentOutcome.THREE_DS_FAILED: "payment_declined",
-    PaymentOutcome.TIMEOUT: "payment_declined",
-    PaymentOutcome.FAILED: "payment_declined",
-})
+PAYMENT_OUTCOME_EVENTS: Mapping[PaymentOutcome, str] = MappingProxyType(
+    {
+        PaymentOutcome.SUBMITTED: "payment_success",
+        PaymentOutcome.CHECKPOINT_REACHED: "payment_success",
+        PaymentOutcome.DECLINED: "payment_declined",
+        PaymentOutcome.THREE_DS_REQUIRED: "payment_declined",
+        PaymentOutcome.THREE_DS_FAILED: "payment_declined",
+        PaymentOutcome.TIMEOUT: "payment_declined",
+        PaymentOutcome.FAILED: "payment_declined",
+    }
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -58,6 +60,8 @@ class PurchaseReport:
     final_state: str
     sale_time_error_ms: float | None
     ticket_trace: tuple[str, ...] = ()
+    ticket_failure_reasons: tuple[str, ...] = ()
+    """選票每次失敗的理由碼。SOLD_OUT 終態可能來自選不到票以外的原因，必須如實揭露。"""
     payment: PaymentResult | None = None
     screenshots: tuple[str, ...] = ()
     screenshots_expected: int = 0
@@ -74,6 +78,7 @@ class _Runtime:
     screenshot_hook: Any | None = None
     error: str | None = None
     events_sent: list[str] = field(default_factory=list)
+    ticket_failures: list[str] = field(default_factory=list)
     hooked_transitions: int = 0
 
 
@@ -102,9 +107,13 @@ class PurchaseOrchestrator:
         self.adapter = adapter
         self.telemetry = telemetry
         # provider 的唯一真相是 adapter 持有的那一份；此處只作為報告與組裝檢查用。
-        self.payment = payment if payment is not None else getattr(adapter, "payment", None)
+        self.payment = (
+            payment if payment is not None else getattr(adapter, "payment", None)
+        )
         self.verification = (
-            verification if verification is not None else getattr(adapter, "verification", None)
+            verification
+            if verification is not None
+            else getattr(adapter, "verification", None)
         )
         self.timeline_path = timeline_path
         self.detect_timeout_ms = detect_timeout_ms
@@ -171,7 +180,9 @@ class PurchaseOrchestrator:
         await self.browser.start()
         page = await self.browser.new_page()
         self._rt.page = page
-        self._rt.screenshot_hook = self.browser.make_screenshot_hook(self.spec.task_id, page)
+        self._rt.screenshot_hook = self.browser.make_screenshot_hook(
+            self.spec.task_id, page
+        )
         await self.browser.attach_cdp(page)
 
     async def _check_session(self, ctx: WarmupContext) -> None:
@@ -201,7 +212,8 @@ class PurchaseOrchestrator:
                 return
             if self._loop_time() >= deadline:
                 raise PurchaseStepError(
-                    "check_session", f"page not ready before sale: {getattr(kind, 'value', kind)}"
+                    "check_session",
+                    f"page not ready before sale: {getattr(kind, 'value', kind)}",
                 )
             if self.session_gate is not None:
                 await self.session_gate(str(getattr(kind, "value", kind)), attempt)
@@ -247,7 +259,18 @@ class PurchaseOrchestrator:
         fsm = self.fsm
         assert fsm is not None
         while True:
-            ok, reason = await self.adapter.select_tickets(page, self.spec.ticket_preference)
+            ok, reason = await self.adapter.select_tickets(
+                page, self.spec.ticket_preference
+            )
+            if reason != REASON_SELECTED:
+                # 沒有這筆紀錄，「選到票卻卡在勾條款」與「真的售罄」在報告裡長得一模一樣。
+                self._rt.ticket_failures.append(reason)
+                self.telemetry.record(
+                    TimelineEventType.MARK,
+                    "ticket_attempt_failed",
+                    reason=reason,
+                    attempt=len(self._rt.ticket_failures),
+                )
             if reason in FATAL_TICKET_REASONS:
                 raise PurchaseStepError("select_tickets", reason)
             event = ticket_event_for(reason)
@@ -331,8 +354,11 @@ class PurchaseOrchestrator:
         return PurchaseReport(
             task_id=self.spec.task_id,
             final_state=fsm.current_state_id if fsm is not None else "UNKNOWN",
-            sale_time_error_ms=(trigger.drift_us / 1000.0) if trigger is not None else None,
+            sale_time_error_ms=(trigger.drift_us / 1000.0)
+            if trigger is not None
+            else None,
             ticket_trace=decision.trace if decision is not None else (),
+            ticket_failure_reasons=tuple(self._rt.ticket_failures),
             payment=getattr(self.adapter, "last_payment_result", None),
             screenshots=screenshots,
             screenshots_expected=self._rt.hooked_transitions,

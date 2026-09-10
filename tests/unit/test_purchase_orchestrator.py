@@ -68,7 +68,9 @@ class StubScheduler:
     async def start(self) -> None:
         self.started = True
 
-    async def schedule(self, spec: PurchaseTaskSpec, fsm: Any = None, **kwargs: Any) -> StubPlan:
+    async def schedule(
+        self, spec: PurchaseTaskSpec, fsm: Any = None, **kwargs: Any
+    ) -> StubPlan:
         self.fsm = fsm
         for stage in ALL_STAGES:
             drift = TRIGGER_DRIFT_US if stage is WarmupStage.TRIGGER_PURCHASE else 0
@@ -79,12 +81,18 @@ class StubScheduler:
             try:
                 await self.handlers[stage](
                     WarmupContext(
-                        task_id=spec.task_id, stage=stage, planned_local_at=BASE_WALL,
-                        fired_local_at=BASE_WALL, drift_us=drift, time_reference=None,
+                        task_id=spec.task_id,
+                        stage=stage,
+                        planned_local_at=BASE_WALL,
+                        fired_local_at=BASE_WALL,
+                        drift_us=drift,
+                        time_reference=None,
                     )
                 )
             except Exception as exc:
-                self.plan.outcomes.append(StageOutcome(stage, "FAILED", drift, error=exc))
+                self.plan.outcomes.append(
+                    StageOutcome(stage, "FAILED", drift, error=exc)
+                )
                 self.plan.aborted = True
                 if fsm.can_send("abort_failed"):
                     fsm.send("abort_failed")
@@ -94,7 +102,9 @@ class StubScheduler:
                 fsm.send("session_ready")
         return self.plan
 
-    async def wait_until_finished(self, task_id: str, timeout: float | None = None) -> bool:
+    async def wait_until_finished(
+        self, task_id: str, timeout: float | None = None
+    ) -> bool:
         return True
 
 
@@ -125,14 +135,20 @@ class StubAdapter:
         self.payment = "stub-payment-provider"
         self.verification = "stub-verification-provider"
         self.last_ticket_decision = TicketDecision(
-            status="SELECTED", option=None, quantity=2, matched_priority=None,
-            fallback_used=False, trace=("priority[0] -> SELECTED",),
+            status="SELECTED",
+            option=None,
+            quantity=2,
+            matched_priority=None,
+            fallback_used=False,
+            trace=("priority[0] -> SELECTED",),
         )
         self.last_payment_result: PaymentResult | None = None
 
     async def probe_page(self, page: Any, url: str | None = None) -> KKTIXPageKind:
         self.calls.append("probe" if url is None else "probe_navigate")
-        return self.probe_kinds.pop(0) if self.probe_kinds else KKTIXPageKind.REGISTRATION
+        return (
+            self.probe_kinds.pop(0) if self.probe_kinds else KKTIXPageKind.REGISTRATION
+        )
 
     async def navigate_to_event(self, page: Any, url: str) -> bool:
         self.calls.append("navigate")
@@ -144,7 +160,11 @@ class StubAdapter:
 
     async def select_tickets(self, page: Any, preference: Any) -> tuple[bool, str]:
         self.calls.append("select_tickets")
-        return self.ticket_results.pop(0) if self.ticket_results else (False, REASON_SOLD_OUT)
+        return (
+            self.ticket_results.pop(0)
+            if self.ticket_results
+            else (False, REASON_SOLD_OUT)
+        )
 
     async def handle_seat_selection(self, page: Any, preference: Any) -> bool:
         self.calls.append("seat")
@@ -168,12 +188,17 @@ class StubAdapter:
 
     async def execute_payment(self, page: Any, profile: Any) -> PaymentResult:
         self.calls.append("payment")
-        self.last_payment_result = PaymentResult(self.payment_outcome, "stub", {"submitted": False})
+        self.last_payment_result = PaymentResult(
+            self.payment_outcome, "stub", {"submitted": False}
+        )
         return self.last_payment_result
 
 
 def make_spec(
-    task_id: str = "task-orch", *, max_retries: int = 2, prices: tuple[int, ...] = (3200,)
+    task_id: str = "task-orch",
+    *,
+    max_retries: int = 2,
+    prices: tuple[int, ...] = (3200,),
 ) -> PurchaseTaskSpec:
     return PurchaseTaskSpec(
         task_id=task_id,
@@ -182,17 +207,24 @@ def make_spec(
         sale_start_at=BASE_WALL,
         ticket_preference=TicketPreference(
             quantity=2,
-            priorities=[TicketPriority(price=p, priority=i + 1) for i, p in enumerate(prices)],
+            priorities=[
+                TicketPriority(price=p, priority=i + 1) for i, p in enumerate(prices)
+            ],
             seat_preference=SeatPreference(),
         ),
-        contact_profile=UserContactProfile(name="n", phone="0912345678", email="a@b.co"),
+        contact_profile=UserContactProfile(
+            name="n", phone="0912345678", email="a@b.co"
+        ),
         payment_method="mock",
         max_retries=max_retries,
     )
 
 
 def build(
-    tmp_path: Path, adapter: StubAdapter, *, spec: PurchaseTaskSpec | None = None,
+    tmp_path: Path,
+    adapter: StubAdapter,
+    *,
+    spec: PurchaseTaskSpec | None = None,
     timeline_path: Path | None = None,
 ) -> tuple[PurchaseOrchestrator, StubScheduler, FakeBrowser, TimelineRecorder]:
     telemetry = TimelineRecorder()
@@ -225,10 +257,15 @@ def test_ticket_reason_mapping_covers_every_reason_code() -> None:
     """每個理由碼都必須恰好落在「可對應事件」或「致命」其中一邊。"""
     assert set(TICKET_REASON_EVENTS) | FATAL_TICKET_REASONS == set(ALL_TICKET_REASONS)
     assert not set(TICKET_REASON_EVENTS) & FATAL_TICKET_REASONS
-    assert FATAL_TICKET_REASONS == {REASON_NOT_REGISTRATION_PAGE}
-    assert {REASON_SELECTED, REASON_SOLD_OUT, REASON_NO_TICKET_UNITS,
-            REASON_PLUS_BUTTON_MISSING, REASON_QUANTITY_MISMATCH,
-            REASON_TERMS_NOT_ACCEPTED} == set(TICKET_REASON_EVENTS)
+    assert {REASON_NOT_REGISTRATION_PAGE} == FATAL_TICKET_REASONS
+    assert {
+        REASON_SELECTED,
+        REASON_SOLD_OUT,
+        REASON_NO_TICKET_UNITS,
+        REASON_PLUS_BUTTON_MISSING,
+        REASON_QUANTITY_MISMATCH,
+        REASON_TERMS_NOT_ACCEPTED,
+    } == set(TICKET_REASON_EVENTS)
 
 
 # -------------------------------------------------------------------- 流程
@@ -252,8 +289,12 @@ async def test_event_sequence_on_happy_path(tmp_path: Path) -> None:
     orchestrator, _, _, _ = build(tmp_path, StubAdapter())
     await orchestrator.run()
     assert orchestrator._rt.events_sent == [
-        "page_loaded", "ticket_reserved", "seat_confirmed",
-        "form_submitted", "submit_payment", "payment_success",
+        "page_loaded",
+        "ticket_reserved",
+        "seat_confirmed",
+        "form_submitted",
+        "submit_payment",
+        "payment_success",
     ]
 
 
@@ -262,8 +303,15 @@ async def test_adapter_call_order(tmp_path: Path) -> None:
     orchestrator, _, _, _ = build(tmp_path, adapter)
     await orchestrator.run()
     assert adapter.calls == [
-        "probe_navigate", "navigate", "detect_sale", "select_tickets", "seat", "form",
-        "detect_verification", "submit_order", "payment",
+        "probe_navigate",
+        "navigate",
+        "detect_sale",
+        "select_tickets",
+        "seat",
+        "form",
+        "detect_verification",
+        "submit_order",
+        "payment",
     ]
 
 
@@ -272,7 +320,10 @@ async def test_report_carries_sale_time_error_and_trace(tmp_path: Path) -> None:
     report = await orchestrator.run()
     assert report.sale_time_error_ms == TRIGGER_DRIFT_US / 1000.0
     assert report.ticket_trace == ("priority[0] -> SELECTED",)
-    assert report.payment is not None and report.payment.outcome is PaymentOutcome.CHECKPOINT_REACHED
+    assert (
+        report.payment is not None
+        and report.payment.outcome is PaymentOutcome.CHECKPOINT_REACHED
+    )
 
 
 async def test_report_lists_transition_screenshots(tmp_path: Path) -> None:
@@ -303,7 +354,9 @@ async def test_timeline_is_exported_when_path_given(tmp_path: Path) -> None:
     assert json.loads(out.read_text(encoding="utf-8"))
 
 
-async def test_background_screenshots_are_drained_before_reporting(tmp_path: Path) -> None:
+async def test_background_screenshots_are_drained_before_reporting(
+    tmp_path: Path,
+) -> None:
     """截圖是背景任務；不排空就產報告會少算最後幾張。"""
     orchestrator, _, browser, _ = build(tmp_path, StubAdapter())
     await orchestrator.run()
@@ -336,21 +389,58 @@ async def test_sold_out_is_a_terminal_conclusion_not_a_failure(tmp_path: Path) -
     assert "seat" not in adapter.calls
 
 
+async def test_sold_out_report_discloses_the_real_failure_reason(
+    tmp_path: Path,
+) -> None:
+    """卡在勾條款而收在 SOLD_OUT，不得與「真的售罄」長得一模一樣。"""
+    adapter = StubAdapter(ticket_results=[(False, REASON_TERMS_NOT_ACCEPTED)])
+    orchestrator, _, _, telemetry = build(
+        tmp_path, adapter, spec=make_spec(prices=(3200,))
+    )
+    report = await orchestrator.run()
+    assert report.final_state == "SOLD_OUT"
+    assert report.ticket_failure_reasons == (REASON_TERMS_NOT_ACCEPTED,)
+    failed = [e for e in telemetry.events() if e.name == "ticket_attempt_failed"]
+    assert [e.detail["reason"] for e in failed] == [REASON_TERMS_NOT_ACCEPTED]
+    assert failed[0].detail["attempt"] == 1
+
+
+async def test_genuine_sold_out_is_still_reported_as_sold_out(tmp_path: Path) -> None:
+    adapter = StubAdapter(ticket_results=[(False, REASON_SOLD_OUT)])
+    orchestrator, _, _, _ = build(tmp_path, adapter)
+    report = await orchestrator.run()
+    assert report.ticket_failure_reasons == (REASON_SOLD_OUT,)
+
+
+async def test_successful_selection_records_no_failure_reason(tmp_path: Path) -> None:
+    orchestrator, _, _, telemetry = build(tmp_path, StubAdapter())
+    report = await orchestrator.run()
+    assert report.ticket_failure_reasons == ()
+    assert not [e for e in telemetry.events() if e.name == "ticket_attempt_failed"]
+
+
 async def test_recoverable_ticket_failure_retries_next_priority(tmp_path: Path) -> None:
     adapter = StubAdapter(
         ticket_results=[(False, REASON_QUANTITY_MISMATCH), (True, REASON_SELECTED)]
     )
-    orchestrator, _, _, _ = build(tmp_path, adapter, spec=make_spec(prices=(3200, 2400)))
+    orchestrator, _, _, _ = build(
+        tmp_path, adapter, spec=make_spec(prices=(3200, 2400))
+    )
     report = await orchestrator.run()
     assert orchestrator._rt.events_sent[:3] == [
-        "page_loaded", "retry_fallback_ticket", "ticket_reserved"
+        "page_loaded",
+        "retry_fallback_ticket",
+        "ticket_reserved",
     ]
     assert report.final_state == "COMPLETED"
 
 
 async def test_exhausted_priorities_end_in_sold_out(tmp_path: Path) -> None:
     adapter = StubAdapter(
-        ticket_results=[(False, REASON_QUANTITY_MISMATCH), (False, REASON_QUANTITY_MISMATCH)]
+        ticket_results=[
+            (False, REASON_QUANTITY_MISMATCH),
+            (False, REASON_QUANTITY_MISMATCH),
+        ]
     )
     orchestrator, _, _, _ = build(tmp_path, adapter, spec=make_spec(prices=(3200,)))
     report = await orchestrator.run()
@@ -358,7 +448,9 @@ async def test_exhausted_priorities_end_in_sold_out(tmp_path: Path) -> None:
     assert adapter.calls.count("select_tickets") == 1
 
 
-async def test_wrong_page_fails_closed_instead_of_reporting_sold_out(tmp_path: Path) -> None:
+async def test_wrong_page_fails_closed_instead_of_reporting_sold_out(
+    tmp_path: Path,
+) -> None:
     adapter = StubAdapter(ticket_results=[(False, REASON_NOT_REGISTRATION_PAGE)])
     orchestrator, _, _, _ = build(tmp_path, adapter)
     report = await orchestrator.run()
@@ -370,9 +462,13 @@ async def test_wrong_page_fails_closed_instead_of_reporting_sold_out(tmp_path: P
 
 async def test_session_gate_waits_for_the_human_then_proceeds(tmp_path: Path) -> None:
     """被人機驗證擋住、被導到登入頁，都只是「還沒好」，等人處理完就繼續。"""
-    adapter = StubAdapter(probe_kinds=[
-        KKTIXPageKind.CHALLENGE, KKTIXPageKind.LOGIN, KKTIXPageKind.REGISTRATION,
-    ])
+    adapter = StubAdapter(
+        probe_kinds=[
+            KKTIXPageKind.CHALLENGE,
+            KKTIXPageKind.LOGIN,
+            KKTIXPageKind.REGISTRATION,
+        ]
+    )
     orchestrator, _, _, telemetry = build(tmp_path, adapter)
     orchestrator.session_gate_poll_s = 0.0
     seen: list[tuple[str, int]] = []
@@ -442,7 +538,9 @@ async def test_verification_required_path(tmp_path: Path) -> None:
 
 
 async def test_verification_retries_before_succeeding(tmp_path: Path) -> None:
-    adapter = StubAdapter(requires_verification=True, verification_results=[False, True])
+    adapter = StubAdapter(
+        requires_verification=True, verification_results=[False, True]
+    )
     orchestrator, _, _, _ = build(tmp_path, adapter)
     report = await orchestrator.run()
     assert orchestrator._rt.events_sent.count("retry_verification") == 1
@@ -450,7 +548,9 @@ async def test_verification_retries_before_succeeding(tmp_path: Path) -> None:
 
 
 async def test_verification_exhaustion_fails_closed(tmp_path: Path) -> None:
-    adapter = StubAdapter(requires_verification=True, verification_results=[False, False, False])
+    adapter = StubAdapter(
+        requires_verification=True, verification_results=[False, False, False]
+    )
     orchestrator, _, _, _ = build(tmp_path, adapter, spec=make_spec(max_retries=1))
     report = await orchestrator.run()
     assert report.final_state == "FAILED"
@@ -469,6 +569,10 @@ async def test_every_payment_outcome_lands_in_the_mapped_state(
 ) -> None:
     orchestrator, _, _, _ = build(tmp_path, StubAdapter(payment_outcome=outcome))
     report = await orchestrator.run()
-    expected = "COMPLETED" if PAYMENT_OUTCOME_EVENTS[outcome] == "payment_success" else "FAILED"
+    expected = (
+        "COMPLETED"
+        if PAYMENT_OUTCOME_EVENTS[outcome] == "payment_success"
+        else "FAILED"
+    )
     assert report.final_state == expected
     assert orchestrator._rt.events_sent[-1] == PAYMENT_OUTCOME_EVENTS[outcome]
