@@ -13,6 +13,7 @@ from typing import Any
 
 from adapters.ticketing.kktix.adapter import (
     REASON_NO_TICKET_UNITS,
+    REASON_NOT_REGISTRATION_PAGE,
     REASON_PLUS_BUTTON_MISSING,
     REASON_QUANTITY_MISMATCH,
     REASON_SELECTED,
@@ -41,6 +42,10 @@ TICKET_REASON_EVENTS: Mapping[str, str] = MappingProxyType({
     REASON_QUANTITY_MISMATCH: EVENT_RETRY_FALLBACK_TICKET,
     REASON_TERMS_NOT_ACCEPTED: EVENT_RETRY_FALLBACK_TICKET,
 })
+
+# 無法靠重試或降級解決的理由碼：沒有對應的 FSM 事件，一律 fail-closed。
+# 站錯頁不是票的問題，把它降級成 retry 會一路滑進 SOLD_OUT 而寫下錯誤結論。
+FATAL_TICKET_REASONS: frozenset[str] = frozenset({REASON_NOT_REGISTRATION_PAGE})
 
 
 class PurchaseStepError(RuntimeError):

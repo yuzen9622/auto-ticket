@@ -26,6 +26,7 @@ from purchase.handlers import (
     EVENT_SUBMIT_PAYMENT,
     EVENT_TICKET_RESERVED,
     EVENT_VERIFICATION_PASSED,
+    FATAL_TICKET_REASONS,
     PurchaseStepError,
     seat_event_for,
     ticket_event_for,
@@ -195,6 +196,8 @@ class PurchaseOrchestrator:
         assert fsm is not None
         while True:
             ok, reason = await self.adapter.select_tickets(page, self.spec.ticket_preference)
+            if reason in FATAL_TICKET_REASONS:
+                raise PurchaseStepError("select_tickets", reason)
             event = ticket_event_for(reason)
             if ok and event == EVENT_TICKET_RESERVED:
                 self._send(EVENT_TICKET_RESERVED)

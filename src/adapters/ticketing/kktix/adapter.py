@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Awaitable, Callable, Sequence
+from enum import Enum
 from typing import TYPE_CHECKING, Any
 
 from adapters.payment.base import PaymentOutcome, PaymentProvider, PaymentResult
@@ -48,11 +49,33 @@ REASON_PLUS_BUTTON_MISSING = "PLUS_BUTTON_MISSING"
 REASON_QUANTITY_MISMATCH = "QUANTITY_MISMATCH"
 REASON_TERMS_NOT_ACCEPTED = "TERMS_NOT_ACCEPTED"
 REASON_CLOUDFLARE = "CLOUDFLARE_CHALLENGE"
+REASON_NOT_REGISTRATION_PAGE = "NOT_REGISTRATION_PAGE"
+
+ALL_TICKET_REASONS = frozenset({
+    REASON_SELECTED,
+    REASON_SOLD_OUT,
+    REASON_NO_TICKET_UNITS,
+    REASON_PLUS_BUTTON_MISSING,
+    REASON_QUANTITY_MISMATCH,
+    REASON_TERMS_NOT_ACCEPTED,
+    REASON_NOT_REGISTRATION_PAGE,
+})
 
 CLOUDFLARE_MARK = "cloudflare_challenge"
 SOLD_OUT_MARKERS = ("售完", "售罄", "完售", "sold out", "已結束", "已額滿")
 REMAINING_RE = re.compile(r"(?:剩餘|剩下|remaining)\D{0,4}(\d+)", re.IGNORECASE)
 DIGITS_RE = re.compile(r"\d+")
+
+
+class KKTIXPageKind(str, Enum):
+    """目前停在哪一種頁面。票種的讀法在兩種頁面上完全不同，不得混用。"""
+
+    EVENT = "EVENT"
+    """公開活動主頁：票種是一張表格，只看得到售賣時段，看不到可購買數量。"""
+    REGISTRATION = "REGISTRATION"
+    """購票登記頁：票種是可加減數量的單元，這裡才下得了單。"""
+    UNKNOWN = "UNKNOWN"
+    """兩者皆非——多半是被導去登入頁或錯誤頁。"""
 
 
 class CloudflareChallengeError(RuntimeError):
@@ -187,16 +210,68 @@ class KKTIXAdapter(TicketingAdapter):
             return list(await locator.all())
         return []
 
+    async def detect_page_kind(self, page: Page) -> KKTIXPageKind:
+        """判斷目前頁面種類。順序不可調換：登記頁同樣有活動標題。"""
+        if await self._has(page, KKTIXSelectors.REGISTRATION_APP):
+            return KKTIXPageKind.REGISTRATION
+        if await self._has(page, KKTIXSelectors.EVENT_TICKET_TABLE_ROWS) or await self._has(
+            page, KKTIXSelectors.EVENT_TITLE
+        ):
+            return KKTIXPageKind.EVENT
+        return KKTIXPageKind.UNKNOWN
+
     async def read_ticket_options(self, page: Page) -> list[TicketOption]:
+        """把目前頁面的票種讀成不可變快照，依頁面種類選用對應的選擇器。"""
+        if await self.detect_page_kind(page) is KKTIXPageKind.EVENT:
+            return await self.read_event_page_tickets(page)
+        return await self.read_registration_tickets(page)
+
+    async def read_event_page_tickets(self, page: Page) -> list[TicketOption]:
+        """讀活動主頁的票種表格。
+
+        主頁**看不到剩餘數量**，狀態欄位放的是售賣時段而不是庫存；因此除非頁面
+        明寫售完字樣，一律 `available=True`、`remaining=None`——不臆造沒讀到的資訊。
+        表頭列沒有票名，直接略過。
+        """
+        rows = page.locator(KKTIXSelectors.EVENT_TICKET_TABLE_ROWS)
+        options: list[TicketOption] = []
+        for row in await rows.all():
+            name = await self._text_of(row, KKTIXSelectors.EVENT_TICKET_ROW_NAME)
+            price_text = await self._text_of(row, KKTIXSelectors.EVENT_TICKET_ROW_PRICE)
+            if not name or not price_text:
+                continue
+            status_text = await self._text_of(row, KKTIXSelectors.EVENT_TICKET_ROW_STATUS)
+            remaining_match = REMAINING_RE.search(status_text)
+            options.append(
+                TicketOption(
+                    index=len(options),
+                    name=name,
+                    price=self._parse_price(price_text),
+                    available=not self._is_sold_out(f"{status_text} {name}"),
+                    remaining=int(remaining_match.group(1)) if remaining_match else None,
+                    status_text=status_text,
+                )
+            )
+        return options
+
+    @staticmethod
+    def _parse_price(price_text: str) -> int:
+        digits = DIGITS_RE.findall(price_text.replace(",", ""))
+        return int(digits[0]) if digits else 0
+
+    @staticmethod
+    def _is_sold_out(text: str) -> bool:
+        lowered = text.lower()
+        return any(marker.lower() in lowered for marker in SOLD_OUT_MARKERS)
+
+    async def read_registration_tickets(self, page: Page) -> list[TicketOption]:
         options: list[TicketOption] = []
         for index, unit in enumerate(await self._collect_ticket_units(page)):
             name = await self._text_of(unit, KKTIXSelectors.TICKET_NAME)
             price_text = await self._text_of(unit, KKTIXSelectors.TICKET_PRICE)
             status_text = await self._text_of(unit, KKTIXSelectors.EVENT_TICKET_ROW_STATUS)
-            digits = DIGITS_RE.findall(price_text.replace(",", ""))
-            price = int(digits[0]) if digits else 0
-            haystack = f"{status_text} {name}".lower()
-            sold_out = any(m.lower() in haystack for m in SOLD_OUT_MARKERS)
+            price = self._parse_price(price_text)
+            sold_out = self._is_sold_out(f"{status_text} {name}")
             has_plus = await self._has(unit, KKTIXSelectors.TICKET_PLUS_BTN)
             remaining_match = REMAINING_RE.search(status_text)
             options.append(
@@ -215,11 +290,20 @@ class KKTIXAdapter(TicketingAdapter):
         self, page: Page, preference: TicketPreference
     ) -> tuple[bool, str]:
         await self._guard_cloudflare(page, "select_tickets")
+        kind = await self.detect_page_kind(page)
+        if kind is not KKTIXPageKind.REGISTRATION:
+            # 站錯頁（多半是還在活動主頁、或被導去登入頁）。**不得**回報售罄：
+            # 那會把「沒進到登記頁」寫成「票賣完了」，直接汙染研究結論。
+            self.telemetry.record(
+                TimelineEventType.MARK, "wrong_page_for_selection", page_kind=kind.value
+            )
+            return False, REASON_NOT_REGISTRATION_PAGE
+
         units = await self._collect_ticket_units(page)
         if not units:
             return False, REASON_NO_TICKET_UNITS
 
-        options = await self.read_ticket_options(page)
+        options = await self.read_registration_tickets(page)
         decision = decide_ticket(options, preference)
         self.last_ticket_decision = decision
         self.telemetry.record(

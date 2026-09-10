@@ -10,7 +10,9 @@ import pytest
 
 from adapters.payment.base import PaymentOutcome, PaymentResult
 from adapters.ticketing.kktix.adapter import (
+    ALL_TICKET_REASONS,
     REASON_NO_TICKET_UNITS,
+    REASON_NOT_REGISTRATION_PAGE,
     REASON_PLUS_BUTTON_MISSING,
     REASON_QUANTITY_MISMATCH,
     REASON_SELECTED,
@@ -19,7 +21,11 @@ from adapters.ticketing.kktix.adapter import (
 )
 from domain.preference import SeatPreference, TicketPreference, TicketPriority
 from domain.task import PurchaseTaskSpec, UserContactProfile
-from purchase.handlers import TICKET_REASON_EVENTS, PurchaseStepError
+from purchase.handlers import (
+    FATAL_TICKET_REASONS,
+    TICKET_REASON_EVENTS,
+    PurchaseStepError,
+)
 from purchase.orchestrator import PAYMENT_OUTCOME_EVENTS, PurchaseOrchestrator
 from scheduler.scheduler import StageOutcome, WarmupContext, WarmupStage
 from strategy.ticket_strategy import TicketDecision
@@ -209,10 +215,13 @@ def test_payment_mapping_only_checkpoint_and_submitted_are_success() -> None:
 
 
 def test_ticket_reason_mapping_covers_every_reason_code() -> None:
-    assert set(TICKET_REASON_EVENTS) == {
-        REASON_SELECTED, REASON_SOLD_OUT, REASON_NO_TICKET_UNITS,
-        REASON_PLUS_BUTTON_MISSING, REASON_QUANTITY_MISMATCH, REASON_TERMS_NOT_ACCEPTED,
-    }
+    """每個理由碼都必須恰好落在「可對應事件」或「致命」其中一邊。"""
+    assert set(TICKET_REASON_EVENTS) | FATAL_TICKET_REASONS == set(ALL_TICKET_REASONS)
+    assert not set(TICKET_REASON_EVENTS) & FATAL_TICKET_REASONS
+    assert FATAL_TICKET_REASONS == {REASON_NOT_REGISTRATION_PAGE}
+    assert {REASON_SELECTED, REASON_SOLD_OUT, REASON_NO_TICKET_UNITS,
+            REASON_PLUS_BUTTON_MISSING, REASON_QUANTITY_MISMATCH,
+            REASON_TERMS_NOT_ACCEPTED} == set(TICKET_REASON_EVENTS)
 
 
 # -------------------------------------------------------------------- 流程
@@ -319,6 +328,16 @@ async def test_exhausted_priorities_end_in_sold_out(tmp_path: Path) -> None:
     orchestrator, _, _, _ = build(tmp_path, adapter, spec=make_spec(prices=(3200,)))
     report = await orchestrator.run()
     assert report.final_state == "SOLD_OUT"
+    assert adapter.calls.count("select_tickets") == 1
+
+
+async def test_wrong_page_fails_closed_instead_of_reporting_sold_out(tmp_path: Path) -> None:
+    adapter = StubAdapter(ticket_results=[(False, REASON_NOT_REGISTRATION_PAGE)])
+    orchestrator, _, _, _ = build(tmp_path, adapter)
+    report = await orchestrator.run()
+    assert report.final_state == "FAILED"
+    assert report.final_state != "SOLD_OUT"
+    assert REASON_NOT_REGISTRATION_PAGE in str(report.error)
     assert adapter.calls.count("select_tickets") == 1
 
 

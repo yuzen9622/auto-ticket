@@ -7,6 +7,7 @@ import pytest
 from adapters.payment import MockPaymentProvider, PaymentOutcome, PaymentResult
 from adapters.ticketing.kktix.adapter import (
     REASON_NO_TICKET_UNITS,
+    REASON_NOT_REGISTRATION_PAGE,
     REASON_PLUS_BUTTON_MISSING,
     REASON_QUANTITY_MISMATCH,
     REASON_SELECTED,
@@ -14,6 +15,7 @@ from adapters.ticketing.kktix.adapter import (
     REASON_TERMS_NOT_ACCEPTED,
     CloudflareChallengeError,
     KKTIXAdapter,
+    KKTIXPageKind,
 )
 from adapters.ticketing.kktix.dom import (
     SELECTOR_FALLBACK_MARK,
@@ -188,6 +190,71 @@ async def test_detect_sale_opened_true_on_registration_page(telemetry: TimelineR
 
 async def test_detect_sale_opened_false_without_registration_app(telemetry: TimelineRecorder) -> None:
     assert await make_adapter(telemetry).detect_sale_opened(FakePage("<div></div>"), 20) is False
+
+
+# ------------------------------------------------------------------ 頁面判別
+
+
+async def test_detect_page_kind_registration(telemetry: TimelineRecorder) -> None:
+    page = FakePage.from_fixture("kktix_registration_new.html")
+    assert await make_adapter(telemetry).detect_page_kind(page) is KKTIXPageKind.REGISTRATION
+
+
+async def test_detect_page_kind_event_main_page(telemetry: TimelineRecorder) -> None:
+    page = FakePage.from_fixture("kktix_event_page.html")
+    assert await make_adapter(telemetry).detect_page_kind(page) is KKTIXPageKind.EVENT
+
+
+async def test_detect_page_kind_unknown(telemetry: TimelineRecorder) -> None:
+    page = FakePage("<div>請先登入</div>")
+    assert await make_adapter(telemetry).detect_page_kind(page) is KKTIXPageKind.UNKNOWN
+
+
+async def test_event_page_tickets_are_read_from_the_table(telemetry: TimelineRecorder) -> None:
+    page = FakePage.from_fixture("kktix_event_page.html")
+    options = await make_adapter(telemetry).read_ticket_options(page)
+    assert [o.name for o in options] == ["預售全區站席", "搖滾區站席", "學生優惠票"]
+    assert [o.price for o in options] == [2800, 3800, 0]
+
+
+async def test_event_page_does_not_invent_stock(telemetry: TimelineRecorder) -> None:
+    """主頁看不到庫存：remaining 一律 None，不得臆造；只有明寫售完才是不可選。"""
+    page = FakePage.from_fixture("kktix_event_page.html")
+    options = await make_adapter(telemetry).read_ticket_options(page)
+    assert all(o.remaining is None for o in options)
+    assert all(o.status_text for o in options)
+    by_name = {o.name: o for o in options}
+    assert by_name["搖滾區站席"].available is False  # 狀態欄明寫「已售完」
+    assert by_name["預售全區站席"].available is True
+    # 「尚未開賣」不等於售完；主頁快照如實照抄狀態字串，不替它判斷能不能買
+    assert by_name["學生優惠票"].available is True
+    assert "尚未開賣" in by_name["學生優惠票"].status_text
+
+
+async def test_event_page_header_row_is_skipped(telemetry: TimelineRecorder) -> None:
+    page = FakePage.from_fixture("kktix_event_page.html")
+    rows = await page.locator("div.tickets table tbody tr").count()
+    options = await make_adapter(telemetry).read_ticket_options(page)
+    assert rows == 4
+    assert len(options) == 3
+
+
+async def test_selecting_on_the_event_page_is_not_reported_as_sold_out(
+    telemetry: TimelineRecorder,
+) -> None:
+    page = FakePage.from_fixture("kktix_event_page.html")
+    ok, reason = await make_adapter(telemetry).select_tickets(page, preference(2800))
+    assert (ok, reason) == (False, REASON_NOT_REGISTRATION_PAGE)
+    assert marks(telemetry, "wrong_page_for_selection")[0].detail["page_kind"] == "EVENT"
+
+
+async def test_selecting_on_a_login_redirect_is_not_reported_as_sold_out(
+    telemetry: TimelineRecorder,
+) -> None:
+    page = FakePage("<div>請先登入 KKTIX 帳號</div>")
+    ok, reason = await make_adapter(telemetry).select_tickets(page, preference())
+    assert (ok, reason) == (False, REASON_NOT_REGISTRATION_PAGE)
+    assert marks(telemetry, "wrong_page_for_selection")[0].detail["page_kind"] == "UNKNOWN"
 
 
 # ------------------------------------------------------------------ 票種讀取
