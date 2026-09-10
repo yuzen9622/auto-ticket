@@ -22,10 +22,18 @@ def pytest_addoption(parser: Any) -> None:
         default=False,
         help="啟用實站唯讀驗證套件（需要網路與真實瀏覽器；絕不送出訂單或付款）",
     )
+    parser.addoption(
+        "--live-registration",
+        action="store_true",
+        default=False,
+        help="另外啟用購票登記頁的唯讀驗證（需要已登入的瀏覽器 profile）；隱含 --live",
+    )
 
 
 def pytest_configure(config: Any) -> None:
-    """帶 `--live` 時解除 addopts 對實站目錄的 ignore。"""
+    """帶 `--live`（或 `--live-registration`）時解除 addopts 對實站目錄的 ignore。"""
+    if config.getoption("--live-registration"):
+        config.option.live = True
     if not config.getoption("--live"):
         return
     ignore = list(config.option.ignore or [])
