@@ -81,6 +81,7 @@ GUARDED_TEST_FILES = (
     "tests/unit/test_kktix_adapter.py",
     "tests/unit/test_purchase_orchestrator.py",
     "tests/integration/test_purchase_flow.py",
+    "tests/unit/test_login_script.py",
 )
 # 沒有測試函式的測試輔助模組：不適用「必須掛 netguard fixture」這條。
 TEST_HELPERS_WITHOUT_TESTS = ("tests/netguard.py", "tests/fake_page.py")
