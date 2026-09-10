@@ -80,6 +80,10 @@ class KKTIXPageKind(str, Enum):
     """購票登記頁：票種是可加減數量的單元，這裡才下得了單。"""
     ORDER = "ORDER"
     """劃位與訂單填寫頁：已經有訂單了，這裡填聯絡人與參加人。"""
+    LOGIN = "LOGIN"
+    """被導到登入頁：需要人自己登入，本專案不自動填任何憑證。"""
+    CHALLENGE = "CHALLENGE"
+    """人機驗證挑戰頁：只偵測與回報，不繞過；需要人自己在瀏覽器裡通過。"""
     UNKNOWN = "UNKNOWN"
     """以上皆非——多半是被導去登入頁或錯誤頁。"""
 
@@ -226,6 +230,10 @@ class KKTIXAdapter(TicketingAdapter):
         """判斷目前頁面種類。順序不可調換：登記頁同樣有活動標題。"""
         if await self._has(page, KKTIXSelectors.REGISTRATION_APP):
             return KKTIXPageKind.REGISTRATION
+        if await self._has(page, KKTIXSelectors.LOGIN_PASSWORD_INPUT) or await self._has(
+            page, KKTIXSelectors.LOGIN_FORM
+        ):
+            return KKTIXPageKind.LOGIN
         if await self._has(page, KKTIXSelectors.EVENT_TICKET_TABLE_ROWS) or await self._has(
             page, KKTIXSelectors.EVENT_TITLE
         ):
@@ -237,6 +245,27 @@ class KKTIXAdapter(TicketingAdapter):
         # 走到這裡代表三種已知頁面都不是；把它和 ORDER 混為一談會讓
         # 「被踢回登入頁」在研究資料裡看起來像「正常停在訂單頁」。
         return KKTIXPageKind.UNKNOWN
+
+    async def probe_page(self, page: Page, url: str | None = None) -> KKTIXPageKind:
+        """判斷目前狀態，**不拋例外**——包含命中人機驗證挑戰的情況。
+
+        給「等人就緒」的閘門用：那裡需要知道「還沒好，是哪一種還沒好」，
+        而不是直接中止。給了 `url` 才會導航；不給就只重新判讀目前這一頁，
+        避免反覆輪詢對方站台。
+        """
+        if url is not None:
+            await page.goto(
+                url,
+                wait_until=NAVIGATION_WAIT_UNTIL,
+                timeout=self.navigation_timeout_ms,
+            )
+        marker = contains_cloudflare_challenge(await page_text(page))
+        if marker is not None:
+            self.telemetry.record(
+                TimelineEventType.MARK, CLOUDFLARE_MARK, marker=marker, stage="probe"
+            )
+            return KKTIXPageKind.CHALLENGE
+        return await self.detect_page_kind(page)
 
     async def read_ticket_options(self, page: Page) -> list[TicketOption]:
         """把目前頁面的票種讀成不可變快照，依頁面種類選用對應的選擇器。"""
