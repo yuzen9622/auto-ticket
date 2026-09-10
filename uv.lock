@@ -84,7 +84,7 @@ requires-dist = [
     { name = "beautifulsoup4", specifier = ">=4.14" },
     { name = "httpx", specifier = ">=0.28" },
     { name = "ntplib", specifier = ">=0.4.0" },
-    { name = "playwright", specifier = ">=1.40.0" },
+    { name = "playwright", specifier = ">=1.60" },
     { name = "pydantic", specifier = ">=2.12" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.4" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=1.2" },

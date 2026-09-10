@@ -34,6 +34,11 @@ from adapters.payment import (  # noqa: E402
 )
 from adapters.ticketing.kktix.adapter import KKTIXAdapter  # noqa: E402
 from adapters.verification import ManualVerificationProvider  # noqa: E402
+from browser.cdp_attach import (  # noqa: E402
+    CdpEndpointError,
+    parse_cdp_endpoint,
+    parse_page_target,
+)
 from browser.context_factory import DEFAULT_SCREENSHOT_DIR, BrowserProfile  # noqa: E402
 from browser.manager import PlaywrightManager  # noqa: E402
 from domain.task import CreditCardProfile, PurchaseTaskSpec  # noqa: E402
@@ -57,9 +62,22 @@ def build_parser() -> argparse.ArgumentParser:
             "登入與人機驗證一律由人自己在瀏覽器裡完成："
             "先 `scripts/login.py --profile <name>` 登好，再用 `--profile <name> --no-headless` 執行；"
             "開賣前的就緒閘門會等你把頁面弄到可下單狀態，逾時仍未就緒即中止。"
+            "\n\n借用模式（--cdp-endpoint）三步驟："
+            "\n  1) 自己啟動一個帶 CDP 的真實 Chrome，--user-data-dir 必須是專屬的非預設目錄"
+            "（Chrome 136 起若用預設目錄會忽略 --remote-debugging-port）："
+            "\n     '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'"
+            ' --remote-debugging-port=9222 --user-data-dir="$HOME/.auto-ticket-chrome"'
+            " --no-first-run --no-default-browser-check"
+            "\n  2) 在那個 Chrome 裡自己通過 Cloudflare、登入 KKTIX、開好購票登記頁。"
+            "請不要開無痕視窗，也不要重複開同一個活動頁籤——"
+            "本程式只保證「命中恰好 1 個頁籤否則中止」，看不見的無痕視窗無法偵測。"
+            "\n  3) 保持該 Chrome 開著，另開終端機加上 --cdp-endpoint http://127.0.0.1:9222 執行。"
         ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument("--task", type=Path, required=True, help="任務 JSON（PurchaseTaskSpec 欄位）")
+    parser.add_argument(
+        "--task", type=Path, required=True, help="任務 JSON（PurchaseTaskSpec 欄位）"
+    )
     parser.add_argument(
         "--dry-run",
         action=argparse.BooleanOptionalAction,
@@ -76,7 +94,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--profile",
         default=None,
         help="瀏覽器 profile 名稱（預設同 task_id）。登入狀態存在 .browser_profiles/<profile>／"
-             "需要沿用已登入的 profile 時指定它",
+        "需要沿用已登入的 profile 時指定它",
     )
     parser.add_argument(
         "--session-gate-timeout",
@@ -84,10 +102,26 @@ def build_parser() -> argparse.ArgumentParser:
         default=240.0,
         help="開賣前等待「人完成登入／人機驗證」的秒數上限（預設 240）；逾時即中止不下單",
     )
-    parser.add_argument("--timeline", type=Path, default=None, help="Timeline JSON 輸出路徑")
+    parser.add_argument(
+        "--timeline", type=Path, default=None, help="Timeline JSON 輸出路徑"
+    )
     parser.add_argument("--screenshot-dir", type=Path, default=DEFAULT_SCREENSHOT_DIR)
-    parser.add_argument("--headless", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument(
+        "--headless", action=argparse.BooleanOptionalAction, default=True
+    )
     parser.add_argument("--log-level", default="INFO")
+    parser.add_argument(
+        "--cdp-endpoint",
+        default=None,
+        help="連上你自己啟動的本機 Chrome（http://127.0.0.1:9222，僅 loopback）。"
+        "給了就只走借用模式，連不上直接中止",
+    )
+    parser.add_argument(
+        "--cdp-page-url",
+        default=None,
+        help="借用模式要挑的頁籤絕對網址（預設 = 任務的 event_url）。"
+        "比對 scheme/host/port 與 path 前綴，忽略 query",
+    )
     return parser
 
 
@@ -116,15 +150,23 @@ async def prompt_for_answer(challenge: Any) -> str:
 async def run(args: argparse.Namespace) -> int:
     configure_logging(args.log_level)
     log = get_logger("run_purchase")
-    spec = load_spec(args.task)
+    try:
+        spec = load_spec(args.task)
+    except (OSError, ValueError) as exc:
+        log.error("invalid_task", error_type=type(exc).__name__)
+        return 2
     telemetry = TimelineRecorder()
 
     if args.real_payment and args.dry_run:
-        log.error("conflicting_payment_flags", hint="--real-payment 需搭配 --no-dry-run")
+        log.error(
+            "conflicting_payment_flags", hint="--real-payment 需搭配 --no-dry-run"
+        )
         return 2
 
     if args.real_payment:
-        payment: Any = AutomatedCreditCardProvider(allow_real_payment=True, telemetry=telemetry)
+        payment: Any = AutomatedCreditCardProvider(
+            allow_real_payment=True, telemetry=telemetry
+        )
         profile = card_from_env()
     else:
         payment = MockPaymentProvider(
@@ -132,10 +174,28 @@ async def run(args: argparse.Namespace) -> int:
         )
         profile = None
 
+    cdp_endpoint = None
+    cdp_target = None
+    if args.cdp_endpoint is not None:
+        try:
+            cdp_endpoint = parse_cdp_endpoint(args.cdp_endpoint)
+            cdp_target = parse_page_target(args.cdp_page_url or spec.event_url)
+        except CdpEndpointError as exc:
+            log.error("invalid_cdp_option", error=str(exc))
+            return 2
+        if args.headless or args.profile:
+            log.warning(
+                "cdp_mode_ignores_launch_options",
+                hint="借用模式不套用 --headless / --profile 的 user_data_dir；"
+                "--profile 僅作為 telemetry 與截圖標籤",
+            )
+
     browser = PlaywrightManager(
         BrowserProfile(name=args.profile or spec.task_id, headless=args.headless),
         telemetry,
         screenshot_dir=args.screenshot_dir,
+        cdp_endpoint=args.cdp_endpoint,
+        cdp_page_url=(args.cdp_page_url or spec.event_url) if cdp_endpoint else None,
     )
     adapter = KKTIXAdapter(
         telemetry=telemetry,
@@ -144,7 +204,11 @@ async def run(args: argparse.Namespace) -> int:
         attendees=spec.attendees,
     )
     scheduler = WarmupScheduler(telemetry)
-    effective = spec if profile is None else spec.model_copy(update={"payment_profile": profile})
+    effective = (
+        spec
+        if profile is None
+        else spec.model_copy(update={"payment_profile": profile})
+    )
     gate_hints = {
         "CHALLENGE": "瀏覽器裡出現人機驗證，請自行通過（本程式不會代為繞過）",
         "LOGIN": "被導到登入頁，請在瀏覽器裡自行登入",
@@ -171,20 +235,28 @@ async def run(args: argparse.Namespace) -> int:
         session_gate_timeout_s=args.session_gate_timeout,
         session_gate=announce_gate,
     )
-    log.info(
-        "purchase_start",
-        task_id=spec.task_id,
-        payment_provider=payment.name,
-        dry_run=bool(args.dry_run),
-        browser_profile=browser.profile.name,
-        user_data_dir=str(browser.profile.user_data_dir),
-        card_last4=masked_last4(profile),
-    )
+    start_fields: dict[str, Any] = {
+        "task_id": spec.task_id,
+        "payment_provider": payment.name,
+        "dry_run": bool(args.dry_run),
+        "browser_profile": browser.profile.name,
+    }
+    if cdp_endpoint is not None and cdp_target is not None:
+        # 借用模式下 user_data_dir 無意義且誤導；只記已去敲的 origin 與 label。
+        start_fields["browser_mode"] = "cdp_attach"
+        start_fields["cdp_endpoint"] = cdp_endpoint.origin
+        start_fields["cdp_page_target"] = cdp_target.label
+    else:
+        start_fields["user_data_dir"] = str(browser.profile.user_data_dir)
+    start_fields["card_last4"] = masked_last4(profile)
+    log.info("purchase_start", **start_fields)
     try:
         report = await orchestrator.run()
     finally:
-        await scheduler.shutdown()
-        await browser.stop()
+        try:
+            await scheduler.shutdown()
+        finally:
+            await browser.stop()
     log.info(
         "purchase_finished",
         task_id=report.task_id,
@@ -193,18 +265,26 @@ async def run(args: argparse.Namespace) -> int:
         screenshots=len(report.screenshots),
         screenshots_expected=report.screenshots_expected,
     )
-    print(json.dumps({
-        "task_id": report.task_id,
-        "final_state": report.final_state,
-        "sale_time_error_ms": report.sale_time_error_ms,
-        "ticket_trace": list(report.ticket_trace),
-        "payment_outcome": report.payment.outcome.value if report.payment else None,
-        "screenshots": list(report.screenshots),
-        "screenshots_expected": report.screenshots_expected,
-        "timeline": str(report.timeline_path) if report.timeline_path else None,
-        "stages": [list(s) for s in report.stages],
-        "error": report.error,
-    }, ensure_ascii=False, indent=2))
+    print(
+        json.dumps(
+            {
+                "task_id": report.task_id,
+                "final_state": report.final_state,
+                "sale_time_error_ms": report.sale_time_error_ms,
+                "ticket_trace": list(report.ticket_trace),
+                "payment_outcome": report.payment.outcome.value
+                if report.payment
+                else None,
+                "screenshots": list(report.screenshots),
+                "screenshots_expected": report.screenshots_expected,
+                "timeline": str(report.timeline_path) if report.timeline_path else None,
+                "stages": [list(s) for s in report.stages],
+                "error": report.error,
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+    )
     return 0 if report.final_state == "COMPLETED" else 1
 
 

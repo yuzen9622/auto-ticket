@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""機械化不變式守門員（G1–G27）。
+"""機械化不變式守門員（G1–G28）。
 
 驗證那些靠人眼審查不可靠、但可以機械化證明的專案不變式：凍結模組零改動、
 測試不連外、無過時 API、打包與依賴約束完整，以及每個設計決策的靜態鎖定。
@@ -82,6 +82,9 @@ GUARDED_TEST_FILES = (
     "tests/unit/test_purchase_orchestrator.py",
     "tests/integration/test_purchase_flow.py",
     "tests/unit/test_login_script.py",
+    "tests/unit/test_cdp_attach.py",
+    "tests/unit/test_run_purchase_cli.py",
+    "tests/unit/test_invariant_gates.py",
 )
 # 沒有測試函式的測試輔助模組：不適用「必須掛 netguard fixture」這條。
 TEST_HELPERS_WITHOUT_TESTS = ("tests/netguard.py", "tests/fake_page.py")
@@ -130,7 +133,9 @@ def iter_live_files() -> Iterator[str]:
 
 def is_docstring(module: ast.Module, node: ast.Constant) -> bool:
     for parent in ast.walk(module):
-        if isinstance(parent, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+        if isinstance(
+            parent, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)
+        ):
             body = getattr(parent, "body", [])
             if body and isinstance(body[0], ast.Expr) and body[0].value is node:
                 return True
@@ -149,18 +154,25 @@ def call_name(node: ast.Call) -> str:
         return ""
 
 
-def func_named(tree: ast.AST, name: str) -> ast.FunctionDef | ast.AsyncFunctionDef | None:
+def func_named(
+    tree: ast.AST, name: str
+) -> ast.FunctionDef | ast.AsyncFunctionDef | None:
     for n in ast.walk(tree):
         if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name == name:
             return n
     return None
 
 
-def method_of(tree: ast.AST, class_name: str, method: str) -> ast.FunctionDef | ast.AsyncFunctionDef | None:
+def method_of(
+    tree: ast.AST, class_name: str, method: str
+) -> ast.FunctionDef | ast.AsyncFunctionDef | None:
     for n in ast.walk(tree):
         if isinstance(n, ast.ClassDef) and n.name == class_name:
             for m in n.body:
-                if isinstance(m, (ast.FunctionDef, ast.AsyncFunctionDef)) and m.name == method:
+                if (
+                    isinstance(m, (ast.FunctionDef, ast.AsyncFunctionDef))
+                    and m.name == method
+                ):
                     return m
     return None
 
@@ -170,13 +182,17 @@ def g1_frozen_paths_untouched() -> None:
     paths = [p for p in PROTECTED_PATHS if (REPO_ROOT / p).exists()]
     diff = subprocess.run(
         ["git", "diff", "--exit-code", "HEAD", "--", *paths],
-        cwd=REPO_ROOT, capture_output=True, text=True,
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
     )
     if diff.returncode != 0:
         fail("G1", f"凍結模組有未提交變更:\n{diff.stdout[:2000]}")
     status = subprocess.run(
         ["git", "status", "--porcelain", "--", *paths],
-        cwd=REPO_ROOT, capture_output=True, text=True,
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
     )
     if status.stdout.strip():
         fail("G1", f"凍結模組狀態不乾淨:\n{status.stdout}")
@@ -208,8 +224,14 @@ def g2_no_real_hosts_in_tests() -> None:
             host = (urlsplit(value).hostname or "").lower()
             if host in LOOPBACK_HOSTS:
                 continue
-            if not any(host == s.lstrip(".") or host.endswith(s) for s in RESERVED_TEST_HOST_SUFFIXES):
-                fail("G2", f"{rel}:{node.lineno} 使用非保留測試網域 {host!r}（僅允許 RFC 2606 保留網域）")
+            if not any(
+                host == s.lstrip(".") or host.endswith(s)
+                for s in RESERVED_TEST_HOST_SUFFIXES
+            ):
+                fail(
+                    "G2",
+                    f"{rel}:{node.lineno} 使用非保留測試網域 {host!r}（僅允許 RFC 2606 保留網域）",
+                )
 
 
 # ---------------------------------------------------------------- G3
@@ -221,13 +243,17 @@ def g3_no_real_playwright_in_tests() -> None:
             if not isinstance(node, ast.Call):
                 continue
             name = call_name(node)
-            if name in banned or name.endswith(".launch_persistent_context"):
+            if name in banned or name.endswith(
+                (".launch_persistent_context", ".connect_over_cdp")
+            ):
                 fail("G3", f"{rel}:{node.lineno} 呼叫真實 Playwright 入口 {name!r}")
 
 
 # ---------------------------------------------------------------- G4
 def g4_no_deprecated_api() -> None:
-    targets = list(iter_src_files()) + list(GUARDED_TEST_FILES) + list(iter_script_files())
+    targets = (
+        list(iter_src_files()) + list(GUARDED_TEST_FILES) + list(iter_script_files())
+    )
     for rel in targets:
         tree = parse(rel)
         for node in ast.walk(tree):
@@ -243,7 +269,9 @@ def g5_no_skipped_tests() -> None:
     for rel in GUARDED_TEST_FILES:
         tree = parse(rel)
         for node in ast.walk(tree):
-            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            if not isinstance(
+                node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+            ):
                 continue
             for deco in node.decorator_list:
                 target = deco.func if isinstance(deco, ast.Call) else deco
@@ -265,16 +293,31 @@ def g6_no_eager_heavy_imports() -> None:
                 names = [node.module or ""]
             for n in names:
                 if any(n == b or n.startswith(f"{b}.") for b in banned):
-                    fail("G6", f"{rel}:{node.lineno} 頂層 eager import {n!r}（必須改為函式內 lazy import）")
+                    fail(
+                        "G6",
+                        f"{rel}:{node.lineno} 頂層 eager import {n!r}（必須改為函式內 lazy import）",
+                    )
 
 
 # ---------------------------------------------------------------- G7
 def g7_packaging_and_deps() -> None:
     src = read("pyproject.toml")
     if 'sources = ["src"]' not in src:
-        fail("G7", "pyproject.toml 缺少 [tool.hatch.build.targets.wheel].sources = [\"src\"]")
-    for pkg in ("src/domain", "src/storage", "src/adapters", "src/telemetry", "src/fsm",
-                "src/scheduler", "src/browser", "src/strategy", "src/purchase"):
+        fail(
+            "G7",
+            'pyproject.toml 缺少 [tool.hatch.build.targets.wheel].sources = ["src"]',
+        )
+    for pkg in (
+        "src/domain",
+        "src/storage",
+        "src/adapters",
+        "src/telemetry",
+        "src/fsm",
+        "src/scheduler",
+        "src/browser",
+        "src/strategy",
+        "src/purchase",
+    ):
         if f'"{pkg}"' not in src:
             fail("G7", f"pyproject.toml wheel packages 缺少 {pkg!r}")
     existing_constraints = (
@@ -288,8 +331,13 @@ def g7_packaging_and_deps() -> None:
     for c in existing_constraints:
         if c not in src:
             fail("G7", f"pyproject.toml 遺失或放寬了既有依賴約束 {c}")
-    for c in ('"apscheduler>=3.10.4"', '"ntplib>=0.4.0"', '"playwright>=1.40.0"',
-              '"python-statemachine>=3.2.0"', '"structlog>=24.1.0"'):
+    for c in (
+        '"apscheduler>=3.10.4"',
+        '"ntplib>=0.4.0"',
+        '"playwright>=1.60"',
+        '"python-statemachine>=3.2.0"',
+        '"structlog>=24.1.0"',
+    ):
         if c not in src:
             fail("G7", f"pyproject.toml 缺少引擎依賴 {c}")
     if '"ruff>=' not in src:
@@ -317,10 +365,15 @@ def g8_netguard_mounted() -> None:
             has_autouse = any(
                 isinstance(d, ast.Call)
                 and ast.unparse(d.func) == "pytest.fixture"
-                and any(k.arg == "autouse" and getattr(k.value, "value", False) is True for k in d.keywords)
+                and any(
+                    k.arg == "autouse" and getattr(k.value, "value", False) is True
+                    for k in d.keywords
+                )
                 for d in node.decorator_list
             )
-            if has_autouse and "no_network()" in (ast.get_source_segment(read(rel), node) or ""):
+            if has_autouse and "no_network()" in (
+                ast.get_source_segment(read(rel), node) or ""
+            ):
                 own_fixture = True
         if not own_fixture:
             fail("G8", f"{rel} 未掛載 netguard autouse fixture")
@@ -342,15 +395,23 @@ def g9_netguard_effective() -> None:
         fail("G9", f"{label} 未被攔截")
 
     with no_network():
-        for family, addr in ((socket.AF_INET, ("192.0.2.1", 80)), (socket.AF_INET6, ("2001:db8::1", 80))):
+        for family, addr in (
+            (socket.AF_INET, ("192.0.2.1", 80)),
+            (socket.AF_INET6, ("2001:db8::1", 80)),
+        ):
             s = socket.socket(family, socket.SOCK_STREAM)
             try:
-                blocked(lambda s=s, addr=addr: s.connect(addr), f"TCP connect {family!r}")
+                blocked(
+                    lambda s=s, addr=addr: s.connect(addr), f"TCP connect {family!r}"
+                )
             finally:
                 s.close()
             u = socket.socket(family, socket.SOCK_DGRAM)
             try:
-                blocked(lambda u=u, addr=addr: u.sendto(b"x", addr), f"UDP sendto {family!r}")
+                blocked(
+                    lambda u=u, addr=addr: u.sendto(b"x", addr),
+                    f"UDP sendto {family!r}",
+                )
             finally:
                 u.close()
         blocked(lambda: socket.getaddrinfo("db.invalid", 80), "DNS getaddrinfo")
@@ -378,7 +439,10 @@ def g10_netguard_restore_by_assign() -> None:
         if isinstance(node, ast.Call) and call_name(node) == "delattr":
             fail("G10", f"{rel}:{node.lineno} 呼叫 delattr")
     if "socket.socket.connect = _orig_connect" not in src:
-        fail("G10", "tests/netguard.py 缺少 `socket.socket.connect = _orig_connect` 還原賦值")
+        fail(
+            "G10",
+            "tests/netguard.py 缺少 `socket.socket.connect = _orig_connect` 還原賦值",
+        )
     fn = func_named(tree, "no_network")
     if fn is None:
         fail("G10", "tests/netguard.py 缺少 no_network()")
@@ -390,7 +454,10 @@ def g10_netguard_restore_by_assign() -> None:
             for t in node.targets:
                 name = ast.unparse(t)
                 if name.startswith("_orig_"):
-                    fail("G10", f"{rel}:{node.lineno} 把 {name} 清成 None（identity 斷言將無法成立）")
+                    fail(
+                        "G10",
+                        f"{rel}:{node.lineno} 把 {name} 清成 None（identity 斷言將無法成立）",
+                    )
 
 
 # ---------------------------------------------------------------- G11
@@ -401,7 +468,9 @@ def g11_cdp_rlock() -> None:
         fail("G11", f"{rel} 未使用 threading.RLock()")
     if "threading.Lock()" in src:
         fail("G11", f"{rel} 出現非重入的 threading.Lock()")
-    fn = method_of(ast.parse(src, filename=rel), "CdpRttTracker", "on_request_will_be_sent")
+    fn = method_of(
+        ast.parse(src, filename=rel), "CdpRttTracker", "on_request_will_be_sent"
+    )
     if fn is None:
         fail("G11", f"{rel} 缺少 on_request_will_be_sent")
     elif "self.prune(" in (ast.get_source_segment(src, fn) or ""):
@@ -425,7 +494,10 @@ def g14_screenshot_counter() -> None:
     rel = "src/browser/manager.py"
     src = read(rel)
     if src.count("itertools.count(") != 1:
-        fail("G14", f"{rel} itertools.count( 出現 {src.count('itertools.count(')} 次（必須恰一次）")
+        fail(
+            "G14",
+            f"{rel} itertools.count( 出現 {src.count('itertools.count(')} 次（必須恰一次）",
+        )
     tree = ast.parse(src, filename=rel)
     hosts = [
         f.name
@@ -444,9 +516,15 @@ def g15_frozen2_allowlist() -> None:
     tree = ast.parse(src, filename=rel)
     found = False
     for node in tree.body:
-        if isinstance(node, ast.AnnAssign) and ast.unparse(node.target) == "DEFAULT_KKTIX_ALLOWED_HOSTS":
+        if (
+            isinstance(node, ast.AnnAssign)
+            and ast.unparse(node.target) == "DEFAULT_KKTIX_ALLOWED_HOSTS"
+        ):
             found = True
-            if node.value is None or ast.literal_eval(node.value) != ("kktix.com", ".kktix.cc"):
+            if node.value is None or ast.literal_eval(node.value) != (
+                "kktix.com",
+                ".kktix.cc",
+            ):
                 fail("G15", f"{rel} DEFAULT_KKTIX_ALLOWED_HOSTS 值遭放寬")
     if not found:
         fail("G15", f"{rel} 未宣告 DEFAULT_KKTIX_ALLOWED_HOSTS")
@@ -455,11 +533,17 @@ def g15_frozen2_allowlist() -> None:
         fail("G15", f"{rel} 缺少 ServerHeaderClockSync.sample")
     else:
         body = list(fn.body)
-        if body and isinstance(body[0], ast.Expr) and isinstance(body[0].value, ast.Constant):
+        if (
+            body
+            and isinstance(body[0], ast.Expr)
+            and isinstance(body[0].value, ast.Constant)
+        ):
             body = body[1:]  # 跳過 docstring
         first = ast.unparse(body[0]) if body else ""
         if first != "self.assert_url_allowed(url)":
-            fail("G15", f"{rel} sample() 首句不是 assert_url_allowed（實際: {first!r}）")
+            fail(
+                "G15", f"{rel} sample() 首句不是 assert_url_allowed（實際: {first!r}）"
+            )
     if "follow_redirects=True" in src:
         fail("G15", f"{rel} 允許跟隨轉址，等同 allowlist 側門")
 
@@ -477,7 +561,10 @@ def g16_per_task_clock_sync() -> None:
     else:
         args = [a.arg for a in init.args.args + init.args.kwonlyargs]
         if "clock_synchronizer_factory" not in args:
-            fail("G16", f"{rel} WarmupScheduler.__init__ 缺少 clock_synchronizer_factory 參數")
+            fail(
+                "G16",
+                f"{rel} WarmupScheduler.__init__ 缺少 clock_synchronizer_factory 參數",
+            )
     fields = _dataclass_fields(tree, "TaskSchedule")
     for required in ("clock_sync", "stage_lock", "readiness_deferred"):
         if required not in fields:
@@ -488,9 +575,7 @@ def _dataclass_fields(tree: ast.AST, class_name: str) -> set[str]:
     for n in ast.walk(tree):
         if isinstance(n, ast.ClassDef) and n.name == class_name:
             return {
-                ast.unparse(m.target)
-                for m in n.body
-                if isinstance(m, ast.AnnAssign)
+                ast.unparse(m.target) for m in n.body if isinstance(m, ast.AnnAssign)
             }
     return set()
 
@@ -510,7 +595,10 @@ def g17_stage_serialized() -> None:
             continue
         has_lock = any(
             isinstance(n, ast.AsyncWith)
-            and any("schedule.stage_lock" in ast.unparse(item.context_expr) for item in n.items)
+            and any(
+                "schedule.stage_lock" in ast.unparse(item.context_expr)
+                for item in n.items
+            )
             for n in ast.walk(fn)
         )
         if not has_lock:
@@ -521,7 +609,9 @@ def g17_stage_serialized() -> None:
 def g18_screenshot_hook_threadsafe() -> None:
     rel = "src/browser/manager.py"
     src = read(rel)
-    fn = method_of(ast.parse(src, filename=rel), "PlaywrightManager", "make_screenshot_hook")
+    fn = method_of(
+        ast.parse(src, filename=rel), "PlaywrightManager", "make_screenshot_hook"
+    )
     if fn is None:
         fail("G18", f"{rel} 缺少 make_screenshot_hook")
         return
@@ -548,11 +638,17 @@ def g19_readiness_single_owner() -> None:
     if cls is None:
         fail("G19", f"{rel} 缺少 WarmupScheduler")
         return
-    lits = [n.value for n in ast.walk(cls) if isinstance(n, ast.Constant) and isinstance(n.value, str)]
+    lits = [
+        n.value
+        for n in ast.walk(cls)
+        if isinstance(n, ast.Constant) and isinstance(n.value, str)
+    ]
     for marker in ("sale_readiness_catch_up", "sale_readiness_recovered"):
         if lits.count(marker) != 1:
-            fail("G19", f"{rel} {marker!r} 發射點有 {lits.count(marker)} 個（必須恰一個 owner）")
-
+            fail(
+                "G19",
+                f"{rel} {marker!r} 發射點有 {lits.count(marker)} 個（必須恰一個 owner）",
+            )
 
 
 # --------------------------------------------------------------- G20
@@ -561,34 +657,53 @@ def g19_readiness_single_owner() -> None:
 DOMAIN_FROZEN_FIELDS = {
     "src/domain/task.py": {
         "CreditCardProfile": {
-            "card_number": "str", "expiry_month": "str", "expiry_year": "str",
-            "cvv": "str", "cardholder_name": "str",
+            "card_number": "str",
+            "expiry_month": "str",
+            "expiry_year": "str",
+            "cvv": "str",
+            "cardholder_name": "str",
         },
         "UserContactProfile": {"name": "str", "phone": "str", "email": "str"},
         "PurchaseTaskSpec": {
-            "task_id": "str", "event_title": "str", "event_url": "str",
-            "sale_start_at": "UtcDatetime", "ticket_preference": "TicketPreference",
-            "contact_profile": "UserContactProfile", "payment_method": "PaymentMethod",
-            "payment_profile": "CreditCardProfile | None", "max_retries": "int",
+            "task_id": "str",
+            "event_title": "str",
+            "event_url": "str",
+            "sale_start_at": "UtcDatetime",
+            "ticket_preference": "TicketPreference",
+            "contact_profile": "UserContactProfile",
+            "payment_method": "PaymentMethod",
+            "payment_profile": "CreditCardProfile | None",
+            "max_retries": "int",
             "timeout_seconds": "int",
         },
         "PurchaseTaskRecord": {
-            "id": "str", "event_id": "str | None", "status": "TaskStatus",
-            "spec": "dict[str, Any]", "scheduled_at": "UtcDatetime | None",
-            "started_at": "UtcDatetime | None", "finished_at": "UtcDatetime | None",
-            "error_message": "str | None", "created_at": "UtcDatetime",
+            "id": "str",
+            "event_id": "str | None",
+            "status": "TaskStatus",
+            "spec": "dict[str, Any]",
+            "scheduled_at": "UtcDatetime | None",
+            "started_at": "UtcDatetime | None",
+            "finished_at": "UtcDatetime | None",
+            "error_message": "str | None",
+            "created_at": "UtcDatetime",
         },
     },
     "src/domain/preference.py": {
-        "TicketPriority": {"price": "int", "ticket_name_pattern": "str | None", "priority": "int"},
+        "TicketPriority": {
+            "price": "int",
+            "ticket_name_pattern": "str | None",
+            "priority": "int",
+        },
         "SeatPreference": {
             "adjacent": "bool",
             "strategy": "Literal['best_available', 'same_zone', 'specific_zone']",
             "preferred_zones": "list[str]",
         },
         "TicketPreference": {
-            "quantity": "int", "priorities": "list[TicketPriority]",
-            "seat_preference": "SeatPreference", "fallback_to_any": "bool",
+            "quantity": "int",
+            "priorities": "list[TicketPriority]",
+            "seat_preference": "SeatPreference",
+            "fallback_to_any": "bool",
         },
     },
 }
@@ -703,13 +818,20 @@ def g24_payment_mapping_is_a_single_table() -> None:
         return
     keys: set[str] = set()
     for key in mapping.keys:
-        if isinstance(key, ast.Attribute) and isinstance(key.value, ast.Name) and key.value.id == "PaymentOutcome":
+        if (
+            isinstance(key, ast.Attribute)
+            and isinstance(key.value, ast.Name)
+            and key.value.id == "PaymentOutcome"
+        ):
             keys.add(key.attr)
         else:
             fail("G24", f"{ORCHESTRATOR_PATH} 對應表出現非 PaymentOutcome 的鍵")
     expected = enum_members(PAYMENT_BASE_PATH, "PaymentOutcome")
     if keys != expected:
-        fail("G24", f"付款對應表未涵蓋全部結果：缺 {sorted(expected - keys)}，多 {sorted(keys - expected)}")
+        fail(
+            "G24",
+            f"付款對應表未涵蓋全部結果：缺 {sorted(expected - keys)}，多 {sorted(keys - expected)}",
+        )
 
 
 # --------------------------------------------------------------- G25
@@ -738,15 +860,19 @@ def g25_no_card_secrets_in_sinks() -> None:
             if not isinstance(node, ast.Call):
                 continue
             name = call_name(node)
-            is_sink = name.startswith("telemetry.record") or ".record" in name or any(
-                part in name.lower() for part in SINK_NAME_PARTS
+            is_sink = (
+                name.startswith("telemetry.record")
+                or ".record" in name
+                or any(part in name.lower() for part in SINK_NAME_PARTS)
             )
             if not is_sink:
                 continue
             for arg in list(node.args) + list(node.keywords):
                 leak = _leaks_card_secret(arg)
                 if leak:
-                    fail("G25", f"{rel}:{node.lineno} 對 {name!r} 傳入卡片機密 {leak!r}")
+                    fail(
+                        "G25", f"{rel}:{node.lineno} 對 {name!r} 傳入卡片機密 {leak!r}"
+                    )
     automated = read(AUTOMATED_PAYMENT_PATH)
     for switch in ("allow_real_payment", "AUTO_TICKET_ENABLE_REAL_PAYMENT"):
         if switch not in automated:
@@ -790,9 +916,44 @@ def g27_strategy_layer_is_pure() -> None:
                 names = [node.module or ""]
             for n in names:
                 if n == "playwright" or n.startswith("playwright."):
-                    fail("G27", f"{rel}:{node.lineno} 決策層 import 了 playwright")
+                    fail(
+                        "G27",
+                        f"{rel}:{getattr(node, 'lineno', 0)} 決策層 import 了 playwright",
+                    )
             if isinstance(node, ast.Name) and node.id in {"Page", "Locator"}:
                 fail("G27", f"{rel}:{node.lineno} 決策層出現 DOM 型別 {node.id!r}")
+
+
+# --------------------------------------------------------------- G28
+def cdp_no_defaults_violations(tree: ast.AST, rel: str) -> list[str]:
+    """所有 `connect_over_cdp` 呼叫必須顯式帶 `no_defaults=True`。
+
+    否則 Playwright 會對「借來的」預設 context 套用自己的 downloads / focus / media 覆寫。
+    """
+    out: list[str] = []
+    for node in ast.walk(tree):
+        if not (
+            isinstance(node, ast.Call) and call_name(node).endswith(".connect_over_cdp")
+        ):
+            continue
+        ok = any(
+            k.arg == "no_defaults"
+            and isinstance(k.value, ast.Constant)
+            and isinstance(k.value.value, bool)
+            and k.value.value
+            for k in node.keywords
+        )
+        if not ok:
+            out.append(
+                f"{rel}:{getattr(node, 'lineno', 0)} connect_over_cdp 未帶 no_defaults=True"
+            )
+    return out
+
+
+def g28_cdp_no_defaults() -> None:
+    for rel in list(iter_src_files()) + list(iter_script_files()):
+        for msg in cdp_no_defaults_violations(parse(rel), rel):
+            fail("G28", msg)
 
 
 GATES = (
@@ -822,6 +983,7 @@ GATES = (
     g25_no_card_secrets_in_sinks,
     g26_live_suite_is_read_only,
     g27_strategy_layer_is_pure,
+    g28_cdp_no_defaults,
 )
 
 

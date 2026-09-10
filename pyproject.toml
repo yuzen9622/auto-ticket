@@ -17,7 +17,7 @@ dependencies = [
     # 核心引擎依賴（僅追加；不得回頭放寬上列任一約束、不得移除 [asyncio] extra）
     "apscheduler>=3.10.4",
     "ntplib>=0.4.0",
-    "playwright>=1.40.0",
+    "playwright>=1.60",
     "python-statemachine>=3.2.0",
     "structlog>=24.1.0",
 ]
