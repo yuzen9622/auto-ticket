@@ -46,6 +46,8 @@ packages = [
     "src/fsm",
     "src/scheduler",
     "src/browser",
+    "src/strategy",
+    "src/purchase",
 ]
 
 [tool.pytest.ini_options]
@@ -53,4 +55,8 @@ pythonpath = ["src"]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 testpaths = ["tests"]
-addopts = "-q"
+# 實站套件預設不收集；帶 --live 時由根目錄 conftest.py 解除此 ignore。
+addopts = "-q --ignore=tests/live"
+markers = [
+    "live: 需要真實網路與瀏覽器的實站唯讀驗證（預設不收集，需 --live）",
+]
