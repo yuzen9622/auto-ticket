@@ -34,7 +34,7 @@ from purchase.handlers import (
 from scheduler.scheduler import WarmupContext, WarmupScheduler, WarmupStage
 from telemetry.timeline import TimelineEventType, TimelineRecorder
 
-# [FROZEN-3] 付款結果 -> FSM 事件的單一對應表。
+# 付款結果 -> FSM 事件的單一對應表。
 # 必須涵蓋 PaymentOutcome 全部成員，且**不得**散落成 if/else（由守門機械化比對）。
 # CHECKPOINT_REACHED 在研究語意上等同「成功抵達付款檢查點」，因此送 payment_success；
 # THREE_DS_REQUIRED 在本階段尚無互動通道，一律視為未完成。

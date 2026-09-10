@@ -1,6 +1,4 @@
-"""[FSM-STAGE-DRIVE][FSM-STAGE-FAIL-CLOSED][FROZEN-1][REBASE-NO-EXPIRED-JOB]
-[LATE-SCHED-DYNAMIC-REANCHOR][SCHED-SHUTDOWN-DRAIN][STAGE-SERIALIZED][CLOCK-SYNC-PER-TASK]
-預熱排程器單元測試。
+"""預熱排程器單元測試。
 """
 
 from __future__ import annotations
@@ -462,7 +460,7 @@ async def test_send_fsm_event_failure_is_fail_closed(scheduler: WarmupScheduler,
     assert marks(telemetry, "schedule_aborted")
 
 
-# ============================================ [FROZEN-1][READINESS-SINGLE-OWNER]
+# ============================================
 async def test_late_schedule_readiness_recovers_and_reaches_sale_open(
     scheduler: WarmupScheduler, telemetry: TimelineRecorder, clock: Clock,
 ) -> None:
@@ -592,7 +590,7 @@ async def test_readiness_failure_is_fail_closed_and_never_triggers_sale(
 async def test_readiness_with_stuck_fsm_aborts_without_sale_trigger(
     scheduler: WarmupScheduler, telemetry: TimelineRecorder, clock: Clock,
 ) -> None:
-    """[ABORT-LEGALITY-GATE] 卡在 PAYMENT_REQUIRED 且 abort 合法 -> 只送 abort_failed。"""
+    """卡在 PAYMENT_REQUIRED 且 abort 合法 -> 只送 abort_failed。"""
     recorder = Recorder()
     register_recording_handlers(scheduler, recorder, clock=clock)
     fsm = FakeFsm(state="PAYMENT_REQUIRED", frozen=True, abort_allowed=True)
@@ -609,7 +607,7 @@ async def test_readiness_with_stuck_fsm_aborts_without_sale_trigger(
 async def test_readiness_with_illegal_abort_sends_no_event_at_all(
     scheduler: WarmupScheduler, telemetry: TimelineRecorder, clock: Clock,
 ) -> None:
-    """[ABORT-LEGALITY-GATE] can_send 為 False -> 完全不送事件，只記 fsm_abort_not_allowed。"""
+    """can_send 為 False -> 完全不送事件，只記 fsm_abort_not_allowed。"""
     recorder = Recorder()
     register_recording_handlers(scheduler, recorder, clock=clock)
     fsm = FakeFsm(state="PAYMENT_REQUIRED", frozen=True, abort_allowed=False)
@@ -680,7 +678,7 @@ async def test_post_sale_catch_up_immediate_trigger(scheduler: WarmupScheduler, 
     assert trigger.detail["sale_time_error_ms"] > 0
 
 
-# =================================================== [FSM-STAGE-FAIL-CLOSED]
+# ===================================================
 async def test_trigger_handler_failure_is_fail_closed(
     scheduler: WarmupScheduler, telemetry: TimelineRecorder, clock: Clock,
     jobs: FakeJobScheduler,
@@ -856,7 +854,7 @@ async def test_cancel_unknown_and_repeat_returns_false(scheduler: WarmupSchedule
     assert scheduler.cancel("task-1") is False
 
 
-# ============================================== [REBASE-NO-EXPIRED-JOB]
+# ==============================================
 async def test_update_clock_offset_below_epsilon_updates_dual_track_samples_without_job_churn(
     scheduler: WarmupScheduler, telemetry: TimelineRecorder, jobs: FakeJobScheduler,
 ) -> None:
@@ -1018,7 +1016,7 @@ async def test_shutdown_is_idempotent(scheduler: WarmupScheduler, jobs: FakeJobS
     assert len(jobs.shutdown_calls) == 1
 
 
-# ============================================== [CLOCK-SYNC-PER-TASK]
+# ==============================================
 async def test_each_task_gets_its_own_synchronizer(scheduler: WarmupScheduler,
                                                    factory: SyncFactory) -> None:
     await scheduler.schedule(make_spec("task-a", sale_at=BASE_WALL + timedelta(hours=1),
@@ -1119,7 +1117,7 @@ async def test_resync_failure_is_recorded_and_non_fatal(
     await sched.shutdown()
 
 
-# ============================================== [STAGE-SERIALIZED]
+# ==============================================
 async def test_stage_execution_is_serialized_against_rebase_catch_up(
     scheduler: WarmupScheduler, clock: Clock,
 ) -> None:

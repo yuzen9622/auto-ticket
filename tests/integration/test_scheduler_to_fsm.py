@@ -1,4 +1,4 @@
-"""[FSM-STAGE-DRIVE][FROZEN-1][FSM-STAGE-FAIL-CLOSED] 排程器驅動真實狀態機的端到端閉環。"""
+"""排程器驅動真實狀態機的端到端閉環。"""
 
 from __future__ import annotations
 
@@ -189,7 +189,7 @@ async def test_check_session_failure_drives_real_workflow_to_failed(harness: Har
 
 async def test_late_schedule_readiness_first_reaches_sale_open(harness: Harness,
                                                                tmp_path: Path) -> None:
-    """[FROZEN-1] T-300ms 建立且 FSM 為 IDLE：沿合法路徑補齊後開賣，誤差如實記錄。"""
+    """T-300ms 建立且 FSM 為 IDLE：沿合法路徑補齊後開賣，誤差如實記錄。"""
     harness.register()
     spec = make_spec(harness.clock.wall + timedelta(milliseconds=300))
     workflow = PurchaseWorkflow(spec, harness.telemetry)
@@ -242,7 +242,7 @@ async def test_trigger_failure_is_fail_closed_end_to_end(harness: Harness) -> No
 
 
 async def test_abort_is_legal_from_payment_required(harness: Harness) -> None:
-    """[ABORT-LEGALITY-GATE] 真實 FSM 走到 PAYMENT_REQUIRED 時中止仍屬合法轉移。"""
+    """真實 FSM 走到 PAYMENT_REQUIRED 時中止仍屬合法轉移。"""
     harness.register()
     spec = make_spec(harness.clock.wall + timedelta(minutes=2))
     workflow = PurchaseWorkflow(spec, harness.telemetry)

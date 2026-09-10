@@ -84,7 +84,7 @@ GUARDED_TEST_FILES = (
 )
 # 沒有測試函式的測試輔助模組：不適用「必須掛 netguard fixture」這條。
 TEST_HELPERS_WITHOUT_TESTS = ("tests/netguard.py", "tests/fake_page.py")
-# [FROZEN-2] 白名單放行／阻擋案例本來就必須寫出真實網域字面值，改用較窄規則把關。
+# 白名單放行／阻擋案例本來就必須寫出真實網域字面值，改用較窄規則把關。
 G2_LITERAL_EXEMPT = ("tests/unit/test_clock_sync.py",)
 RESERVED_TEST_HOST_SUFFIXES = (
     ".invalid",
@@ -661,7 +661,7 @@ def g22_no_selector_literals_in_adapter() -> None:
 
 # --------------------------------------------------------------- G23
 def g23_mock_never_touches_submit_button() -> None:
-    """[FROZEN-3] Mock provider 連「確認付款」按鈕都不得引用，遑論點擊。"""
+    """Mock provider 連「確認付款」按鈕都不得引用，遑論點擊。"""
     tree = parse(MOCK_PAYMENT_PATH)
     for node in ast.walk(tree):
         if isinstance(node, ast.Attribute) and node.attr == "BTN_CONFIRM_PAYMENT":
@@ -758,7 +758,7 @@ LIVE_BANNED_MARKS = {"pytest.mark.skip", "pytest.mark.skipif", "pytest.mark.xfai
 
 
 def g26_live_suite_is_read_only() -> None:
-    """[FROZEN-4] 實站套件預設不跑靠 ignore，不靠跳過標記；且一律不得送出。"""
+    """實站套件預設不跑靠 ignore，不靠跳過標記；且一律不得送出。"""
     if "--ignore=tests/live" not in read("pyproject.toml"):
         fail("G26", "pyproject.toml 的 addopts 缺少 --ignore=tests/live")
     for rel in iter_live_files():

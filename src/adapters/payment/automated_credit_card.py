@@ -1,6 +1,6 @@
 """真實刷卡 provider——**預設不可用**。
 
-`[FROZEN-3]` 雙開關：建構參數 `allow_real_payment=True` **且** 環境變數
+雙開關：建構參數 `allow_real_payment=True` **且** 環境變數
 `AUTO_TICKET_ENABLE_REAL_PAYMENT=1`，任一缺席即拋 `RealPaymentNotEnabledError`。
 兩個開關必須獨立（一個在程式碼、一個在執行環境），任何一邊被誤設都不足以刷卡。
 

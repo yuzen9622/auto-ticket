@@ -110,7 +110,7 @@ def no_network() -> Iterator[None]:
     finally:
         _patch_depth -= 1
         if _patch_depth == 0:
-            # [NETGUARD-RESTORE-BY-ASSIGN] 一律以保存的原始方法引用重新賦值還原。
+            # 一律以保存的原始方法引用重新賦值還原。
             # 嚴禁改用「刪除屬性」的還原方式（見 G10）：那依賴「patch 前該屬性
             # 不在 socket.socket.__dict__、而是繼承自 _socket.socket」這個 CPython
             # 實作細節；一旦 socket.py 改為自行定義該方法，屬性刪除會把真正的
@@ -123,7 +123,7 @@ def no_network() -> Iterator[None]:
             socket.getaddrinfo = _orig_getaddrinfo
             socket.gethostbyname = _orig_gethostbyname
             socket.gethostbyname_ex = _orig_gethostbyname_ex
-            # [NETGUARD-RESTORE-BY-ASSIGN] **保留**原始引用，嚴禁在此設回 None：
+            # **保留**原始引用，嚴禁在此設回 None：
             # 8.0 的 identity 斷言（`socket.socket.connect is netguard._orig_connect`）
             # 需要它，且下次進入時會以同一份原始實作重新保存（冪等）。G10 靜態鎖定。
 

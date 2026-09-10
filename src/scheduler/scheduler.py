@@ -45,11 +45,11 @@ DEFAULT_RESYNC_STAGES = frozenset({
     WarmupStage.NAVIGATE_PAGE,
 })
 
-# [FSM-STAGE-FAIL-CLOSED] 以字串常數本地宣告，避免 scheduler -> fsm 的模組耦合。
+# 以字串常數本地宣告，避免 scheduler -> fsm 的模組耦合。
 # 必須與 fsm.states.FINAL_STATES 一致（由驗收指令 #27 機械化比對）。
 FSM_FINAL_STATE_IDS: frozenset[str] = frozenset({"COMPLETED", "SOLD_OUT", "TIMEOUT", "FAILED"})
 
-# [FROZEN-1][LATE-SCHED-READINESS-FIRST] 就緒補齊路徑：(階段, 合法來源狀態, 應送事件)
+# 就緒補齊路徑：(階段, 合法來源狀態, 應送事件)
 SALE_READINESS_PATH: tuple[tuple[WarmupStage, str, str], ...] = (
     (WarmupStage.PREPARE_BROWSER, "IDLE", "prepare_session"),
     (WarmupStage.CHECK_SESSION, "PREPARING", "session_ready"),
@@ -58,7 +58,7 @@ SALE_READINESS_EVENTS: Mapping[WarmupStage, tuple[str, str]] = MappingProxyType(
     stage: (expected_from, event) for stage, expected_from, event in SALE_READINESS_PATH
 })
 
-# [READINESS-SINGLE-OWNER] 開賣前必須完成的所有預熱階段（宣告順序即執行順序）。
+# 開賣前必須完成的所有預熱階段（宣告順序即執行順序）。
 # 就緒補齊不只補 SALE_READINESS_PATH 的兩個 FSM 驅動階段：NAVIGATE_PAGE / ENTER_READY
 # 的 handler 是真正把頁面帶到可下單狀態的工作，晚排程同樣不得跳過。
 PRE_SALE_STAGES: tuple[WarmupStage, ...] = tuple(
@@ -136,12 +136,12 @@ class TaskSchedule:
     cancelled: bool = False
     failed: bool = False
     fired_stages: set[WarmupStage] = field(default_factory=set)
-    # [STAGE-SERIALIZED] 每個 task 一把鎖：階段執行、就緒補齊、rebase catch-up 全部序列化。
+    # 每個 task 一把鎖：階段執行、就緒補齊、rebase catch-up 全部序列化。
     # 嚴禁在 handler 內回頭呼叫 scheduler 的階段 API（會自鎖）。
     stage_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
-    # [CLOCK-SYNC-PER-TASK] 本 task 專屬的時鐘同步器（依自身 event_url 組裝）。
+    # 本 task 專屬的時鐘同步器（依自身 event_url 組裝）。
     clock_sync: Any | None = None
-    # [READINESS-SINGLE-OWNER] 建立當下已進入 T-500ms 視窗 -> 就緒補齊延後給
+    # 建立當下已進入 T-500ms 視窗 -> 就緒補齊延後給
     # _ensure_sale_ready() 單一 owner 處理；schedule() 不得先跑 overdue 預熱階段。
     readiness_deferred: bool = False
     readiness_reported: bool = False
@@ -193,7 +193,7 @@ class WarmupScheduler:
             self._jobs: JobScheduler = AsyncIOScheduler()
         else:
             self._jobs = job_scheduler
-        # [CLOCK-SYNC-PER-TASK] `clock_synchronizer` = 呼叫端明示共用的覆寫（所有 task 共用）；
+        # `clock_synchronizer` = 呼叫端明示共用的覆寫（所有 task 共用）；
         # 未指定時改由 factory 依「各 task 自己的 event_url」逐一組裝，
         # 避免單一 synchronizer 的 server_url 被第一個 task 永久釘死。
         self._clock_sync = clock_synchronizer
@@ -212,13 +212,13 @@ class WarmupScheduler:
         self._plans: dict[str, WarmupPlan] = {}
         self._active_tasks: dict[str, TaskSchedule] = {}
         self._handlers: dict[WarmupStage, Callable[[WarmupContext], Awaitable[None]]] = {}
-        # [REBASE-NO-EXPIRED-JOB] rebase 後接手過期階段的本地協程；由 shutdown() 一併排空。
+        # rebase 後接手過期階段的本地協程；由 shutdown() 一併排空。
         self._background_tasks: set[asyncio.Task[Any]] = set()
         self._started = False
         self._shutdown = False
 
     def _default_clock_sync_factory(self, server_url: str | None) -> ClockSynchronizerLike:
-        """[DUAL-CLOCK-DEFAULT-ASSEMBLY][CLOCK-SYNC-PER-TASK] 每個 task 一個同步器。"""
+        """每個 task 一個同步器。"""
         return ClockSynchronizer(
             ntp_host=DEFAULT_NTP_HOST,
             server_url=server_url,
@@ -266,7 +266,7 @@ class WarmupScheduler:
             sched.fsm = fsm
 
     def _send_fsm_event(self, schedule: TaskSchedule, event_name: str) -> bool:
-        """[FSM-STAGE-FAIL-CLOSED] FSM 事件唯一送出點。
+        """FSM 事件唯一送出點。
 
         呼叫端必須事先確認狀態合法；本函式只負責送出與失敗收斂。
         任何例外（含 TransitionNotAllowed）都視為致命：記錄後原子化中止，回傳 False。
@@ -291,7 +291,7 @@ class WarmupScheduler:
         return True
 
     def _drive_fsm_abort_failed(self, schedule: TaskSchedule) -> None:
-        """[ABORT-LEGALITY-GATE] 推進 FSM 至 FAILED 終態。
+        """推進 FSM 至 FAILED 終態。
 
         兩道守衛，缺一不可：
         1) 已在終態 -> 直接跳過；
@@ -325,7 +325,7 @@ class WarmupScheduler:
             )
 
     def _abort_schedule(self, schedule: TaskSchedule, *, reason: str) -> None:
-        """[FSM-STAGE-FAIL-CLOSED] 唯一的原子化中止入口。
+        """唯一的原子化中止入口。
 
         任何階段（含 TRIGGER_PURCHASE）失敗、或 FSM 狀態不符時都必須走這裡：
         1) 標記 failed/aborted -> 2) 取消所有後續 jobs -> 3) 取消 spin task
@@ -388,7 +388,7 @@ class WarmupScheduler:
         if target_sale_time.tzinfo is None:
             raise ValueError("sale_start_at must be tz-aware UTC datetime")
 
-        # [DUAL-CLOCK-DEFAULT-ASSEMBLY][CLOCK-SYNC-PER-TASK] 雙軌時鐘同步器裝配。
+        # 雙軌時鐘同步器裝配。
         # 呼叫端明示注入（建構參數或 attach_clock_synchronizer）-> 全域共用該實例；
         # 否則每個 task 用 factory 依「自己的 event_url」各組裝一個。
         # 嚴禁改回「共用單一 ClockSynchronizer 並寫入其 _server_url」的舊寫法：
@@ -438,7 +438,7 @@ class WarmupScheduler:
             spin_plan = plan.stage_of(WarmupStage.SPIN_WAIT)
             trigger_plan = plan.stage_of(WarmupStage.TRIGGER_PURCHASE)
 
-            # 0. [READINESS-SINGLE-OWNER][FROZEN-1] 就緒補齊的**單一 owner** 判定。
+            # 0. 就緒補齊的**單一 owner** 判定。
             # 若排程建立當下就已落在 T-500ms 視窗內（spin 階段已過期），本函式
             # **不得**先跑 overdue 預熱階段：那會在抵達 _ensure_sale_ready() 之前
             # 就把 FSM 推到 WAITING_FOR_SALE，使 sale_readiness_catch_up /
@@ -452,7 +452,7 @@ class WarmupScheduler:
                     task_id=task_id,
                 )
 
-            # 1. 晚排程動態重新錨定（[LATE-SCHED-DYNAMIC-REANCHOR]）：依序執行 overdue 預熱階段
+            # 1. 晚排程動態重新錨定：依序執行 overdue 預熱階段
             #    （僅適用非 deferred 路徑；deferred 由 _ensure_sale_ready() 全權負責）
             if not schedule.readiness_deferred:
                 for sp in plan.stages:
@@ -474,7 +474,7 @@ class WarmupScheduler:
                             plan.aborted = True
                             break
 
-            # 2. 三路徑動態重新錨定分流 [LATE-SCHED-DYNAMIC-REANCHOR]
+            # 2. 三路徑動態重新錨定分流
             # 必須以最新採樣的 dynamic_wall 進行分流比較，嚴禁使用靜態的 anchor_wall！
             dynamic_wall = self._wall()
 
@@ -546,7 +546,7 @@ class WarmupScheduler:
             await self._run_stage(schedule, stage)
 
     async def _run_stage(self, schedule: TaskSchedule, stage: WarmupStage) -> None:
-        """[STAGE-SERIALIZED] 對外唯一入口：取 per-task 鎖後委派 _run_stage_locked()。
+        """對外唯一入口：取 per-task 鎖後委派 _run_stage_locked()。
 
         鎖必須涵蓋「fired 標記 -> FSM 前置驅動 -> handler await -> FSM 後置驅動」整段。
         少了它，live-rebase 的背景 catch-up 協程會在某個 handler 正在 await 時越級執行
@@ -576,7 +576,7 @@ class WarmupScheduler:
 
         schedule.fired_stages.add(stage)
 
-        # 雙軌並行時鐘同步重校準（[CLOCK-SYNC-PER-TASK] 一律用本 task 專屬同步器）
+        # 雙軌並行時鐘同步重校準（一律用本 task 專屬同步器）
         task_clock_sync = schedule.clock_sync if schedule.clock_sync is not None else self._clock_sync
         if stage in self._resync_stages and task_clock_sync is not None:
             try:
@@ -616,7 +616,7 @@ class WarmupScheduler:
             **extra_detail,
         )
 
-        # [FSM-STAGE-DRIVE][FSM-STAGE-FAIL-CLOSED] 階段與狀態機明確驅動契約：前置觸發
+        # 階段與狀態機明確驅動契約：前置觸發
         if schedule.fsm is not None:
             current_id = self._get_fsm_state_id(schedule.fsm)
             if stage == WarmupStage.PREPARE_BROWSER and current_id == "IDLE":
@@ -677,7 +677,7 @@ class WarmupScheduler:
             StageOutcome(stage, outcome_status, drift_us, error=outcome_error, executed_at=now_wall)
         )
 
-        # [FSM-STAGE-DRIVE] 階段與狀態機明確驅動契約：後置推進
+        # 階段與狀態機明確驅動契約：後置推進
         if (
             schedule.fsm is not None
             and outcome_status == "OK"
@@ -687,7 +687,7 @@ class WarmupScheduler:
             if not self._send_fsm_event(schedule, "session_ready"):
                 return
 
-        # [FSM-STAGE-FAIL-CLOSED] 任一階段失敗即原子化中止，「不得」再把
+        # 任一階段失敗即原子化中止，「不得」再把
         # TRIGGER_PURCHASE 排除於本條件之外：那會讓開賣階段失敗後殘留 jobs、
         # FSM 卡在 SALE_OPEN 且無人推進終態（fail-open 缺陷）。
         # 註：本檔受 G12 靜態掃描，註解亦不得出現該排除條件的字面寫法。
@@ -704,7 +704,7 @@ class WarmupScheduler:
                 )
                 return
 
-            # [READINESS-SINGLE-OWNER][FROZEN-1] 晚排程的就緒補齊必須在 spin 等待「之前」做完，
+            # 晚排程的就緒補齊必須在 spin 等待「之前」做完，
             # 讓補齊耗時盡量落在 T=0 之前的剩餘視窗內，而不是整段加到開賣之後
             # （若補齊比剩餘時間長，超出部分仍會如實成為正的 sale_time_error_ms，不修飾）。
             # 非晚排程不進這條分支：補齊已由 schedule() 的 overdue 迴圈完成。
@@ -741,10 +741,10 @@ class WarmupScheduler:
                 )
                 return
 
-            # [FROZEN-1][LATE-SCHED-READINESS-FIRST] 凍結決策＝選項 2：流程就緒優先。
+            # 凍結決策＝選項 2：流程就緒優先。
             # 不放棄本次開賣，先把 FSM 沿合法路徑推進到 WAITING_FOR_SALE 再觸發；
             # 無法就緒才 fail-closed 中止。絕不硬送 sale_triggered。
-            # [STAGE-SERIALIZED] 就緒判定與觸發必須在**同一次持鎖**內完成，否則
+            # 就緒判定與觸發必須在**同一次持鎖**內完成，否則
             # 中間空隙會讓 rebase catch-up 插入階段、使剛驗證過的就緒狀態失效。
             # 此處多半只是純驗證（晚排程已在 spin 前補齊、正常排程由 schedule() 補齊），
             # 只有 rebase 之後仍有未跑階段時才會真的補跑，屆時才記錄 readiness 事件。
@@ -756,19 +756,19 @@ class WarmupScheduler:
             plan.finished.set()
 
     async def _ensure_sale_ready(self, schedule: TaskSchedule) -> bool:
-        """[STAGE-SERIALIZED] 取 per-task 鎖後委派 _ensure_sale_ready_locked()。"""
+        """取 per-task 鎖後委派 _ensure_sale_ready_locked()。"""
         async with schedule.stage_lock:
             return await self._ensure_sale_ready_locked(schedule)
 
     async def _ensure_sale_ready_locked(self, schedule: TaskSchedule) -> bool:
-        """[FROZEN-1][LATE-SCHED-READINESS-FIRST] 開賣前的就緒保證（凍結決策＝選項 2）。
+        """開賣前的就緒保證（凍結決策＝選項 2）。
 
         呼叫端必須已持有 `schedule.stage_lock`。
 
         回傳 True 表示 FSM 已在 WAITING_FOR_SALE、且所有預熱階段皆已執行，
         可安全發送 sale_triggered；回傳 False 表示已 fail-closed 中止（呼叫端立即 return）。
 
-        **[READINESS-SINGLE-OWNER] 唯一 owner 契約**：晚排程（`readiness_deferred`）的預熱
+        **唯一 owner 契約**：晚排程（`readiness_deferred`）的預熱
         補齊只在這裡發生，`schedule()` 不得代勞。因此 `sale_readiness_catch_up` 與
         `sale_readiness_recovered` 必然成對、恰記錄一次，且順序早於 TRIGGER_PURCHASE。
 
@@ -931,7 +931,7 @@ class WarmupScheduler:
                     pass
 
                 if sp.overdue:
-                    # [REBASE-NO-EXPIRED-JOB] 重算後已過期：絕不重掛 APScheduler
+                    # 重算後已過期：絕不重掛 APScheduler
                     # （必然 misfire）。移除 job 並轉交本地協程立即接手。
                     # 嚴禁把 run_date 夾擠到「現在 + 1ms」再重掛（見 G13）。
                     sp.job_id = None
@@ -976,7 +976,7 @@ class WarmupScheduler:
         stages: list[StagePlan],
         now_wall: datetime,
     ) -> None:
-        """[REBASE-NO-EXPIRED-JOB] 把 rebase 後已過期的階段交給本地協程接手。
+        """把 rebase 後已過期的階段交給本地協程接手。
 
         update_clock_offset() 是同步方法，無法 await，故以單一背景協程循序執行，
         避免多個 catch-up 併發互踩。協程登記於 _background_tasks，由 shutdown() 排空。
@@ -1017,7 +1017,7 @@ class WarmupScheduler:
         synchronizer: ClockSynchronizerLike,
         stages: Iterable[WarmupStage] | None = None,
     ) -> None:
-        """[CLOCK-SYNC-PER-TASK] 明示指定共用同步器（覆寫 factory）。
+        """明示指定共用同步器（覆寫 factory）。
 
         呼叫端明確表達「所有 task 共用這一個」，因此同時覆寫既有活躍 task 的
         `clock_sync`，避免同一個 scheduler 內新舊 task 用到不同來源而難以追查。
@@ -1047,7 +1047,7 @@ class WarmupScheduler:
         return True
 
     async def shutdown(self, wait: bool = True) -> None:
-        """[SCHED-SHUTDOWN-DRAIN] 非同步安全關閉並排空所有活躍任務"""
+        """非同步安全關閉並排空所有活躍任務"""
         if self._shutdown:
             return
         self._shutdown = True
@@ -1058,7 +1058,7 @@ class WarmupScheduler:
                 tasks.append(schedule.spin_task)
             self.cancel(task_id)
 
-        # [SCHED-SHUTDOWN-DRAIN][REBASE-NO-EXPIRED-JOB] 一併排空 rebase catch-up 協程，
+        # 一併排空 rebase catch-up 協程，
         # 否則事件迴圈關閉時會噴 "coroutine was never awaited" RuntimeWarning。
         for bg in tuple(self._background_tasks):
             if not bg.done():

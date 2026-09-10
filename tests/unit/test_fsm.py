@@ -242,7 +242,7 @@ def test_form_submitted_branches_on_verification_flag() -> None:
     assert without_verify.current_state_id == "PAYMENT_REQUIRED"
 
 
-# ------------------------------------------------ [ABORT-LEGALITY-GATE]
+# ------------------------------------------------
 def test_abort_failed_covers_every_non_final_state() -> None:
     non_final = {s.value for s in PurchaseState} - {s.value for s in FINAL_STATES}
     assert PurchaseWorkflow.transition_sources("abort_failed") == non_final

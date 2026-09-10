@@ -34,7 +34,7 @@ class CdpRttTracker:
         self._max_pending = max_pending
         self._ttl_s = pending_ttl_s
         self._perf = perf_counter
-        # [CDP-RLOCK-NO-DEADLOCK] 必須是可重入鎖：持鎖的 public 方法會再呼叫
+        # 必須是可重入鎖：持鎖的 public 方法會再呼叫
         # 同樣需要鎖語意的清理邏輯，非重入鎖會直接自鎖死結。
         self._lock = threading.RLock()
         self._pending: OrderedDict[str, PendingRequest] = OrderedDict()
@@ -56,7 +56,7 @@ class CdpRttTracker:
         now_perf = self._perf()
         now_wall = time.time()
         with self._lock:
-            # [CDP-RLOCK-NO-DEADLOCK] 持鎖中一律呼叫持鎖版私有方法，不得呼叫 public prune()
+            # 持鎖中一律呼叫持鎖版私有方法，不得呼叫 public prune()
             self._prune_locked(now_perf)
             if len(self._pending) >= self._max_pending:
                 self._pending.popitem(last=False)
@@ -101,7 +101,7 @@ class CdpRttTracker:
             return self._prune_locked(now_perf)
 
     def _prune_locked(self, now_perf: float) -> int:
-        """[CDP-RLOCK-NO-DEADLOCK] 呼叫端必須已持有 self._lock。
+        """呼叫端必須已持有 self._lock。
 
         OrderedDict 依插入序（即 perf 時序）排列，故遇到第一個未過期項目即可提早 break。
         """

@@ -78,7 +78,7 @@ class PurchaseWorkflow(StateMachine):
         | FORM_FILLING.to(TIMEOUT)
     )
 
-    # 異常中斷終態 [ABORT-LEGALITY-GATE]
+    # 異常中斷終態
     # **必須涵蓋全部 10 個非終態**：排程器的 _abort_schedule() 對任何非終態都會嘗試
     # 推進 FAILED，若此處漏掉任一狀態，真實 FSM 會拋 TransitionNotAllowed。
     # 由驗收 #35 機械化比對「abort_failed 的來源狀態集合 == 全部非終態」。

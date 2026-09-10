@@ -1,6 +1,6 @@
 """預設付款 provider：**絕不發動金流**。
 
-`[FROZEN-3]` 契約：填入固定測試卡號字串（不從 `CreditCardProfile` 讀真卡），
+契約：填入固定測試卡號字串（不從 `CreditCardProfile` 讀真卡），
 在「確認付款」按鈕**之前**停住並回報 `CHECKPOINT_REACHED`。
 `simulate` 只是把研究用的假結果餵給狀態機，不改變「不送出」這件事。
 """
@@ -76,7 +76,7 @@ class MockPaymentProvider:
             await ng_fill(page, locator, value)
             filled.append(field_name)
 
-        # [FROZEN-3] 到此為止。**嚴禁**定位或點擊 KKTIXSelectors.BTN_CONFIRM_PAYMENT。
+        # 到此為止。**嚴禁**定位或點擊 KKTIXSelectors.BTN_CONFIRM_PAYMENT。
         if self.telemetry is not None:
             self.telemetry.record(
                 TimelineEventType.MARK,

@@ -1,4 +1,4 @@
-"""[DUAL-CLOCK-DEFAULT-ASSEMBLY][FROZEN-2] 雙軌時鐘同步與 SSRF 白名單。"""
+"""雙軌時鐘同步與 SSRF 白名單。"""
 
 from __future__ import annotations
 
@@ -124,7 +124,7 @@ async def test_ntp_sample_wraps_errors_in_clock_sync_error() -> None:
 
 # ------------------------------------------------------------ Server header
 async def test_server_header_uses_perf_counter_and_half_rtt_compensation() -> None:
-    """[CLOCK-OFFSET-UPDATE-DECL] rtt 取自 perf_counter，offset 為半 RTT 補償後之差。"""
+    """rtt 取自 perf_counter，offset 為半 RTT 補償後之差。"""
     perf = FakePerf([100.0, 100.4])
     end_wall = HEADER_DATE_UTC + timedelta(milliseconds=500)
     probe = ServerHeaderClockSync(
@@ -206,7 +206,7 @@ def test_custom_allowlist_does_not_inherit_kktix() -> None:
 
 
 async def test_probe_never_follows_redirects() -> None:
-    """[FROZEN-2] 轉址目標不會再過白名單，跟隨轉址等同開後門。"""
+    """轉址目標不會再過白名單，跟隨轉址等同開後門。"""
     redirect = head_response(302, extra_headers={"Location": "http://evil.invalid/"})
     client = FakeHttpClient(redirect)
     probe = ServerHeaderClockSync(http_client=client)  # type: ignore[arg-type]

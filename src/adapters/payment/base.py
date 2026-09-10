@@ -1,6 +1,6 @@
 """付款 Port。
 
-**[FROZEN-3][PAYMENT-MOCK-DEFAULT]**：`MockPaymentProvider` 是唯一預設；真實刷卡
+`MockPaymentProvider` 是**唯一預設**；真實刷卡
 必須同時滿足建構參數與環境變數兩個獨立開關。PAN／CVV 永不落地——不得寫入 SQLite、
 不得出現在 structlog 輸出、`TimelineEvent.detail`、截圖檔名或例外訊息。
 """

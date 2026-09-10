@@ -17,7 +17,7 @@ class ClockSyncError(Exception):
     pass
 
 
-# [FROZEN-2][SERVER-DATE-HOST-ALLOWLIST] 預設僅信任 KKTIX 官方網域。
+# 預設僅信任 KKTIX 官方網域。
 # 無前導點 = host 必須完全相等；有前導點 = 該網域本身或其任意子網域。
 # 擴充其他售票平台（拓元、ibon）時於建構時傳入 allowed_hosts，嚴禁放寬此預設值。
 DEFAULT_KKTIX_ALLOWED_HOSTS: tuple[str, ...] = ("kktix.com", ".kktix.cc")
@@ -61,7 +61,7 @@ class TimeReference:
 
 @dataclass(frozen=True, slots=True)
 class ClockOffsetUpdate:
-    """[CLOCK-OFFSET-UPDATE-DECL] WarmupScheduler.update_clock_offset() 的回傳契約。
+    """WarmupScheduler.update_clock_offset() 的回傳契約。
 
     offset_ms  : 本次呼叫結束後實際生效的偏移（未套用時等於呼叫前的舊值）。
     source     : 偏移來源 ID（ClockSource.value 或呼叫端傳入的自訂字串）。
@@ -126,7 +126,7 @@ class ServerHeaderClockSync:
         return self._allowed_hosts
 
     def assert_url_allowed(self, url: str) -> str:
-        """[FROZEN-2][SERVER-DATE-HOST-ALLOWLIST] SSRF 防護閘門。
+        """SSRF 防護閘門。
 
         必須在發出任何網路請求「之前」呼叫。不命中白名單一律拋 ClockSyncError，
         絕不發包（因此也不會觸發 netguard，測試可直接斷言例外型別）。
@@ -155,7 +155,7 @@ class ServerHeaderClockSync:
         try:
             t_start_perf = self._perf()
             if self._client is not None:
-                # [FROZEN-2] 注入的 client 亦不得跟隨轉址：轉址目標不會再過白名單，
+                # 注入的 client 亦不得跟隨轉址：轉址目標不會再過白名單，
                 # 會成為繞過 allowlist 的側門。呼叫端注入時必須自行帶 follow_redirects=False；
                 # 此處明確再指定一次，httpx 允許逐次覆寫。
                 resp = await self._client.head(url, follow_redirects=False)
@@ -178,7 +178,7 @@ class ServerHeaderClockSync:
             else:
                 server_date = server_date.astimezone(timezone.utc)
 
-            # [CLOCK-OFFSET-UPDATE-DECL] RTT 一律取自 perf_counter（單調鐘），
+            # RTT 一律取自 perf_counter（單調鐘），
             # 嚴禁以牆鐘相減；半個 RTT 補償後與 perf_end 對應的牆鐘比較，
             # 符合 §A 不變式 offset_ms = true_utc_ms - local_utc_ms。
             rtt_sec = t_end_perf - t_start_perf
@@ -205,7 +205,7 @@ DEFAULT_NTP_HOST = "pool.ntp.org"
 
 
 class ClockSynchronizer:
-    """雙軌並行時鐘同步聚合器 [DUAL-CLOCK-DEFAULT-ASSEMBLY]。
+    """雙軌並行時鐘同步聚合器。
 
     預設 ntp_host = 'pool.ntp.org'，可傳入 server_url 於 T-5m / T-1m 同時收集
     NTP 與 Server HTTP Date 樣本。
@@ -223,7 +223,7 @@ class ClockSynchronizer:
         wall_clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
     ) -> None:
         self._ntp_sync = ntp_sync or NtpClockSync()
-        # [FROZEN-2] allowed_hosts 透明轉傳；若呼叫端已注入 server_sync，
+        # allowed_hosts 透明轉傳；若呼叫端已注入 server_sync，
         # 則以該實例自身的白名單為準（不覆寫、不放寬）。
         self._server_sync = server_sync or ServerHeaderClockSync(allowed_hosts=allowed_hosts)
         self._ntp_host = ntp_host
@@ -233,7 +233,7 @@ class ClockSynchronizer:
 
     @property
     def server_url(self) -> str | None:
-        """[CLOCK-SYNC-PER-TASK] 本同步器綁定的 Server Date 探針 URL（唯讀）。"""
+        """本同步器綁定的 Server Date 探針 URL（唯讀）。"""
         return self._server_url
 
     async def refresh(self) -> TimeReference:
@@ -247,7 +247,6 @@ class ClockSynchronizer:
 
         if tasks:
             results = await asyncio.gather(*tasks, return_exceptions=True)
-            # [STEALTH-UA-RUFF-CLEANUP] 移除未使用的 ttype 變數
             for res in results:
                 if isinstance(res, ClockSample):
                     samples.append(res)

@@ -1,4 +1,4 @@
-"""[NETGUARD-RESTORE-BY-ASSIGN] 零網路守門的封鎖範圍與還原正確性。"""
+"""零網路守門的封鎖範圍與還原正確性。"""
 
 from __future__ import annotations
 
@@ -91,7 +91,7 @@ def test_autouse_fixture_blocks_without_explicit_context() -> None:
 
 
 def test_restore_is_by_assignment_and_keeps_original_reference() -> None:
-    """[NETGUARD-RESTORE-BY-ASSIGN] 退出後必須是「同一個原始物件」且屬性仍在。"""
+    """退出後必須是「同一個原始物件」且屬性仍在。"""
     outer_depth = ng._patch_depth
     with no_network():
         assert ng._patch_depth == outer_depth + 1

@@ -1,4 +1,4 @@
-"""[BROWSER-RESOURCE-SAFETY-SEQ][SCREENSHOT-HOOK-THREADSAFE] 瀏覽器管理與截圖 hook。"""
+"""瀏覽器管理與截圖 hook。"""
 
 from __future__ import annotations
 
@@ -306,7 +306,7 @@ async def test_capture_screenshot_skipped_when_closing(
 
 
 async def test_three_hooks_share_one_sequence_counter(manager: PlaywrightManager) -> None:
-    """[BROWSER-RESOURCE-SAFETY-SEQ] 三個 hook 交錯 9 次，序號必須是 0001..0009。"""
+    """三個 hook 交錯 9 次，序號必須是 0001..0009。"""
     await manager.start()
     page = await manager.new_page()
     hooks = [manager.make_screenshot_hook(f"exp{i}", page) for i in range(3)]
@@ -336,7 +336,7 @@ async def test_hook_freezes_parameters_per_call(manager: PlaywrightManager) -> N
 
 
 async def test_hook_is_safe_from_plain_threads(manager: PlaywrightManager) -> None:
-    """[SCREENSHOT-HOOK-THREADSAFE] 8 個一般執行緒 × 20 次，不得拋 no-running-loop。"""
+    """8 個一般執行緒 × 20 次，不得拋 no-running-loop。"""
     await manager.start()
     page = await manager.new_page()
     hook = manager.make_screenshot_hook("exp", page)
@@ -391,7 +391,7 @@ def _call_hook_from_plain_thread(hook: Any) -> list[BaseException]:
 async def test_hook_after_stop_is_silent_and_leaves_no_orphan_coroutine(
     manager: PlaywrightManager, telemetry: TimelineRecorder,
 ) -> None:
-    """[SCREENSHOT-HOOK-THREADSAFE] 關閉後自一般執行緒呼叫 hook：不拋例外、不留孤兒協程。"""
+    """關閉後自一般執行緒呼叫 hook：不拋例外、不留孤兒協程。"""
     await manager.start()
     page = await manager.new_page()
     hook = manager.make_screenshot_hook("exp", page)
@@ -409,7 +409,7 @@ async def test_hook_after_stop_is_silent_and_leaves_no_orphan_coroutine(
 async def test_hook_without_running_manager_records_no_loop(
     tmp_path: Path, telemetry: TimelineRecorder, playwright: FakePlaywright,
 ) -> None:
-    """[SCREENSHOT-HOOK-THREADSAFE] 尚未 start() -> 沒有 loop 可用，記錄 no_loop 並安全略過。"""
+    """尚未 start() -> 沒有 loop 可用，記錄 no_loop 並安全略過。"""
     idle_manager = PlaywrightManager(
         BrowserProfile(name="idle-profile", user_data_dir=tmp_path / "p"),
         telemetry,
@@ -471,7 +471,7 @@ async def test_stop_releases_every_resource_even_when_a_step_fails(
     manager: PlaywrightManager, playwright: FakePlaywright, context: FakeContext,
     failing_step: str,
 ) -> None:
-    """[BROWSER-RESOURCE-SAFETY-SEQ] 任一步驟拋例外，後續釋放仍須執行且例外向外傳播。"""
+    """任一步驟拋例外，後續釋放仍須執行且例外向外傳播。"""
     await manager.start()
     await manager.new_page()
 

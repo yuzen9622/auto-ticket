@@ -1,4 +1,4 @@
-"""[CDP-RLOCK-NO-DEADLOCK] CDP RTT 追蹤器：配對、記憶體上限與可重入鎖。"""
+"""CDP RTT 追蹤器：配對、記憶體上限與可重入鎖。"""
 
 from __future__ import annotations
 
@@ -132,7 +132,7 @@ def test_lock_is_reentrant(telemetry: TimelineRecorder) -> None:
 
 
 def test_on_request_will_be_sent_does_not_deadlock_on_ttl_path(telemetry: TimelineRecorder) -> None:
-    """[CDP-RLOCK-NO-DEADLOCK] 持鎖中觸發 TTL 清理，非重入鎖會在此永久卡住。"""
+    """持鎖中觸發 TTL 清理，非重入鎖會在此永久卡住。"""
     perf = StepPerf(start=0.0)
     tracker = CdpRttTracker(telemetry, pending_ttl_s=1.0, perf_counter=perf)
     tracker.on_request_will_be_sent(req("stale"))

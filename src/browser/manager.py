@@ -40,14 +40,14 @@ class PlaywrightManager:
         self._context: Any = None
         self._cdp_sessions: dict[int, Any] = {}
         self._background_tasks: set[asyncio.Task[None]] = set()
-        # [BROWSER-RESOURCE-SAFETY-SEQ] Manager 範圍的單一截圖序號來源。
+        # Manager 範圍的單一截圖序號來源。
         # 所有 make_screenshot_hook() 共用，保證多 hook 併存時檔名唯一不覆寫。
         self._screenshot_seq: itertools.count[int] = itertools.count(1)
-        # [SCREENSHOT-HOOK-THREADSAFE] 序號取用鎖：hook 契約允許由「非 event loop 的
+        # 序號取用鎖：hook 契約允許由「非 event loop 的
         # 一般執行緒」呼叫（FSM callback 為同步函式，可能跑在 to_thread / CDP 執行緒），
         # 不依賴 CPython 對 next() 的隱含原子性。
         self._seq_lock = threading.Lock()
-        # [SCREENSHOT-HOOK-THREADSAFE] manager 所屬 event loop，於 start() 捕獲、stop() 清空。
+        # manager 所屬 event loop，於 start() 捕獲、stop() 清空。
         self._loop: asyncio.AbstractEventLoop | None = None
 
     @property
@@ -61,7 +61,7 @@ class PlaywrightManager:
     async def start(self) -> None:
         if self._started:
             return
-        # [SCREENSHOT-HOOK-THREADSAFE] 捕獲本 manager 所屬 loop，供跨執行緒 hook 排程。
+        # 捕獲本 manager 所屬 loop，供跨執行緒 hook 排程。
         self._loop = asyncio.get_running_loop()
         if self._launcher is None:
             from playwright.async_api import async_playwright
@@ -121,7 +121,7 @@ class PlaywrightManager:
         else:
             sessions = list(self._cdp_sessions.values())
             self._cdp_sessions.clear()
-            self._cdp_tracker.clear()  # [B3-CDP-CLEAR] 釋放 CDP Tracker 暫存佇列
+            self._cdp_tracker.clear()  # 釋放 CDP Tracker 暫存佇列
             for s in sessions:
                 try:
                     s.remove_listener("Network.requestWillBeSent", self._cdp_tracker.on_request_will_be_sent)
@@ -155,7 +155,7 @@ class PlaywrightManager:
     def make_screenshot_hook(self, experiment_id: str, page: Any) -> Callable[[str, str, str], None]:
         """產生 FSM 轉移用的同步截圖 hook。
 
-        **[SCREENSHOT-HOOK-THREADSAFE] 執行緒契約**：本 hook 是同步函式，明確允許由
+        **執行緒契約**：本 hook 是同步函式，明確允許由
         任意執行緒呼叫（FSM callback 必為同步，可能跑在 `asyncio.to_thread`、CDP 事件
         執行緒或測試的一般 thread）。因此**嚴禁**在呼叫端執行緒直接 `asyncio.create_task()`
         ——非 event-loop 執行緒會拋 `RuntimeError: no running event loop`，並遺留未 await
@@ -165,7 +165,7 @@ class PlaywrightManager:
           排程失敗（loop 已關閉）時完全不會產生孤兒協程。
         `_background_tasks` 因此只在 loop 執行緒被異動，無需額外加鎖。
         """
-        # [BROWSER-RESOURCE-SAFETY-SEQ] 嚴禁在此重新建立計數器；
+        # 嚴禁在此重新建立計數器；
         # 必須取用 Manager 範圍的 self._screenshot_seq，否則多 hook 會各自從 1 起算而覆寫檔案。
         def hook(source: str, target: str, event: str) -> None:
             with self._seq_lock:
@@ -255,6 +255,6 @@ class PlaywrightManager:
                     finally:
                         self._playwright = None
                         self._started = False
-                        # [SCREENSHOT-HOOK-THREADSAFE] loop 參考一併釋放；
+                        # loop 參考一併釋放；
                         # 之後任何 hook 呼叫都走 "no_loop" 略過路徑，不會產生孤兒協程。
                         self._loop = None
