@@ -49,9 +49,13 @@ async def test_profile_is_logged_in_and_on_the_registration_page(
 ) -> None:
     await adapter.navigate_to_event(live_profile_page, live_registration_url)
     kind = await adapter.detect_page_kind(live_profile_page)
+    hint = {
+        KKTIXPageKind.UNKNOWN: "多半是該 profile 尚未登入而被導去登入頁",
+        KKTIXPageKind.EVENT: "這是活動主頁，不是登記頁（網址要帶 /registrations/new）",
+        KKTIXPageKind.ORDER: "已經是訂單頁；請改用尚未開始登記的活動，本套件不得動既有訂單",
+    }.get(kind, "")
     assert kind is KKTIXPageKind.REGISTRATION, (
-        f"判定為 {kind.value}（實際網址 {live_profile_page.url}）："
-        "多半是該 profile 尚未登入而被導去登入頁，或該活動尚未開放登記"
+        f"判定為 {kind.value}（實際網址 {live_profile_page.url}）：{hint}"
     )
 
 

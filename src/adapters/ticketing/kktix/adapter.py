@@ -74,8 +74,10 @@ class KKTIXPageKind(str, Enum):
     """公開活動主頁：票種是一張表格，只看得到售賣時段，看不到可購買數量。"""
     REGISTRATION = "REGISTRATION"
     """購票登記頁：票種是可加減數量的單元，這裡才下得了單。"""
+    ORDER = "ORDER"
+    """劃位與訂單填寫頁：已經有訂單了，這裡填聯絡人與參加人。"""
     UNKNOWN = "UNKNOWN"
-    """兩者皆非——多半是被導去登入頁或錯誤頁。"""
+    """以上皆非——多半是被導去登入頁或錯誤頁。"""
 
 
 class CloudflareChallengeError(RuntimeError):
@@ -218,6 +220,12 @@ class KKTIXAdapter(TicketingAdapter):
             page, KKTIXSelectors.EVENT_TITLE
         ):
             return KKTIXPageKind.EVENT
+        if await self._has(page, KKTIXSelectors.CONTACT_NAME) or await self._has(
+            page, KKTIXSelectors.RESELECT_TICKET_LINK
+        ):
+            return KKTIXPageKind.ORDER
+        # 走到這裡代表三種已知頁面都不是；把它和 ORDER 混為一談會讓
+        # 「被踢回登入頁」在研究資料裡看起來像「正常停在訂單頁」。
         return KKTIXPageKind.UNKNOWN
 
     async def read_ticket_options(self, page: Page) -> list[TicketOption]:

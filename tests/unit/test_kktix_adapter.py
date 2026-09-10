@@ -205,7 +205,13 @@ async def test_detect_page_kind_event_main_page(telemetry: TimelineRecorder) -> 
     assert await make_adapter(telemetry).detect_page_kind(page) is KKTIXPageKind.EVENT
 
 
+async def test_detect_page_kind_order(telemetry: TimelineRecorder) -> None:
+    page = FakePage.from_fixture("kktix_registration_order.html")
+    assert await make_adapter(telemetry).detect_page_kind(page) is KKTIXPageKind.ORDER
+
+
 async def test_detect_page_kind_unknown(telemetry: TimelineRecorder) -> None:
+    """被踢回登入頁必須和訂單頁分得開，否則研究資料會把兩者混為一談。"""
     page = FakePage("<div>請先登入</div>")
     assert await make_adapter(telemetry).detect_page_kind(page) is KKTIXPageKind.UNKNOWN
 
