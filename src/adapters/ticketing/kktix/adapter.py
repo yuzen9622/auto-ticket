@@ -1,0 +1,442 @@
+"""KKTIX 購票流程 adapter。
+
+契約：
+* 選擇器**一律**經 `KKTIXSelectors` 屬性存取，本檔不得出現任何選擇器字面值。
+* DOM 讀取與決策分離：本檔只把頁面讀成不可變快照，決策交給 `strategy`。
+* Cloudflare 挑戰只偵測、截圖、回報，**不實作繞過**——這是研究系統，不是規避工具。
+"""
+
+from __future__ import annotations
+
+import re
+from collections.abc import Awaitable, Callable, Sequence
+from typing import TYPE_CHECKING, Any
+
+from adapters.payment.base import PaymentOutcome, PaymentProvider, PaymentResult
+from adapters.ticketing.base import TicketingAdapter
+from adapters.ticketing.kktix.dom import (
+    contains_cloudflare_challenge,
+    first_visible,
+    ng_click,
+    ng_fill,
+    page_text,
+    read_input_value,
+)
+from adapters.ticketing.kktix.selectors import KKTIXSelectors
+from adapters.verification.base import (
+    ChallengeKind,
+    VerificationChallenge,
+    VerificationProvider,
+)
+from domain.preference import SeatPreference, TicketPreference
+from domain.task import AttendeeProfile, CreditCardProfile, UserContactProfile
+from strategy.seat_strategy import DOWNGRADE_MARK, SeatAction, decide_seat_action
+from strategy.ticket_strategy import TicketDecision, TicketOption, decide_ticket
+from telemetry.timeline import TimelineEventType, TimelineRecorder
+
+if TYPE_CHECKING:
+    from playwright.async_api import Locator, Page
+else:
+    Locator = Any
+    Page = Any
+
+# select_tickets 的理由碼；協調器依此對應 FSM 事件。
+REASON_SELECTED = "SELECTED"
+REASON_SOLD_OUT = "SOLD_OUT"
+REASON_NO_TICKET_UNITS = "NO_TICKET_UNITS"
+REASON_PLUS_BUTTON_MISSING = "PLUS_BUTTON_MISSING"
+REASON_QUANTITY_MISMATCH = "QUANTITY_MISMATCH"
+REASON_TERMS_NOT_ACCEPTED = "TERMS_NOT_ACCEPTED"
+REASON_CLOUDFLARE = "CLOUDFLARE_CHALLENGE"
+
+CLOUDFLARE_MARK = "cloudflare_challenge"
+SOLD_OUT_MARKERS = ("售完", "售罄", "完售", "sold out", "已結束", "已額滿")
+REMAINING_RE = re.compile(r"(?:剩餘|剩下|remaining)\D{0,4}(\d+)", re.IGNORECASE)
+DIGITS_RE = re.compile(r"\d+")
+
+
+class CloudflareChallengeError(RuntimeError):
+    """偵測到人機驗證挑戰；一律 fail-closed 中止，不嘗試繞過。"""
+
+
+class KKTIXAdapter(TicketingAdapter):
+    def __init__(
+        self,
+        *,
+        telemetry: TimelineRecorder,
+        payment: PaymentProvider,
+        verification: VerificationProvider | None = None,
+        attendees: Sequence[AttendeeProfile] = (),
+        timeout_ms: int = 5000,
+        screenshot: Callable[[str], Awaitable[Any]] | None = None,
+    ) -> None:
+        self.telemetry = telemetry
+        self.payment = payment
+        self.verification = verification
+        self.attendees = tuple(attendees)
+        self.timeout_ms = timeout_ms
+        self.screenshot = screenshot
+        self.last_ticket_decision: TicketDecision | None = None
+        self.last_payment_result: PaymentResult | None = None
+
+    # ------------------------------------------------------------------ 共用
+
+    async def _locate(
+        self, root: Any, selectors: str | Sequence[str], field: str
+    ) -> Locator | None:
+        return await first_visible(
+            root,
+            selectors,
+            timeout_ms=self.timeout_ms,
+            telemetry=self.telemetry,
+            field=field,
+        )
+
+    async def _guard_cloudflare(self, page: Page, stage: str) -> None:
+        marker = contains_cloudflare_challenge(await page_text(page))
+        if marker is None:
+            return
+        if self.screenshot is not None:
+            await self.screenshot(f"{CLOUDFLARE_MARK}_{stage}")
+        error = CloudflareChallengeError(
+            f"偵測到人機驗證挑戰（stage={stage}, marker={marker}）；依安全邊界不實作繞過"
+        )
+        self.telemetry.record_error(CLOUDFLARE_MARK, error, stage=stage, marker=marker)
+        raise error
+
+    @staticmethod
+    async def _text_of(root: Any, selectors: str | Sequence[str]) -> str:
+        from adapters.ticketing.kktix.dom import candidate_selectors
+
+        for selector in candidate_selectors(selectors):
+            locator = root.locator(selector).first
+            try:
+                if await locator.count() == 0:
+                    continue
+                return str(await locator.inner_text()).strip()
+            except Exception:
+                continue
+        return ""
+
+    @staticmethod
+    async def _has(root: Any, selectors: str | Sequence[str]) -> bool:
+        from adapters.ticketing.kktix.dom import candidate_selectors
+
+        for selector in candidate_selectors(selectors):
+            try:
+                if await root.locator(selector).count() > 0:
+                    return True
+            except Exception:
+                continue
+        return False
+
+    # ------------------------------------------------------- 1. 導航與開賣偵測
+
+    async def navigate_to_event(self, page: Page, event_url: str) -> bool:
+        await page.goto(event_url)
+        await self._guard_cloudflare(page, "navigate")
+        self.telemetry.record(
+            TimelineEventType.MARK, "navigated", url=event_url
+        )
+        return True
+
+    async def detect_sale_opened(self, page: Page, timeout_ms: int) -> bool:
+        await self._guard_cloudflare(page, "detect_sale")
+        app = await first_visible(
+            page,
+            KKTIXSelectors.REGISTRATION_APP,
+            timeout_ms=timeout_ms,
+            telemetry=self.telemetry,
+            field="registration_app",
+        )
+        if app is None:
+            return False
+        units = await self._collect_ticket_units(page)
+        opened = len(units) > 0
+        self.telemetry.record(
+            TimelineEventType.MARK, "sale_opened_probe", opened=opened, units=len(units)
+        )
+        return opened
+
+    # -------------------------------------------------------------- 2. 票種選取
+
+    async def _collect_ticket_units(self, page: Page) -> list[Locator]:
+        from adapters.ticketing.kktix.dom import (
+            SELECTOR_FALLBACK_MARK,
+            candidate_selectors,
+        )
+
+        candidates = candidate_selectors(KKTIXSelectors.TICKET_UNIT)
+        for rank, selector in enumerate(candidates, start=1):
+            locator = page.locator(selector)
+            try:
+                count = await locator.count()
+            except Exception:
+                continue
+            if count == 0:
+                continue
+            if rank > 1:
+                self.telemetry.record(
+                    TimelineEventType.MARK,
+                    SELECTOR_FALLBACK_MARK,
+                    field="ticket_unit",
+                    selector=selector,
+                    rank=rank,
+                    total=len(candidates),
+                )
+            return list(await locator.all())
+        return []
+
+    async def read_ticket_options(self, page: Page) -> list[TicketOption]:
+        options: list[TicketOption] = []
+        for index, unit in enumerate(await self._collect_ticket_units(page)):
+            name = await self._text_of(unit, KKTIXSelectors.TICKET_NAME)
+            price_text = await self._text_of(unit, KKTIXSelectors.TICKET_PRICE)
+            status_text = await self._text_of(unit, KKTIXSelectors.EVENT_TICKET_ROW_STATUS)
+            digits = DIGITS_RE.findall(price_text.replace(",", ""))
+            price = int(digits[0]) if digits else 0
+            haystack = f"{status_text} {name}".lower()
+            sold_out = any(m.lower() in haystack for m in SOLD_OUT_MARKERS)
+            has_plus = await self._has(unit, KKTIXSelectors.TICKET_PLUS_BTN)
+            remaining_match = REMAINING_RE.search(status_text)
+            options.append(
+                TicketOption(
+                    index=index,
+                    name=name,
+                    price=price,
+                    available=has_plus and not sold_out,
+                    remaining=int(remaining_match.group(1)) if remaining_match else None,
+                    status_text=status_text,
+                )
+            )
+        return options
+
+    async def select_tickets(
+        self, page: Page, preference: TicketPreference
+    ) -> tuple[bool, str]:
+        await self._guard_cloudflare(page, "select_tickets")
+        units = await self._collect_ticket_units(page)
+        if not units:
+            return False, REASON_NO_TICKET_UNITS
+
+        options = await self.read_ticket_options(page)
+        decision = decide_ticket(options, preference)
+        self.last_ticket_decision = decision
+        self.telemetry.record(
+            TimelineEventType.MARK,
+            "ticket_decision",
+            status=decision.status,
+            fallback_used=decision.fallback_used,
+            quantity=decision.quantity,
+            trace=decision.trace,
+        )
+        if decision.status != "SELECTED" or decision.option is None:
+            return False, REASON_SOLD_OUT
+
+        unit = units[decision.option.index]
+        plus = await self._locate(unit, KKTIXSelectors.TICKET_PLUS_BTN, "ticket_plus_btn")
+        if plus is None:
+            return False, REASON_PLUS_BUTTON_MISSING
+        for _ in range(decision.quantity):
+            await ng_click(page, plus)
+
+        quantity_input = await self._locate(
+            unit, KKTIXSelectors.TICKET_QUANTITY_INPUT, "ticket_quantity_input"
+        )
+        if quantity_input is None:
+            return False, REASON_QUANTITY_MISMATCH
+        # AngularJS 的 model 可能沒跟上 DOM：回讀驗證，不一致即失敗而非靜默送出 0 張。
+        actual = (await read_input_value(quantity_input)).strip()
+        if actual != str(decision.quantity):
+            self.telemetry.record(
+                TimelineEventType.MARK,
+                "quantity_readback_mismatch",
+                expected=decision.quantity,
+                actual=actual,
+            )
+            return False, REASON_QUANTITY_MISMATCH
+
+        terms = await self._locate(page, KKTIXSelectors.TERMS_CHECKBOX, "terms_checkbox")
+        if terms is None:
+            return False, REASON_TERMS_NOT_ACCEPTED
+        await ng_click(page, terms)
+
+        return True, REASON_SELECTED
+
+    # -------------------------------------------------------------- 3. 座位處理
+
+    async def handle_seat_selection(
+        self, page: Page, preference: SeatPreference
+    ) -> bool:
+        await self._guard_cloudflare(page, "seat_selection")
+        seat = decide_seat_action(preference)
+        if seat.downgraded:
+            self.telemetry.record(
+                TimelineEventType.MARK, DOWNGRADE_MARK, reason=seat.reason
+            )
+        selectors = (
+            KKTIXSelectors.BTN_BEST_AVAILABLE
+            if seat.action is SeatAction.BEST_AVAILABLE
+            else KKTIXSelectors.BTN_PICK_SEAT
+        )
+        button = await self._locate(page, selectors, "seat_button")
+        if button is None:
+            button = await self._locate(page, KKTIXSelectors.BTN_NEXT_STEP, "next_step")
+        if button is None:
+            return False
+        await ng_click(page, button)
+        self.telemetry.record(
+            TimelineEventType.MARK, "seat_action", action=seat.action.value
+        )
+        return True
+
+    # -------------------------------------------------------------- 4. 表單填寫
+
+    async def fill_contact_form(
+        self, page: Page, profile: UserContactProfile
+    ) -> bool:
+        await self._guard_cloudflare(page, "contact_form")
+        for field_name, selectors, value in (
+            ("contact_name", KKTIXSelectors.CONTACT_NAME, profile.name),
+            ("contact_email", KKTIXSelectors.CONTACT_EMAIL, profile.email),
+            ("contact_phone", KKTIXSelectors.CONTACT_PHONE, profile.phone),
+        ):
+            locator = await self._locate(page, selectors, field_name)
+            if locator is None:
+                self.telemetry.record(
+                    TimelineEventType.MARK, "contact_field_missing", field=field_name
+                )
+                return False
+            await ng_fill(page, locator, value)
+
+        return await self._fill_attendees(page)
+
+    async def submit_order(self, page: Page) -> bool:
+        """送出訂單表單（確認表單資料）。
+
+        刻意與 `fill_contact_form` 分離：KKTIX 的防機器人問答題與聯絡人欄位同屬一張
+        表單，狀態機卻要求「填表 -> 驗證 -> 付款」的順序，填寫與送出必須是兩個動作，
+        否則驗證答案永遠來不及進入送出的那一次請求。
+        """
+        button = await self._locate(page, KKTIXSelectors.BTN_CONFIRM_ORDER, "confirm_order")
+        if button is None:
+            return False
+        await ng_click(page, button)
+        self.telemetry.record(TimelineEventType.MARK, "order_submitted")
+        return True
+
+    async def _fill_attendees(self, page: Page) -> bool:
+        required = 0
+        while True:
+            selector = KKTIXSelectors.ATTENDEE_NAME_TEMPLATE.format(index=required)
+            if await page.locator(selector).count() == 0:
+                break
+            required += 1
+        if required == 0:
+            return True
+        if required > len(self.attendees):
+            # R7：頁面要幾位就是幾位，資料不足即誠實失敗，不猜測、不重複填。
+            self.telemetry.record(
+                TimelineEventType.MARK,
+                "attendee_profile_insufficient",
+                required=required,
+                provided=len(self.attendees),
+            )
+            return False
+
+        for index in range(required):
+            attendee = self.attendees[index]
+            name_locator = page.locator(
+                KKTIXSelectors.ATTENDEE_NAME_TEMPLATE.format(index=index)
+            ).first
+            await ng_fill(page, name_locator, attendee.name)
+            phone_selector = KKTIXSelectors.ATTENDEE_PHONE_TEMPLATE.format(index=index)
+            if await page.locator(phone_selector).count() > 0:
+                await ng_fill(page, page.locator(phone_selector).first, attendee.phone)
+            if attendee.id_number is None:
+                continue
+            for template in KKTIXSelectors.ATTENDEE_ID_TEMPLATE:
+                id_selector = template.format(index=index)
+                if await page.locator(id_selector).count() > 0:
+                    await ng_fill(page, page.locator(id_selector).first, attendee.id_number)
+                    break
+        self.telemetry.record(
+            TimelineEventType.MARK, "attendees_filled", count=required
+        )
+        return True
+
+    # ---------------------------------------------------------------- 5. 驗證
+
+    async def detect_verification(self, page: Page) -> bool:
+        """只偵測是否存在驗證題，不作答。
+
+        協調器必須在送出 `form_submitted` **之前**知道答案，因為該事件的目標狀態
+        取決於 `requires_verification`；把偵測與作答合併會讓 FSM 分流無從決定。
+        """
+        await self._guard_cloudflare(page, "verification_probe")
+        container = await self._locate(
+            page, KKTIXSelectors.CAPTCHA_CONTAINER, "captcha_container"
+        )
+        present = container is not None
+        self.telemetry.record(
+            TimelineEventType.MARK, "verification_probe", present=present
+        )
+        return present
+
+    async def handle_verification(self, page: Page) -> bool:
+        await self._guard_cloudflare(page, "verification")
+        container = await self._locate(
+            page, KKTIXSelectors.CAPTCHA_CONTAINER, "captcha_container"
+        )
+        if container is None:
+            # 沒有驗證題是正常情況，不得誤報成失敗。
+            self.telemetry.record(TimelineEventType.MARK, "verification_absent")
+            return True
+        if self.verification is None:
+            self.telemetry.record(
+                TimelineEventType.MARK, "verification_provider_missing"
+            )
+            return False
+
+        question = await self._text_of(page, KKTIXSelectors.CAPTCHA_QUESTION_TEXT)
+        result = await self.verification.solve(
+            VerificationChallenge(kind=ChallengeKind.TEXT_QUIZ, question=question)
+        )
+        self.telemetry.record(
+            TimelineEventType.MARK,
+            "verification_result",
+            provider=result.provider,
+            solved=result.solved,
+            detail=dict(result.detail),
+        )
+        if not result.solved or result.answer is None:
+            return False
+
+        answer_input = await self._locate(
+            page, KKTIXSelectors.CAPTCHA_INPUT, "captcha_input"
+        )
+        if answer_input is None:
+            return False
+        await ng_fill(page, answer_input, result.answer)
+        return True
+
+    # ---------------------------------------------------------------- 6. 付款
+
+    async def execute_payment(
+        self, page: Page, payment_profile: CreditCardProfile | None
+    ) -> PaymentResult:
+        await self._guard_cloudflare(page, "payment")
+        result = await self.payment.pay(page, payment_profile)
+        self.last_payment_result = result
+        self.telemetry.record(
+            TimelineEventType.MARK,
+            "payment_result",
+            provider=result.provider,
+            outcome=result.outcome.value,
+            detail=dict(result.detail),
+        )
+        if result.outcome is PaymentOutcome.SUBMITTED:
+            self.telemetry.record(
+                TimelineEventType.MARK, "real_payment_submitted", provider=result.provider
+            )
+        return result

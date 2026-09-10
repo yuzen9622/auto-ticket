@@ -9,8 +9,11 @@ from domain.task import CreditCardProfile, UserContactProfile
 
 if TYPE_CHECKING:
     from playwright.async_api import Page
+
+    from adapters.payment.base import PaymentResult
 else:
     Page = Any
+    PaymentResult = Any
 
 
 class TicketingAdapter(ABC):
@@ -55,9 +58,14 @@ class TicketingAdapter(ABC):
 
     @abstractmethod
     async def execute_payment(
-        self, page: Page, payment_profile: CreditCardProfile
-    ) -> bool:
-        """自動填寫信用卡卡號、過期日、CVV 並提交送出"""
+        self, page: Page, payment_profile: CreditCardProfile | None
+    ) -> PaymentResult:
+        """把付款頁交給注入的 PaymentProvider，並原樣回傳其結果。
+
+        實作**不得**自行決定要不要送出：是否發動金流完全由 provider 決定
+        （預設 provider 停在送出鈕之前）。回傳 `PaymentResult` 而非 bool，
+        是因為協調器需要用 `PaymentOutcome` 對應 FSM 事件。
+        """
         raise NotImplementedError
 
 
