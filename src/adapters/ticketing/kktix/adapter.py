@@ -12,6 +12,7 @@ import re
 from collections.abc import Awaitable, Callable, Sequence
 from enum import Enum
 from typing import TYPE_CHECKING, Any
+from urllib.parse import urlsplit
 
 from adapters.payment.base import PaymentOutcome, PaymentProvider, PaymentResult
 from adapters.ticketing.base import TicketingAdapter
@@ -85,6 +86,12 @@ PAYMENT_URL_MARKER = "/payment"
 # 搶票要的是「DOM 可以操作了」，不是「所有資源都下載完了」——等 load 只會白等。
 NAVIGATION_WAIT_UNTIL = "domcontentloaded"
 DEFAULT_NAVIGATION_TIMEOUT_MS = 30000
+# 同一場活動有多個等價入口：`https://<org>.kktix.cc/events/<slug>` 與
+# `https://kktix.com/events/<slug>/registrations/new` 指的是同一件事，主機名因此
+# 不是可靠的身分——活動 slug 與「是否已經在登記頁上」才是。
+EVENT_PATH_RE = re.compile(
+    r"\A/events/(?P<slug>[^/]+)(?P<registration>/registrations/new)?/?\Z"
+)
 SOLD_OUT_MARKERS = ("售完", "售罄", "完售", "sold out", "已結束", "已額滿")
 REMAINING_RE = re.compile(r"(?:剩餘|剩下|remaining)\D{0,4}(\d+)", re.IGNORECASE)
 DIGITS_RE = re.compile(r"\d+")
@@ -286,14 +293,54 @@ class KKTIXAdapter(TicketingAdapter):
 
     # ------------------------------------------------------- 1. 導航與開賣偵測
 
+    @staticmethod
+    def _current_url(page: Page) -> str:
+        return str(getattr(page, "url", "") or "")
+
+    @staticmethod
+    def _event_identity(url: str) -> tuple[str, bool] | None:
+        """（活動 slug, 是否為登記頁）；不是活動網址就回 `None`。"""
+        match = EVENT_PATH_RE.match(urlsplit(url).path)
+        if match is None:
+            return None
+        return match.group("slug"), match.group("registration") is not None
+
+    @classmethod
+    def _is_same_event_or_registration(cls, current_url: str, target_url: str) -> bool:
+        """目前這一頁是否已經是 `target_url`（或它的登記頁）。
+
+        登記頁比活動頁更深：停在登記頁時導回活動頁只會把已到手的位置丟掉；
+        反向不成立——停在活動頁而目標是登記頁時，還沒走到下得了單的那一頁。
+        """
+        if not current_url or not target_url:
+            return False
+        if current_url == target_url:
+            return True
+        current = cls._event_identity(current_url)
+        target = cls._event_identity(target_url)
+        if current is None or target is None:
+            return False
+        slug, on_registration = current
+        target_slug, target_is_registration = target
+        return slug == target_slug and (on_registration or not target_is_registration)
+
     async def navigate_to_event(self, page: Page, event_url: str) -> bool:
-        await page.goto(
-            event_url,
-            wait_until=NAVIGATION_WAIT_UNTIL,
-            timeout=self.navigation_timeout_ms,
-        )
+        """進活動頁；已經停在該活動（或其登記頁）上就不重新導航。
+
+        沿用 CDP 借來的分頁時，再 goto 一次等於把人工通過的排隊、驗證與登入狀態
+        敲掉重來——省這一次導航不是效能最佳化，是不可逆狀態的保全。
+        """
+        reused = self._is_same_event_or_registration(self._current_url(page), event_url)
+        if not reused:
+            await page.goto(
+                event_url,
+                wait_until=NAVIGATION_WAIT_UNTIL,
+                timeout=self.navigation_timeout_ms,
+            )
         await self._guard_cloudflare(page, "navigate")
-        self.telemetry.record(TimelineEventType.MARK, "navigated", url=event_url)
+        self.telemetry.record(
+            TimelineEventType.MARK, "navigated", url=event_url, reused=reused
+        )
         return True
 
     # ------------------------------------------------------------- 1b. 登入
@@ -551,9 +598,12 @@ class KKTIXAdapter(TicketingAdapter):
 
         給「等人就緒」的閘門用：那裡需要知道「還沒好，是哪一種還沒好」，
         而不是直接中止。給了 `url` 才會導航；不給就只重新判讀目前這一頁，
-        避免反覆輪詢對方站台。
+        避免反覆輪詢對方站台。給了 `url` 但已經停在那一頁上時也不導航：
+        就地判讀與重整後判讀讀到的是同一件事，重整卻會敲掉現場狀態。
         """
-        if url is not None:
+        if url is not None and not self._is_same_event_or_registration(
+            self._current_url(page), url
+        ):
             await page.goto(
                 url,
                 wait_until=NAVIGATION_WAIT_UNTIL,

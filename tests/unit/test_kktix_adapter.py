@@ -244,6 +244,76 @@ async def test_navigation_timeout_is_separate_from_element_timeout(
     assert page.goto_kwargs[0]["timeout"] == adapter.navigation_timeout_ms == 30000
 
 
+async def test_navigate_to_event_reuses_the_page_it_is_already_on(
+    telemetry: TimelineRecorder,
+) -> None:
+    """CDP 借來的分頁已經停在目標活動上：重新 goto 只會敲掉人工通過的狀態。"""
+    url = "https://reg.test/events/demo/registrations/new"
+    page = FakePage.from_fixture("kktix_registration_new.html", url=url)
+    adapter = make_adapter(telemetry)
+    assert await adapter.navigate_to_event(page, url) is True
+    assert page.goto_urls == []
+    assert marks(telemetry, "navigated")[0].detail["reused"] is True
+
+
+async def test_navigate_to_event_reuses_registration_page_for_event_target(
+    telemetry: TimelineRecorder,
+) -> None:
+    """同一場活動的登記頁比活動頁更深，導回活動頁是倒退。"""
+    page = FakePage.from_fixture(
+        "kktix_registration_new.html",
+        url="https://org.kktix.test/events/demo/registrations/new",
+    )
+    adapter = make_adapter(telemetry)
+    await adapter.navigate_to_event(page, "https://reg.test/events/demo")
+    assert page.goto_urls == []
+
+
+async def test_navigate_to_event_still_goes_when_only_on_the_event_page(
+    telemetry: TimelineRecorder,
+) -> None:
+    """反向不成立：停在活動頁而目標是登記頁時，還沒走到下得了單的那一頁。"""
+    target = "https://reg.test/events/demo/registrations/new"
+    page = FakePage.from_fixture(
+        "kktix_registration_new.html", url="https://org.kktix.test/events/demo"
+    )
+    await make_adapter(telemetry).navigate_to_event(page, target)
+    assert page.goto_urls == [target]
+
+
+async def test_navigate_to_event_goes_when_the_event_differs(
+    telemetry: TimelineRecorder,
+) -> None:
+    target = "https://reg.test/events/other"
+    page = FakePage.from_fixture(
+        "kktix_registration_new.html", url="https://reg.test/events/demo"
+    )
+    await make_adapter(telemetry).navigate_to_event(page, target)
+    assert page.goto_urls == [target]
+
+
+async def test_probe_page_skips_navigation_when_already_on_target(
+    telemetry: TimelineRecorder,
+) -> None:
+    """就地判讀與重整後判讀讀到同一件事，重整卻會敲掉現場狀態。"""
+    url = "https://reg.test/events/demo/registrations/new"
+    page = FakePage.from_fixture("kktix_registration_new.html", url=url)
+    kind = await make_adapter(telemetry).probe_page(page, url)
+    assert kind is KKTIXPageKind.REGISTRATION
+    assert page.goto_urls == []
+
+
+async def test_probe_page_navigates_when_elsewhere(
+    telemetry: TimelineRecorder,
+) -> None:
+    target = "https://reg.test/events/demo/registrations/new"
+    page = FakePage.from_fixture(
+        "kktix_registration_new.html", url="https://reg.test/users/sign_in"
+    )
+    await make_adapter(telemetry).probe_page(page, target)
+    assert page.goto_urls == [target]
+
+
 async def test_cloudflare_challenge_aborts_and_screenshots(
     telemetry: TimelineRecorder,
 ) -> None:

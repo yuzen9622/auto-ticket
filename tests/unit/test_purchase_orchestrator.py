@@ -29,6 +29,7 @@ from purchase.handlers import (
     PurchaseStepError,
 )
 from purchase.orchestrator import PAYMENT_OUTCOME_EVENTS, PurchaseOrchestrator
+from scheduler.clock_sync import TimeReference
 from scheduler.scheduler import StageOutcome, WarmupContext, WarmupStage
 from strategy.ticket_strategy import TicketDecision, TicketOption
 from telemetry.timeline import TimelineRecorder
@@ -379,7 +380,6 @@ async def test_adapter_call_order(tmp_path: Path) -> None:
     await orchestrator.run()
     assert adapter.calls == [
         "probe_navigate",
-        "navigate",
         "detect_sale",
         "detect_page_state",
         "read_registration_tickets",
@@ -633,6 +633,39 @@ async def test_session_gate_navigates_only_once(tmp_path: Path) -> None:
     await orchestrator.run()
     assert adapter.calls.count("probe_navigate") == 1
     assert adapter.calls.count("probe") == 1
+
+
+async def test_navigate_stage_reuses_the_page_the_gate_just_verified(
+    tmp_path: Path,
+) -> None:
+    """就緒閘門剛證實這一頁下得了單；再導航一次只會把這個狀態沖掉。"""
+    adapter = StubAdapter()
+    orchestrator, _, _, telemetry = build(tmp_path, adapter)
+    await orchestrator.run()
+    assert "navigate" not in adapter.calls
+    assert [e for e in telemetry.events() if e.name == "navigation_skipped"]
+
+
+async def test_navigate_stage_navigates_when_the_page_left_the_verified_url(
+    tmp_path: Path,
+) -> None:
+    """頁面已經離開閘門確認過的網址：這次非導不可，不得静默沿用。"""
+    adapter = StubAdapter()
+    orchestrator, _, browser, _ = build(tmp_path, adapter)
+    orchestrator._rt.page = browser.page
+    orchestrator._rt.session_ready_url = "https://registration.test/events/verified"
+    browser.page.url = "https://registration.test/users/sign_in"
+    await orchestrator._navigate_page(
+        WarmupContext(
+            task_id="t",
+            stage=WarmupStage.NAVIGATE_PAGE,
+            planned_local_at=BASE_WALL,
+            fired_local_at=BASE_WALL,
+            drift_us=0,
+            time_reference=TimeReference(offset_ms=0.0),
+        )
+    )
+    assert adapter.calls == ["navigate"]
 
 
 async def test_session_gate_fails_closed_when_never_ready(tmp_path: Path) -> None:

@@ -116,6 +116,8 @@ class _Runtime:
     ticket_failures: list[str] = field(default_factory=list)
     hooked_transitions: int = 0
     auto_login_attempted: bool = False
+    # 就緒閘門確認過「可以下單」的那一個網址。頁面沒離開它就沒有重新導航的理由。
+    session_ready_url: str | None = None
     # 動作進度協議：每一格都對應一個「已經做過就不得再做一次」的副作用。
     excluded_ticket_names: set[str] = field(default_factory=set)
     current_ticket_name: str | None = None
@@ -318,6 +320,7 @@ class PurchaseOrchestrator:
                 attempt=attempt,
             )
             if kind is KKTIXPageKind.REGISTRATION:
+                self._rt.session_ready_url = self._page_url(page)
                 self.telemetry.record(
                     TimelineEventType.MARK, "session_ready", attempts=attempt
                 )
@@ -342,8 +345,23 @@ class PurchaseOrchestrator:
     def _loop_time() -> float:
         return asyncio.get_running_loop().time()
 
+    @staticmethod
+    def _page_url(page: Any) -> str:
+        return str(getattr(page, "url", "") or "")
+
     async def _navigate_page(self, ctx: WarmupContext) -> None:
+        """導到活動頁；就緒閘門剛確認過的那一頁不重新整理。
+
+        閘門通過代表這一頁當下就能下單；頁面沒動過還再導航一次，只會把人工通過的
+        登入與排隊狀態沖掉，換來一頁一模一樣的內容。
+        """
         page = self._require_page()
+        current_url = self._page_url(page)
+        if current_url and current_url == self._rt.session_ready_url:
+            self.telemetry.record(
+                TimelineEventType.MARK, "navigation_skipped", url=current_url
+            )
+            return
         if not await self.adapter.navigate_to_event(page, self.spec.event_url):
             raise PurchaseStepError("navigate_to_event", "navigation refused")
 
