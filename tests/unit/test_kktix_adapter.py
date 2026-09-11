@@ -6,6 +6,8 @@ import pytest
 
 from adapters.payment import MockPaymentProvider, PaymentOutcome, PaymentResult
 from adapters.ticketing.kktix.adapter import (
+    FAILURE_MODAL_MARK,
+    FAILURE_MODAL_MISSING_MARK,
     REASON_NO_TICKET_UNITS,
     REASON_NOT_REGISTRATION_PAGE,
     REASON_PLUS_BUTTON_MISSING,
@@ -13,9 +15,15 @@ from adapters.ticketing.kktix.adapter import (
     REASON_SELECTED,
     REASON_SOLD_OUT,
     REASON_TERMS_NOT_ACCEPTED,
+    RESET_MARK,
+    RESET_REASON_MINUS_MISSING,
+    RESET_REASON_NO_QUANTITY_FIELD,
+    RESET_REASON_NOT_ZERO,
+    RESET_REASON_UNREADABLE,
     CloudflareChallengeError,
     KKTIXAdapter,
     KKTIXPageKind,
+    PageState,
 )
 from adapters.ticketing.kktix.dom import (
     DISPATCH_SKIPPED_MARK,
@@ -34,6 +42,7 @@ from adapters.verification.base import (
 from domain.preference import SeatPreference, TicketPreference, TicketPriority
 from domain.task import AttendeeProfile, UserContactProfile
 from strategy.seat_strategy import DOWNGRADE_MARK
+from strategy.ticket_strategy import TicketDecision, TicketOption, decide_ticket
 from telemetry.timeline import TimelineRecorder
 from tests.fake_page import FakePage
 from tests.netguard import netguard_autouse  # noqa: F401
@@ -1054,3 +1063,533 @@ async def test_execute_payment_guards_cloudflare(telemetry: TimelineRecorder) ->
     adapter = make_adapter(telemetry, payment=StubPayment())
     with pytest.raises(CloudflareChallengeError):
         await adapter.execute_payment(FakePage(CLOUDFLARE_HTML), None)
+
+
+# ------------------------------------------------------- 頁面狀態偵測（PageState）
+
+# 新頁型一律以本檔內的 inline 常數呈現：`tests/fixtures/*` 是凍結的實站快照，
+# 為了測試而改動它們等於偽造原始觀測資料。
+
+TICKET_SELECTION_HTML = (
+    "<div id='registrationsNewApp'><div class='ticket-list'>"
+    "<div class='ticket-unit'><div class='ticket-name'>全票</div>"
+    "<div class='ticket-price'>NT$ 3,200</div>"
+    "<button class='btn-default plus' ng-click='quantityBtnClick(1)'></button>"
+    "<button class='btn-default minus' ng-click='quantityBtnClick(-1)'></button>"
+    "<input type='text' ng-model='ticketModel.quantity' value='0'>"
+    "</div></div>"
+    "<label>我已經閱讀並同意"
+    "<input type='checkbox' id='person_agree_terms' ng-model='conditions.agreeTerm'>"
+    "</label></div>"
+)
+SEAT_SELECTION_HTML = TICKET_SELECTION_HTML.replace(
+    "ticketModel.quantity' value='0'", "ticketModel.quantity' value='2'"
+).replace(
+    "</div></div>",
+    "</div></div><button ng-click='challenge(1)'>電腦配位</button>",
+    1,
+)
+FAILURE_MODAL_HTML = (
+    "<div class='modal in'><div class='modal-body'>別人搶先一步</div>"
+    "<button class='close'>×</button></div>"
+)
+GUEST_MODAL_HTML = (
+    "<div class='modal in'><div class='modal-body'>立刻成為 KKTIX 會員</div>"
+    "<button class='close'>×</button></div>"
+)
+QUEUE_HTML = "<div id='cf-wrapper'><h1>正在排隊</h1><span id='cf-time'>03:21</span></div>"
+QUALIFICATION_CODE_HTML = (
+    "<div id='registrationsNewApp'><div class='code-input'>"
+    "<input type='text' ng-model='code'>"
+    "<button ng-click='verifyCode()'>驗證</button></div></div>"
+)
+FORM_FILLING_HTML = (
+    "<div class='contact-info'><div class='control-group'>"
+    "<label class='control-label'>姓名</label>"
+    "<input name='contact[name]' value=''></div></div>"
+)
+STANDALONE_CAPTCHA_HTML = (
+    "<div class='custom-captcha-inner'><p>主辦單位的英文縮寫？</p>"
+    "<input name='captcha_answer' value=''></div>"
+)
+
+
+async def detect(telemetry: TimelineRecorder, page: FakePage) -> PageState:
+    return await make_adapter(telemetry).detect_page_state(page)
+
+
+async def test_detect_page_state_failure_modal_outranks_the_page_beneath(
+    telemetry: TimelineRecorder,
+) -> None:
+    """彈窗蓋住底下的登記頁；先處理彈窗才不會對著被擋住的 DOM 空點。"""
+    page = FakePage(TICKET_SELECTION_HTML + FAILURE_MODAL_HTML)
+    assert await detect(telemetry, page) is PageState.FAILURE_MODAL
+
+
+async def test_detect_page_state_ignores_the_hidden_modal_template(
+    telemetry: TimelineRecorder,
+) -> None:
+    """Bootstrap 把彈窗骨架留在 DOM 裡：只看存在與否會把整場搶票誤判成搶輸。"""
+    hidden = FAILURE_MODAL_HTML.replace(
+        "class='modal in'", "class='modal in' style='display: none'"
+    )
+    page = FakePage(TICKET_SELECTION_HTML + hidden)
+    assert await detect(telemetry, page) is PageState.TICKET_SELECTION
+
+
+async def test_detect_page_state_guest_modal(telemetry: TimelineRecorder) -> None:
+    page = FakePage(TICKET_SELECTION_HTML + GUEST_MODAL_HTML)
+    assert await detect(telemetry, page) is PageState.GUEST_MODAL
+
+
+async def test_detect_page_state_queue_is_not_mistaken_for_the_registration_page(
+    telemetry: TimelineRecorder,
+) -> None:
+    """排隊室可能與登記頁共存於同一個網址；判成選票就會對著等候室亂點。"""
+    page = FakePage(QUEUE_HTML + TICKET_SELECTION_HTML)
+    assert await detect(telemetry, page) is PageState.QUEUE
+
+
+async def test_detect_page_state_completed_from_order_url(
+    telemetry: TimelineRecorder,
+) -> None:
+    page = FakePage("<div>訂單成立</div>", url="https://reg.test/orders/8871")
+    assert await detect(telemetry, page) is PageState.COMPLETED
+
+
+async def test_detect_page_state_completed_from_dom_container(
+    telemetry: TimelineRecorder,
+) -> None:
+    page = FakePage("<div id='orderShowApp'>保留訂單</div>")
+    assert await detect(telemetry, page) is PageState.COMPLETED
+
+
+async def test_detect_page_state_payment_url_is_not_reported_as_completed(
+    telemetry: TimelineRecorder,
+) -> None:
+    """付款頁網址同樣帶 `/orders/`；判成完成就會把未付款訂單寫成已抵達終點。"""
+    page = FakePage("<div>請選擇付款方式</div>", url="https://reg.test/orders/8/payment")
+    assert await detect(telemetry, page) is PageState.PAYMENT_REQUIRED
+
+
+async def test_detect_page_state_payment_from_dom_radio(
+    telemetry: TimelineRecorder,
+) -> None:
+    page = FakePage("<input type='radio' value='credit_card_x'>")
+    assert await detect(telemetry, page) is PageState.PAYMENT_REQUIRED
+
+
+async def test_detect_page_state_qualification_code(
+    telemetry: TimelineRecorder,
+) -> None:
+    page = FakePage(QUALIFICATION_CODE_HTML)
+    assert await detect(telemetry, page) is PageState.QUALIFICATION_CODE
+
+
+async def test_detect_page_state_qualification_block_without_visible_input(
+    telemetry: TimelineRecorder,
+) -> None:
+    """會員碼區塊常駐於模板但整塊隱藏；沒有可見輸入框就不是資格審查狀態。"""
+    hidden = QUALIFICATION_CODE_HTML.replace(
+        "<input type='text' ng-model='code'>",
+        "<input type='text' ng-model='code' hidden='hidden'>",
+    )
+    page = FakePage(hidden.replace("</div></div>", "</div>" + TICKET_SELECTION_HTML))
+    assert await detect(telemetry, page) is PageState.TICKET_SELECTION
+
+
+async def test_detect_page_state_form_filling_outranks_the_inline_quiz(
+    telemetry: TimelineRecorder,
+) -> None:
+    """問答題就長在聯絡人表單裡；判成獨立驗證題會漏填聯絡人與同意條款。"""
+    page = FakePage(FORM_FILLING_HTML + STANDALONE_CAPTCHA_HTML)
+    assert await detect(telemetry, page) is PageState.FORM_FILLING
+
+
+async def test_detect_page_state_form_filling_from_countdown_notice(
+    telemetry: TimelineRecorder,
+) -> None:
+    page = FakePage("<div ng-switch-when='countingDown'>剩餘 09:59</div>")
+    assert await detect(telemetry, page) is PageState.FORM_FILLING
+
+
+async def test_detect_page_state_standalone_verification_challenge(
+    telemetry: TimelineRecorder,
+) -> None:
+    page = FakePage(STANDALONE_CAPTCHA_HTML)
+    assert await detect(telemetry, page) is PageState.VERIFICATION_CHALLENGE
+
+
+async def test_detect_page_state_ticket_selection_when_nothing_is_selected(
+    telemetry: TimelineRecorder,
+) -> None:
+    page = FakePage(TICKET_SELECTION_HTML)
+    assert await detect(telemetry, page) is PageState.TICKET_SELECTION
+
+
+async def test_detect_page_state_seat_selection_once_quantity_is_above_zero(
+    telemetry: TimelineRecorder,
+) -> None:
+    """選票頁與劃位頁是同一個 AngularJS app：唯一的物理差別就是已選張數。"""
+    page = FakePage(SEAT_SELECTION_HTML)
+    assert await detect(telemetry, page) is PageState.SEAT_SELECTION
+
+
+async def test_detect_page_state_selected_without_seat_button_stays_unknown(
+    telemetry: TimelineRecorder,
+) -> None:
+    """已選票但配位／下一步按鈕還沒渲出來：是過渡暫態，不得臆造成劃位就緒。"""
+    page = FakePage(
+        TICKET_SELECTION_HTML.replace(
+            "ticketModel.quantity' value='0'", "ticketModel.quantity' value='1'"
+        )
+    )
+    assert await detect(telemetry, page) is PageState.UNKNOWN
+
+
+async def test_detect_page_state_unknown(telemetry: TimelineRecorder) -> None:
+    page = FakePage("<div>載入中</div>")
+    assert await detect(telemetry, page) is PageState.UNKNOWN
+
+
+async def test_detect_page_state_never_raises_on_a_broken_page(
+    telemetry: TimelineRecorder,
+) -> None:
+    """狀態偵測跑在熱迴圈上：拋例外等於讓整場搶票在一個殘缺 DOM 上中止。"""
+    page = FakePage("")
+    page.url = ""
+    assert await detect(telemetry, page) is PageState.UNKNOWN
+
+
+async def test_read_selected_quantity_sums_every_unit(
+    telemetry: TimelineRecorder,
+) -> None:
+    page = FakePage(
+        TICKET_SELECTION_HTML.replace(
+            "ticketModel.quantity' value='0'", "ticketModel.quantity' value='3'"
+        )
+    )
+    assert await make_adapter(telemetry).read_selected_quantity(page) == 3
+
+
+async def test_read_selected_quantity_treats_unreadable_fields_as_zero(
+    telemetry: TimelineRecorder,
+) -> None:
+    """讀不到就是讀不到，不得臆造選取狀態而讓迴圈以為已經選好票。"""
+    page = FakePage(
+        TICKET_SELECTION_HTML.replace(
+            "ticketModel.quantity' value='0'", "ticketModel.quantity' value='--'"
+        )
+    )
+    assert await make_adapter(telemetry).read_selected_quantity(page) == 0
+
+
+# ------------------------------------------------------------- 失敗彈窗關閉
+
+
+async def test_dismiss_failure_modal_clicks_close_and_records_the_reason(
+    telemetry: TimelineRecorder,
+) -> None:
+    """彈窗文字是「這一輪為什麼搶輸」的唯一直接證據，不記下來就無從分析。"""
+    page = FakePage(FAILURE_MODAL_HTML)
+    assert await make_adapter(telemetry).dismiss_failure_modal(page) is True
+    assert page.clicks
+    assert "別人搶先一步" in marks(telemetry, FAILURE_MODAL_MARK)[0].detail["text"]
+
+
+async def test_dismiss_failure_modal_reports_a_missing_close_button(
+    telemetry: TimelineRecorder,
+) -> None:
+    page = FakePage("<div class='modal in'><div>已無可配座位</div></div>")
+    assert await make_adapter(telemetry).dismiss_failure_modal(page) is False
+    assert not page.clicks
+    assert "已無可配座位" in marks(telemetry, FAILURE_MODAL_MISSING_MARK)[0].detail["text"]
+
+
+async def test_dismiss_failure_modal_truncates_a_runaway_modal_body(
+    telemetry: TimelineRecorder,
+) -> None:
+    page = FakePage(
+        "<div class='modal in'><div>" + ("長" * 500) + "</div>"
+        "<button class='close'>×</button></div>"
+    )
+    await make_adapter(telemetry).dismiss_failure_modal(page)
+    assert len(marks(telemetry, FAILURE_MODAL_MARK)[0].detail["text"]) == 200
+
+
+# ----------------------------------------------------------- 決策套用（apply）
+
+
+def ticket_decision(
+    *, index: int = 0, name: str = "全票", quantity: int = 1
+) -> TicketDecision:
+    return TicketDecision(
+        status="SELECTED",
+        option=TicketOption(
+            index=index, name=name, price=3200, available=True, remaining=None
+        ),
+        quantity=quantity,
+        matched_priority=TicketPriority(price=3200),
+        fallback_used=False,
+        trace=("test",),
+    )
+
+
+async def test_apply_ticket_decision_applies_the_decision_it_was_given(
+    telemetry: TimelineRecorder,
+) -> None:
+    page = FakePage(TICKET_SELECTION_HTML)
+    adapter = make_adapter(telemetry)
+    decision = ticket_decision(quantity=2)
+    ok, reason = await adapter.apply_ticket_decision(page, decision)
+    assert (ok, reason) == (True, REASON_SELECTED)
+    quantity = page.locator("input[ng-model='ticketModel.quantity']").first
+    assert await quantity.input_value() == "2"
+    assert await page.locator("#person_agree_terms").first.is_checked()
+    assert adapter.last_ticket_decision is decision
+    assert marks(telemetry, "ticket_decision")[0].detail["status"] == "SELECTED"
+
+
+async def test_apply_ticket_decision_does_not_redecide(
+    telemetry: TimelineRecorder,
+) -> None:
+    """套用層重新決策，降級鏈路就會拿到第二份決策而反覆選到已搶輸的同一張票。"""
+    html = TICKET_SELECTION_HTML.replace(
+        "</div></div>",
+        "</div><div class='ticket-unit'><div class='ticket-name'>搖滾區</div>"
+        "<div class='ticket-price'>NT$ 3,800</div>"
+        "<button class='btn-default plus' ng-click='quantityBtnClick(1)'></button>"
+        "<input type='text' ng-model='ticketModel.quantity' value='0'>"
+        "</div></div>",
+        1,
+    )
+    page = FakePage(html)
+    # 偏好指向 3200 的全票，但呼叫端已決定要第 1 順位以外的搖滾區。
+    ok, _ = await make_adapter(telemetry).apply_ticket_decision(
+        page, ticket_decision(index=1, name="搖滾區")
+    )
+    assert ok is True
+    values = [
+        await locator.input_value()
+        for locator in await page.locator(
+            "input[ng-model='ticketModel.quantity']"
+        ).all()
+    ]
+    assert values == ["0", "1"]
+
+
+async def test_apply_ticket_decision_refuses_a_sold_out_decision(
+    telemetry: TimelineRecorder,
+) -> None:
+    page = FakePage(TICKET_SELECTION_HTML)
+    decision = TicketDecision(
+        status="SOLD_OUT",
+        option=None,
+        quantity=1,
+        matched_priority=None,
+        fallback_used=False,
+        trace=(),
+    )
+    ok, reason = await make_adapter(telemetry).apply_ticket_decision(page, decision)
+    assert (ok, reason) == (False, REASON_SOLD_OUT)
+    assert not page.clicks
+
+
+async def test_apply_ticket_decision_rejects_a_stale_index(
+    telemetry: TimelineRecorder,
+) -> None:
+    """決策與套用之間頁面重渲：拿舊索引點下去會買到別人的票種。"""
+    page = FakePage(TICKET_SELECTION_HTML)
+    ok, reason = await make_adapter(telemetry).apply_ticket_decision(
+        page, ticket_decision(index=7)
+    )
+    assert (ok, reason) == (False, REASON_QUANTITY_MISMATCH)
+    assert not page.clicks
+    assert marks(telemetry, "ticket_unit_index_out_of_range")[0].detail["units"] == 1
+
+
+async def test_apply_ticket_decision_without_any_ticket_unit(
+    telemetry: TimelineRecorder,
+) -> None:
+    page = FakePage("<div id='registrationsNewApp'></div>")
+    ok, reason = await make_adapter(telemetry).apply_ticket_decision(
+        page, ticket_decision()
+    )
+    assert (ok, reason) == (False, REASON_NO_TICKET_UNITS)
+
+
+async def test_apply_ticket_decision_without_a_plus_button(
+    telemetry: TimelineRecorder,
+) -> None:
+    page = FakePage(
+        TICKET_SELECTION_HTML.replace(
+            "<button class='btn-default plus' ng-click='quantityBtnClick(1)'></button>",
+            "",
+        )
+    )
+    ok, reason = await make_adapter(telemetry).apply_ticket_decision(
+        page, ticket_decision()
+    )
+    assert (ok, reason) == (False, REASON_PLUS_BUTTON_MISSING)
+
+
+async def test_apply_ticket_decision_fails_closed_on_quantity_readback(
+    telemetry: TimelineRecorder,
+) -> None:
+    """AngularJS model 沒跟上 DOM 時寧可失敗，也不靜默送出 0 張。"""
+    page = FakePage(TICKET_SELECTION_HTML)
+    page.quantity_step = 0
+    ok, reason = await make_adapter(telemetry).apply_ticket_decision(
+        page, ticket_decision(quantity=2)
+    )
+    assert (ok, reason) == (False, REASON_QUANTITY_MISMATCH)
+    assert marks(telemetry, "quantity_readback_mismatch")[0].detail["actual"] == "0"
+
+
+async def test_apply_ticket_decision_needs_the_terms_checkbox(
+    telemetry: TimelineRecorder,
+) -> None:
+    page = FakePage(
+        TICKET_SELECTION_HTML.replace("id='person_agree_terms'", "id='other_terms'")
+    )
+    ok, reason = await make_adapter(telemetry).apply_ticket_decision(
+        page, ticket_decision()
+    )
+    assert (ok, reason) == (False, REASON_TERMS_NOT_ACCEPTED)
+
+
+async def test_apply_ticket_decision_never_unchecks_accepted_terms(
+    telemetry: TimelineRecorder,
+) -> None:
+    """降級重選時再點一次，等於把原本合法的同意狀態切回未勾。"""
+    page = FakePage(
+        TICKET_SELECTION_HTML.replace(
+            "id='person_agree_terms'", "id='person_agree_terms' checked='checked'"
+        )
+    )
+    ok, _ = await make_adapter(telemetry).apply_ticket_decision(page, ticket_decision())
+    assert ok is True
+    assert "#person_agree_terms" not in page.clicks
+    assert await page.locator("#person_agree_terms").first.is_checked()
+
+
+async def test_select_tickets_delegates_to_the_same_apply_path(
+    telemetry: TimelineRecorder,
+) -> None:
+    """兩條入口必須產生同一份決策，否則 wrapper 與迴圈會選到不同的票。"""
+    page = FakePage(TICKET_SELECTION_HTML)
+    adapter = make_adapter(telemetry)
+    ok, reason = await adapter.select_tickets(page, preference(quantity=1))
+    expected = decide_ticket(
+        await adapter.read_registration_tickets(FakePage(TICKET_SELECTION_HTML)),
+        preference(quantity=1),
+    )
+    assert (ok, reason) == (True, REASON_SELECTED)
+    assert adapter.last_ticket_decision is not None
+    assert adapter.last_ticket_decision.option is not None
+    assert expected.option is not None
+    assert adapter.last_ticket_decision.option.name == expected.option.name
+
+
+# -------------------------------------------------------------- 數量歸零回讀
+
+TWO_UNIT_HTML = (
+    "<div id='registrationsNewApp'><div class='ticket-list'>"
+    "<div class='ticket-unit'><div class='ticket-name'>全票</div>"
+    "<button class='btn-default plus'></button>"
+    "<button class='btn-default minus'></button>"
+    "<input type='text' ng-model='ticketModel.quantity' value='2'>"
+    "</div>"
+    "<div class='ticket-unit'><div class='ticket-name'>搖滾區</div>"
+    "<button class='btn-default plus'></button>"
+    "<button class='btn-default minus'></button>"
+    "<input type='text' ng-model='ticketModel.quantity' value='1'>"
+    "</div></div></div>"
+)
+
+
+async def test_reset_ticket_quantities_zeroes_every_unit(
+    telemetry: TimelineRecorder,
+) -> None:
+    page = FakePage(TWO_UNIT_HTML)
+    assert await make_adapter(telemetry).reset_ticket_quantities(page) is True
+    values = [
+        await locator.input_value()
+        for locator in await page.locator(
+            "input[ng-model='ticketModel.quantity']"
+        ).all()
+    ]
+    assert values == ["0", "0"]
+    mark = marks(telemetry, RESET_MARK)[-1].detail
+    assert (mark["ok"], mark["units"]) == (True, 2)
+
+
+async def test_reset_ticket_quantities_leaves_already_zero_units_alone(
+    telemetry: TimelineRecorder,
+) -> None:
+    page = FakePage(TICKET_SELECTION_HTML)
+    assert await make_adapter(telemetry).reset_ticket_quantities(page) is True
+    assert not page.clicks
+
+
+async def test_reset_ticket_quantities_skips_sold_out_units_without_a_field(
+    telemetry: TimelineRecorder,
+) -> None:
+    """售完的票種不長數量欄位，本來就沒有東西要歸零——不該因此判定失敗。"""
+    html = TWO_UNIT_HTML.replace(
+        "<input type='text' ng-model='ticketModel.quantity' value='1'>", "售完"
+    )
+    page = FakePage(html)
+    assert await make_adapter(telemetry).reset_ticket_quantities(page) is True
+    assert marks(telemetry, RESET_MARK)[-1].detail["units"] == 1
+
+
+async def test_reset_ticket_quantities_without_any_unit(
+    telemetry: TimelineRecorder,
+) -> None:
+    page = FakePage("<div id='registrationsNewApp'></div>")
+    assert await make_adapter(telemetry).reset_ticket_quantities(page) is False
+    assert marks(telemetry, RESET_MARK)[-1].detail["reason"] == REASON_NO_TICKET_UNITS
+
+
+async def test_reset_ticket_quantities_without_any_quantity_field(
+    telemetry: TimelineRecorder,
+) -> None:
+    """有票種卻一個數量欄位都沒有：頁面形狀變了，不該臆測「歸零成功」。"""
+    html = TWO_UNIT_HTML.replace("type='text' ng-model='ticketModel.quantity'", "type='hidden'")
+    page = FakePage(html)
+    assert await make_adapter(telemetry).reset_ticket_quantities(page) is False
+    assert (
+        marks(telemetry, RESET_MARK)[-1].detail["reason"]
+        == RESET_REASON_NO_QUANTITY_FIELD
+    )
+
+
+async def test_reset_ticket_quantities_fails_when_the_minus_button_is_gone(
+    telemetry: TimelineRecorder,
+) -> None:
+    html = TWO_UNIT_HTML.replace("<button class='btn-default minus'></button>", "", 1)
+    page = FakePage(html)
+    assert await make_adapter(telemetry).reset_ticket_quantities(page) is False
+    detail = marks(telemetry, RESET_MARK)[-1].detail
+    assert (detail["reason"], detail["unit"]) == (RESET_REASON_MINUS_MISSING, 0)
+
+
+async def test_reset_ticket_quantities_fails_on_an_unreadable_quantity(
+    telemetry: TimelineRecorder,
+) -> None:
+    html = TWO_UNIT_HTML.replace("value='2'", "value='二'")
+    page = FakePage(html)
+    assert await make_adapter(telemetry).reset_ticket_quantities(page) is False
+    assert marks(telemetry, RESET_MARK)[-1].detail["reason"] == RESET_REASON_UNREADABLE
+
+
+async def test_reset_ticket_quantities_fails_closed_when_readback_is_not_zero(
+    telemetry: TimelineRecorder,
+) -> None:
+    """帶著殘留數量選下一張票，比完全不選更糟。"""
+    page = FakePage(TWO_UNIT_HTML)
+    page.quantity_step = 0
+    assert await make_adapter(telemetry).reset_ticket_quantities(page) is False
+    detail = marks(telemetry, RESET_MARK)[-1].detail
+    assert (detail["reason"], detail["actual"]) == (RESET_REASON_NOT_ZERO, "2")

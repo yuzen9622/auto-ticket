@@ -86,6 +86,21 @@ class FakeLocator:
     async def is_checked(self) -> bool:
         return self.element.get("checked") is not None
 
+    async def is_visible(self) -> bool:
+        """對應 Playwright 的即時可見度判定（不等待）。
+
+        Bootstrap 會把彈窗骨架留在 DOM 裡，只靠 `count()` 會把從未顯示的模板
+        誤判成「正在彈的訊息」。這裡以 `hidden` 屬性與 `display:none` 樣式模擬
+        那個差異，讓「隱藏的彈窗模板不算彈窗」在離線測試中真的驗得到。
+        """
+        if not self.elements:
+            return False
+        element = self.element
+        if element.get("hidden") is not None:
+            return False
+        style = str(element.get("style", "")).replace(" ", "").lower()
+        return "display:none" not in style
+
     async def get_attribute(self, name: str) -> str | None:
         value = self.element.get(name)
         return None if value is None else str(value)

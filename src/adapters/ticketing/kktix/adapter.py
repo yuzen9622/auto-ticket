@@ -65,6 +65,22 @@ ALL_TICKET_REASONS = frozenset(
 )
 
 CLOUDFLARE_MARK = "cloudflare_challenge"
+FAILURE_MODAL_MARK = "failure_modal_dismissed"
+FAILURE_MODAL_MISSING_MARK = "failure_modal_dismiss_missing"
+RESET_MARK = "ticket_quantities_reset"
+
+# 歸零失敗的細分理由：只進 timeline，**不**併入 `ALL_TICKET_REASONS`——
+# 那份清單與 FSM 事件表一一對應，混進沒有事件的理由碼會讓對應關係失效。
+RESET_REASON_NO_QUANTITY_FIELD = "NO_QUANTITY_FIELD"
+RESET_REASON_MINUS_MISSING = "MINUS_BUTTON_MISSING"
+RESET_REASON_UNREADABLE = "QUANTITY_UNREADABLE"
+RESET_REASON_NOT_ZERO = "QUANTITY_NOT_ZERO"
+ZERO_QUANTITY = "0"
+
+# 頁面狀態的 URL 物理特徵。訂單完成與付款頁共用 `/orders/` 前綴，
+# 唯一的差別就是後綴有沒有 `/payment`——判定順序因此不可調換。
+ORDER_URL_MARKER = "/orders/"
+PAYMENT_URL_MARKER = "/payment"
 # KKTIX 頁面帶著分析／廣告等長尾資源，`load` 事件常常遲遲不觸發。
 # 搶票要的是「DOM 可以操作了」，不是「所有資源都下載完了」——等 load 只會白等。
 NAVIGATION_WAIT_UNTIL = "domcontentloaded"
@@ -89,6 +105,38 @@ class KKTIXPageKind(str, Enum):
     """人機驗證挑戰頁：只偵測與回報，不繞過；需要人自己在瀏覽器裡通過。"""
     UNKNOWN = "UNKNOWN"
     """以上皆非——多半是被導去登入頁或錯誤頁。"""
+
+
+class PageState(str, Enum):
+    """搶票迴圈每一輪實際看到的頁面狀態。
+
+    與 `KKTIXPageKind`（「這是哪一類網址」）刻意分離：這裡描述的是「現在該做哪個
+    動作」，粒度細到彈窗與局部區塊。**絕不**包含 `SOLD_OUT`——售罄是策略層看完
+    票種快照後的結論，不是頁面上讀得到的物理特徵，在這一層臆造它就是汙染研究資料。
+    """
+
+    FAILURE_MODAL = "FAILURE_MODAL"
+    """「別人搶先一步」「已無可配座位」——這一輪搶輸了，得換票種。"""
+    GUEST_MODAL = "GUEST_MODAL"
+    """未登入訪客彈窗：KKTIX 勸你先成為會員。"""
+    QUEUE = "QUEUE"
+    """排隊等候室。**嚴禁 reload**：重整會被丟回隊伍尾端。"""
+    COMPLETED = "COMPLETED"
+    """訂單完成頁（未付款保留訂單亦算抵達）。"""
+    PAYMENT_REQUIRED = "PAYMENT_REQUIRED"
+    """付款頁。"""
+    QUALIFICATION_CODE = "QUALIFICATION_CODE"
+    """專屬會員碼／邀請碼的資格審查區塊。"""
+    FORM_FILLING = "FORM_FILLING"
+    """聯絡人與動態同意條款表單；問答題同屬這張表單，故優先於局部驗證題。"""
+    VERIFICATION_CHALLENGE = "VERIFICATION_CHALLENGE"
+    """只有題幹與答案欄、沒有表單欄位的獨立驗證題。"""
+    SEAT_SELECTION = "SEAT_SELECTION"
+    """登記頁且**已選數量 > 0**：該按配位或下一步了。"""
+    TICKET_SELECTION = "TICKET_SELECTION"
+    """登記頁且**已選數量 == 0**：還沒選票。"""
+    UNKNOWN = "UNKNOWN"
+    """過渡暫態。呼叫端只能微等待後重判，逾時即 fail-closed。"""
 
 
 class CloudflareChallengeError(RuntimeError):
@@ -176,6 +224,65 @@ class KKTIXAdapter(TicketingAdapter):
             except Exception:
                 continue
         return False
+
+    @staticmethod
+    async def _first_present(
+        root: Any, selectors: str | Sequence[str]
+    ) -> Locator | None:
+        """依候選順序回傳第一個**存在**的元素，不等待、不要求可見。
+
+        狀態偵測與歸零回讀都跑在每 50ms 一輪的熱迴圈上，付不起
+        `first_visible` 的逾時預算：一輪等下來搶票就結束了。
+        """
+        from adapters.ticketing.kktix.dom import candidate_selectors
+
+        for selector in candidate_selectors(selectors):
+            locator = root.locator(selector).first
+            try:
+                if await locator.count() == 0:
+                    continue
+            except Exception:
+                continue
+            return locator
+        return None
+
+    @staticmethod
+    async def _visible_locators(
+        root: Any, selectors: str | Sequence[str]
+    ) -> list[Locator]:
+        """命中且**實際可見**的全部元素（立即判定，不等待）。
+
+        Bootstrap 彈窗的骨架常駐留在 DOM 裡，只看 `count()` 會把一個從未顯示
+        的模板讀成「正在彈的失敗訊息」，直接把整場搶票誤判成搶輸。
+        """
+        from adapters.ticketing.kktix.dom import candidate_selectors
+
+        found: list[Locator] = []
+        for selector in candidate_selectors(selectors):
+            try:
+                matched = await root.locator(selector).all()
+            except Exception:
+                continue
+            for locator in matched:
+                try:
+                    visible = await locator.is_visible()
+                except Exception:
+                    continue
+                if visible:
+                    found.append(locator)
+        return found
+
+    async def _has_visible(self, root: Any, selectors: str | Sequence[str]) -> bool:
+        return bool(await self._visible_locators(root, selectors))
+
+    async def _visible_text(self, root: Any, selectors: str | Sequence[str]) -> str:
+        chunks: list[str] = []
+        for locator in await self._visible_locators(root, selectors):
+            try:
+                chunks.append(str(await locator.inner_text()))
+            except Exception:
+                continue
+        return " ".join(chunks)
 
     # ------------------------------------------------------- 1. 導航與開賣偵測
 
@@ -334,6 +441,111 @@ class KKTIXAdapter(TicketingAdapter):
         # 「被踢回登入頁」在研究資料裡看起來像「正常停在訂單頁」。
         return KKTIXPageKind.UNKNOWN
 
+    async def read_selected_quantity(self, page: Page) -> int:
+        """登記頁上目前已選的總張數。
+
+        選票頁與劃位頁在 DOM 上是同一個 AngularJS app，唯一的物理差別就是這個
+        總數。讀不到或非數字的欄位一律以 0 計，不臆造選取狀態。
+        """
+        total = 0
+        for unit in await self._collect_ticket_units(page):
+            quantity_input = await self._first_present(
+                unit, KKTIXSelectors.TICKET_QUANTITY_INPUT
+            )
+            if quantity_input is None:
+                continue
+            raw = (await read_input_value(quantity_input)).strip()
+            if raw.isdigit():
+                total += int(raw)
+        return total
+
+    async def detect_page_state(self, page: Page) -> PageState:
+        """依優先序將目前頁面歸納成一個 `PageState`；**不拋例外、不等待**。
+
+        順序嚴禁調換，每一條都是举證責任在頁面上的物理特徵：
+        彈窗盖住底下的任何狀態；排隊室與登記頁互斥；`/orders/` 要先排除 `/payment`
+        才算完成；表單頁優先於局部驗證題（問答題就长在那張表單裡）；
+        最後才以「已選數量」區分劃位與選票。
+        """
+        url = str(getattr(page, "url", "") or "")
+
+        modal_text = await self._visible_text(page, KKTIXSelectors.MODAL_CONTAINER)
+        if modal_text:
+            if any(t in modal_text for t in KKTIXSelectors.MODAL_FAILURE_TEXTS):
+                return PageState.FAILURE_MODAL
+            if KKTIXSelectors.MODAL_GUEST_SIGNIN_TEXT in modal_text:
+                return PageState.GUEST_MODAL
+
+        if await self._has(page, KKTIXSelectors.QUEUE_COUNTDOWN) or await self._has(
+            page, KKTIXSelectors.QUEUE_HEADING
+        ):
+            return PageState.QUEUE
+
+        on_order_url = ORDER_URL_MARKER in url and PAYMENT_URL_MARKER not in url
+        if on_order_url or await self._has(
+            page, KKTIXSelectors.ORDER_COMPLETE_CONTAINER
+        ):
+            return PageState.COMPLETED
+
+        if PAYMENT_URL_MARKER in url or await self._has(
+            page, KKTIXSelectors.PAYMENT_RADIO_CREDIT_CARD
+        ):
+            return PageState.PAYMENT_REQUIRED
+
+        if await self._has(
+            page, KKTIXSelectors.MEMBER_CODE_BLOCK
+        ) and await self._has_visible(page, KKTIXSelectors.MEMBER_CODE_INPUT):
+            return PageState.QUALIFICATION_CODE
+
+        for selectors in (
+            KKTIXSelectors.ORDER_COUNTDOWN_NOTICE,
+            KKTIXSelectors.CONTACT_DYNAMIC_GROUP,
+            KKTIXSelectors.CONTACT_NAME,
+            KKTIXSelectors.BTN_CONFIRM_ORDER,
+        ):
+            if await self._has(page, selectors):
+                return PageState.FORM_FILLING
+
+        if await self._has(page, KKTIXSelectors.CAPTCHA_CONTAINER) and await self._has(
+            page, KKTIXSelectors.CAPTCHA_INPUT
+        ):
+            return PageState.VERIFICATION_CHALLENGE
+
+        if await self._has(page, KKTIXSelectors.REGISTRATION_APP):
+            selected = await self.read_selected_quantity(page)
+            if selected == 0:
+                return PageState.TICKET_SELECTION
+            for selectors in (
+                KKTIXSelectors.BTN_BEST_AVAILABLE,
+                KKTIXSelectors.BTN_PICK_SEAT,
+                KKTIXSelectors.BTN_NEXT_STEP,
+            ):
+                if await self._has(page, selectors):
+                    return PageState.SEAT_SELECTION
+
+        return PageState.UNKNOWN
+
+    async def dismiss_failure_modal(self, page: Page) -> bool:
+        """關掉「別人搶先一步」彈窗，並把彈窗文字原樣記進 timeline。
+
+        彈窗文字是「這一輪為什麼搶輸」的唯一直接証據（座位被抽走與票券售完在
+        降級策略上完全不同），不記下來就只剩一個無法分析的「失敗」。
+        """
+        text = " ".join(
+            (await self._visible_text(page, KKTIXSelectors.MODAL_CONTAINER)).split()
+        )
+        button = await self._first_present(page, KKTIXSelectors.MODAL_DISMISS_BTN)
+        if button is None:
+            self.telemetry.record(
+                TimelineEventType.MARK, FAILURE_MODAL_MISSING_MARK, text=text[:200]
+            )
+            return False
+        await ng_click(page, button, telemetry=self.telemetry)
+        self.telemetry.record(
+            TimelineEventType.MARK, FAILURE_MODAL_MARK, text=text[:200]
+        )
+        return True
+
     async def probe_page(self, page: Page, url: str | None = None) -> KKTIXPageKind:
         """判斷目前狀態，**不拋例外**——包含命中人機驗證挑戰的情況。
 
@@ -447,7 +659,19 @@ class KKTIXAdapter(TicketingAdapter):
             return False, REASON_NO_TICKET_UNITS
 
         options = await self.read_registration_tickets(page)
-        decision = decide_ticket(options, preference)
+        return await self.apply_ticket_decision(
+            page, decide_ticket(options, preference)
+        )
+
+    async def apply_ticket_decision(
+        self, page: Page, decision: TicketDecision
+    ) -> tuple[bool, str]:
+        """把**已經作出的**票種決策套用到頁面上（加号 + 條款）。
+
+        與 `select_tickets` 分離是故意的：搶票迴圈得以同一份排除清單「決策一次、
+        套用一次」，若在這裡重新決策，降級鍵路就會拿到第二份不同的決策而反覆
+        選到已經搶輸的同一張票。
+        """
         self.last_ticket_decision = decision
         self.telemetry.record(
             TimelineEventType.MARK,
@@ -459,6 +683,19 @@ class KKTIXAdapter(TicketingAdapter):
         )
         if decision.status != "SELECTED" or decision.option is None:
             return False, REASON_SOLD_OUT
+
+        units = await self._collect_ticket_units(page)
+        if not units:
+            return False, REASON_NO_TICKET_UNITS
+        if decision.option.index >= len(units):
+            # 決策到套用之間頁面重渲了：寧可重試，也不能拿舊索引去點到別人的票種。
+            self.telemetry.record(
+                TimelineEventType.MARK,
+                "ticket_unit_index_out_of_range",
+                index=decision.option.index,
+                units=len(units),
+            )
+            return False, REASON_QUANTITY_MISMATCH
 
         unit = units[decision.option.index]
         plus = await self._locate(
@@ -490,9 +727,88 @@ class KKTIXAdapter(TicketingAdapter):
         )
         if terms is None:
             return False, REASON_TERMS_NOT_ACCEPTED
-        await ng_click(page, terms, telemetry=self.telemetry)
+        # 已勾就不要再點：降級重選時再點一次等於把合法的同意狀態切回未勾。
+        if not await terms.is_checked():
+            await ng_click(page, terms, telemetry=self.telemetry)
 
         return True, REASON_SELECTED
+
+    async def reset_ticket_quantities(self, page: Page) -> bool:
+        """把登記頁上所有票種數量歸零，逐一回讀確認真的是 "0"。
+
+        失敗彈窗之後必須換票種重選，而残留的數量會連同新票種一起送出。
+        任一欄位回讀不到 "0" 即回報 False 讓呼叫端 fail-closed：
+        帶着残留數量選票比完全不選更糟。
+        """
+        units = await self._collect_ticket_units(page)
+        if not units:
+            self.telemetry.record(
+                TimelineEventType.MARK,
+                RESET_MARK,
+                ok=False,
+                reason=REASON_NO_TICKET_UNITS,
+            )
+            return False
+
+        verified = 0
+        for index, unit in enumerate(units):
+            quantity_input = await self._first_present(
+                unit, KKTIXSelectors.TICKET_QUANTITY_INPUT
+            )
+            if quantity_input is None:
+                # 售完的票種不長數量欄位，本來就沒有東西要歸零。
+                continue
+            raw = (await read_input_value(quantity_input)).strip() or ZERO_QUANTITY
+            if not raw.isdigit():
+                self.telemetry.record(
+                    TimelineEventType.MARK,
+                    RESET_MARK,
+                    ok=False,
+                    reason=RESET_REASON_UNREADABLE,
+                    unit=index,
+                )
+                return False
+            current = int(raw)
+            if current > 0:
+                minus = await self._first_present(unit, KKTIXSelectors.TICKET_MINUS_BTN)
+                if minus is None:
+                    self.telemetry.record(
+                        TimelineEventType.MARK,
+                        RESET_MARK,
+                        ok=False,
+                        reason=RESET_REASON_MINUS_MISSING,
+                        unit=index,
+                    )
+                    return False
+                for _ in range(current):
+                    await ng_click(page, minus, telemetry=self.telemetry)
+            actual = (await read_input_value(quantity_input)).strip() or ZERO_QUANTITY
+            if actual != ZERO_QUANTITY:
+                self.telemetry.record(
+                    TimelineEventType.MARK,
+                    RESET_MARK,
+                    ok=False,
+                    reason=RESET_REASON_NOT_ZERO,
+                    unit=index,
+                    actual=actual,
+                )
+                return False
+            verified += 1
+
+        if verified == 0:
+            # 有票種協但一個數量欄位也沒有：頁面形狀變了，不該臆測「歸零成功」。
+            self.telemetry.record(
+                TimelineEventType.MARK,
+                RESET_MARK,
+                ok=False,
+                reason=RESET_REASON_NO_QUANTITY_FIELD,
+                units=len(units),
+            )
+            return False
+        self.telemetry.record(
+            TimelineEventType.MARK, RESET_MARK, ok=True, units=verified
+        )
+        return True
 
     # -------------------------------------------------------------- 3. 座位處理
 
