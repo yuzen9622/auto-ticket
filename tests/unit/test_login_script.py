@@ -46,3 +46,26 @@ def test_summary_never_returns_cookie_contents(field: str) -> None:
     )
     assert result == (1, True)
     assert "SECRET" not in repr(result)
+
+
+def test_auto_login_is_off_by_default() -> None:
+    assert login.build_parser().parse_args([]).auto_login is False
+    assert login.build_parser().parse_args(["--auto-login"]).auto_login is True
+
+
+def test_credentials_require_both_env_vars() -> None:
+    assert login.credentials_from_env({}) is None
+    assert login.credentials_from_env({login.ENV_USERNAME: "u"}) is None
+    assert login.credentials_from_env({login.ENV_KEY: "k"}) is None
+    assert login.credentials_from_env({login.ENV_USERNAME: " ", login.ENV_KEY: "k"}) is None
+
+
+def test_credentials_are_stripped_and_paired() -> None:
+    pair = login.credentials_from_env({login.ENV_USERNAME: " u ", login.ENV_KEY: " k "})
+    assert pair == ("u", "k")
+
+
+def test_credentials_are_never_accepted_from_the_command_line() -> None:
+    """憑證只走環境變數：命令列會留在 shell 歷史裡。"""
+    flags = {a.dest for a in login.build_parser()._actions}
+    assert not any("password" in f or "username" in f or "secret" in f for f in flags)

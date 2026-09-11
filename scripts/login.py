@@ -1,21 +1,29 @@
 #!/usr/bin/env python
-"""開一個有頭瀏覽器，讓使用者自行登入並把登入狀態留在 persistent profile 裡。
+"""開一個有頭瀏覽器，把登入狀態留在 persistent profile 裡。
 
-本腳本**不碰帳號密碼**：不接受、不讀取、不儲存任何憑證，只負責把瀏覽器開在
-指定的 `user_data_dir` 上，登入動作完全由使用者在瀏覽器裡自己完成。
+兩種模式：
+* 預設（人工）：只把瀏覽器開在指定的 `user_data_dir` 上，登入由使用者自己完成。
+* `--auto-login`：從環境變數讀入憑證並自動填表。憑證**只從環境變數進來**，
+  不接受命令列參數（命令列會留在 shell 歷史），也絕不寫入任何檔案或輸出。
+
 關閉後該 profile 帶著 cookie，後續 `run_purchase.py --profile <name>` 與
 `pytest tests/live --live-registration` 都會沿用同一份登入狀態。
 
 用法：
     uv run python scripts/login.py --profile live
     # 在開啟的瀏覽器裡登入完成後，回到終端機按 Enter
+
+    AUTO_TICKET_KKTIX_USERNAME=... AUTO_TICKET_KKTIX_PASSWORD=... \\
+        uv run python scripts/login.py --profile live --auto-login
 """
 
 from __future__ import annotations
 
 import argparse
 import asyncio
+import os
 import sys
+from collections.abc import Mapping
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -31,6 +39,21 @@ DEFAULT_URL = "https://kktix.com/users/sign_in"
 NAVIGATION_WAIT_UNTIL = "domcontentloaded"
 NAVIGATION_TIMEOUT_MS = 30000
 
+ENV_USERNAME = "AUTO_TICKET_KKTIX_USERNAME"
+ENV_KEY = "AUTO_TICKET_KKTIX_PASSWORD"
+
+
+def credentials_from_env(
+    environ: Mapping[str, str] | None = None,
+) -> tuple[str, str] | None:
+    """兩個環境變數都有值才算數；只填一半一律視為未提供，不拿空字串去試登入。"""
+    source = os.environ if environ is None else environ
+    user = source.get(ENV_USERNAME, "").strip()
+    key = source.get(ENV_KEY, "").strip()
+    if not user or not key:
+        return None
+    return user, key
+
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
@@ -39,6 +62,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--profile", default="live", help="profile 名稱（預設 live）")
     parser.add_argument("--url", default=DEFAULT_URL, help=f"起始網址（預設 {DEFAULT_URL}）")
+    parser.add_argument(
+        "--auto-login",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=f"從 {ENV_USERNAME} / {ENV_KEY} 自動填表登入（預設關閉，改由人工登入）",
+    )
     return parser
 
 
@@ -50,6 +79,24 @@ def summarize_cookies(cookies: list[dict], host_fragment: str = "kktix") -> tupl
         for c in relevant
     )
     return len(relevant), has_session
+
+
+async def attempt_auto_login(page: object) -> bool:
+    """自動填入環境變數憑證。失敗只回報狀態，交由使用者接手手動登入。"""
+    pair = credentials_from_env()
+    if pair is None:
+        print("[warn] 自動登入所需的两個環境變數未完整設定；跳過自動登入。")
+        return False
+    user, key = pair
+    from adapters.payment.mock import MockPaymentProvider
+    from adapters.ticketing.kktix.adapter import KKTIXAdapter
+    from telemetry.timeline import TimelineRecorder
+
+    telemetry = TimelineRecorder()
+    adapter = KKTIXAdapter(telemetry=telemetry, payment=MockPaymentProvider())
+    ok = await adapter.login(page, user, key)
+    print(f"[auto-login] {'成功' if ok else '失敗，請改由人工登入'}")
+    return ok
 
 
 async def run(args: argparse.Namespace) -> int:
@@ -73,6 +120,8 @@ async def run(args: argparse.Namespace) -> int:
         except Exception as exc:
             # 這支腳本的目的是把瀏覽器開起來讓人登入；開頁不順不該讓人連登都登不了。
             print(f"[warn] 自動開啟起始頁失敗（{type(exc).__name__}）；請在瀏覽器網址列自行前往。")
+        if args.auto_login:
+            await attempt_auto_login(page)
         print("瀏覽器已開啟。請在裡面完成登入，然後回到這裡按 Enter。")
         await asyncio.to_thread(input, "登入完成後按 Enter> ")
         count, has_session = summarize_cookies(await context.cookies())

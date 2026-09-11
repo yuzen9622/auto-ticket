@@ -52,3 +52,76 @@ def test_the_real_attach_call_site_satisfies_the_gate() -> None:
         (Path(check_invariants.REPO_ROOT) / rel).read_text(encoding="utf-8")
     )
     assert check_invariants.cdp_no_defaults_violations(tree, rel) == []
+
+
+# ------------------------------------------------------------------ G29
+CREDENTIAL_LEAKS = (
+    "print(secret_token)",
+    'logger.info(f"{secret_token}")',
+    'telemetry.record("mark", username=u)',
+    'telemetry.record("mark", password=p)',
+    'Path("leak.txt").write_text(secret_token)',
+    'Path("leak.bin").write_bytes(secret_token)',
+    "page.screenshot(path=secret_token)",
+    "page.save_screenshot(secret_token)",
+    "raise ValueError(secret_token)",
+)
+
+
+@pytest.mark.parametrize("source", CREDENTIAL_LEAKS)
+def test_g29_flags_every_credential_sink(source: str) -> None:
+    assert check_invariants.credential_leak_violations(ast.parse(source), "x.py")
+
+
+def test_g29_reports_the_offending_line() -> None:
+    (message,) = check_invariants.credential_leak_violations(
+        ast.parse("print(secret_token)"), "x.py"
+    )
+    assert message.startswith("x.py:1 ")
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "print(order_id)",
+        'logger.info("auto_login_started")',
+        'telemetry.record("mark", attempt=1)',
+        'Path("out.txt").write_text(summary)',
+        "page.screenshot(path=shot_name)",
+        "raise ValueError(reason)",
+    ],
+)
+def test_g29_does_not_flag_clean_sinks(source: str) -> None:
+    assert check_invariants.credential_leak_violations(ast.parse(source), "x.py") == []
+
+
+def test_g29_does_not_mistake_login_for_a_logging_sink() -> None:
+    """`adapter.login(page, username, secret_token)` 是合法呼叫，不是日誌外洩。"""
+    source = "await self.adapter.login(page, username, secret_token)"
+    assert check_invariants.credential_leak_violations(ast.parse(source), "x.py") == []
+
+
+def test_g29_scans_both_src_and_scripts() -> None:
+    scanned = set(check_invariants.iter_all_project_py_files())
+    assert "src/purchase/orchestrator.py" in scanned
+    assert "scripts/run_purchase.py" in scanned
+
+
+def test_g29_is_registered() -> None:
+    assert check_invariants.g29_no_credentials_in_sinks in check_invariants.GATES
+
+
+def test_g29_rejects_a_credential_field_on_the_domain_model() -> None:
+    tree = ast.parse("class PurchaseTaskSpec:\n    user_password: str\n")
+    fields = check_invariants.class_fields(tree)
+    assert any(
+        check_invariants.is_credential_name(name)
+        for name in fields["PurchaseTaskSpec"]
+    )
+
+
+def test_the_real_project_has_no_credential_sinks() -> None:
+    for rel in check_invariants.iter_all_project_py_files():
+        assert check_invariants.credential_leak_violations(
+            check_invariants.parse(rel), rel
+        ) == []

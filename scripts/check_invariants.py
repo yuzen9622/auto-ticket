@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""機械化不變式守門員（G1–G28）。
+"""機械化不變式守門員（G1–G29）。
 
 驗證那些靠人眼審查不可靠、但可以機械化證明的專案不變式：凍結模組零改動、
 測試不連外、無過時 API、打包與依賴約束完整，以及每個設計決策的靜態鎖定。
@@ -956,6 +956,117 @@ def g28_cdp_no_defaults() -> None:
             fail("G28", msg)
 
 
+# --------------------------------------------------------------- G29
+# 帳密沒有「只洩一點點」這種事：一旦進了 log、timeline、例外訊息或截圖檔名，
+# 就會跟著研究輸出一起被保存、被分享。本閘門掃全部 src/ 與 scripts/。
+CREDENTIAL_NAME_PARTS = (
+    "password",
+    "user_password",
+    "kktix_password",
+    "secret",
+    "credential",
+    "secret_token",
+    "username",
+    "user_name",
+)
+# sink 以**點號分段的完整名稱**比對，不用子字串：`adapter.login(...)` 裡的 "log"
+# 不是日誌呢兒，用子字串比對會把合法的登入呼叫全數誤判成外洩。
+CREDENTIAL_SINK_SEGMENTS = frozenset(
+    {
+        "log",
+        "logger",
+        "logging",
+        "print",
+        "record",
+        "record_error",
+        "record_transition",
+        "write_text",
+        "write_bytes",
+        "screenshot",
+        "save_screenshot",
+    }
+)
+
+
+def iter_all_project_py_files() -> Iterator[str]:
+    """G29 專用：憑證洩漏不分模組，這條必須掃到 `src/` 與 `scripts/` 每一支檔。"""
+    for directory in ("src", "scripts"):
+        for p in sorted((REPO_ROOT / directory).rglob("*.py")):
+            yield str(p.relative_to(REPO_ROOT))
+
+
+def is_credential_name(name: str) -> bool:
+    lowered = name.lower()
+    return any(part in lowered for part in CREDENTIAL_NAME_PARTS)
+
+
+def call_segments(node: ast.Call) -> set[str]:
+    """把 `Path('x').write_text` 這種鍵式呼叫拆成 {'Path', 'write_text'}。"""
+    segments: set[str] = set()
+    current: ast.expr | None = node.func
+    while current is not None:
+        if isinstance(current, ast.Attribute):
+            segments.add(current.attr)
+            current = current.value
+        elif isinstance(current, ast.Name):
+            segments.add(current.id)
+            current = None
+        elif isinstance(current, ast.Call):
+            current = current.func
+        elif isinstance(current, ast.Subscript):
+            current = current.value
+        else:
+            current = None
+    return segments
+
+
+def is_credential_sink(node: ast.Call) -> bool:
+    return bool(call_segments(node) & CREDENTIAL_SINK_SEGMENTS)
+
+
+def leaks_credential(node: ast.AST) -> str | None:
+    for child in ast.walk(node):
+        if isinstance(child, ast.Name) and is_credential_name(child.id):
+            return child.id
+        if isinstance(child, ast.Attribute) and is_credential_name(child.attr):
+            return child.attr
+        if (
+            isinstance(child, ast.keyword)
+            and child.arg is not None
+            and is_credential_name(child.arg)
+        ):
+            return child.arg
+    return None
+
+
+def credential_leak_violations(tree: ast.AST, rel: str) -> list[str]:
+    out: list[str] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Raise) and node.exc is not None:
+            leak = leaks_credential(node.exc)
+            if leak is not None:
+                out.append(f"{rel}:{node.lineno} 例外訊息帶入憑證 {leak!r}")
+            continue
+        if not isinstance(node, ast.Call) or not is_credential_sink(node):
+            continue
+        for arg in list(node.args) + list(node.keywords):
+            leak = leaks_credential(arg)
+            if leak is not None:
+                out.append(f"{rel}:{node.lineno} 對 sink 傳入憑證 {leak!r}")
+    return out
+
+
+def g29_no_credentials_in_sinks() -> None:
+    for rel in iter_all_project_py_files():
+        for msg in credential_leak_violations(parse(rel), rel):
+            fail("G29", msg)
+    # 領域模型是會被序列化到 SQLite 與 timeline 的；憑證欄位一旦存在就必定落地。
+    for cls, fields in class_fields(parse("src/domain/task.py")).items():
+        for name in fields:
+            if is_credential_name(name):
+                fail("G29", f"src/domain/task.py:{cls} 出現憑證欄位 {name!r}")
+
+
 GATES = (
     g1_frozen_paths_untouched,
     g2_no_real_hosts_in_tests,
@@ -984,6 +1095,7 @@ GATES = (
     g26_live_suite_is_read_only,
     g27_strategy_layer_is_pure,
     g28_cdp_no_defaults,
+    g29_no_credentials_in_sinks,
 )
 
 

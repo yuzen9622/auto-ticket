@@ -189,6 +189,84 @@ class KKTIXAdapter(TicketingAdapter):
         self.telemetry.record(TimelineEventType.MARK, "navigated", url=event_url)
         return True
 
+    # ------------------------------------------------------------- 1b. 登入
+
+    async def navigate_to_login_from_guest_modal(self, page: Page) -> bool:
+        """從「立刻成為 KKTIX 會員」彈窗跳到登入頁。"""
+        link = await self._locate(
+            page, KKTIXSelectors.MODAL_GUEST_SIGNIN_LINK, "guest_signin_link"
+        )
+        if link is None:
+            self.telemetry.record(TimelineEventType.MARK, "guest_modal_link_missing")
+            return False
+        await ng_click(page, link, telemetry=self.telemetry)
+        await self._settle(page)
+        self.telemetry.record(TimelineEventType.MARK, "guest_modal_login_redirect")
+        return True
+
+    async def login(self, page: Page, username: str, secret_token: str) -> bool:
+        """以呼叫端傳入的憑證登入，回報是否已離開登入頁。
+
+        憑證只經 `ng_fill` 進 DOM：**絕不**進 log、timeline、例外訊息或截圖檔名。
+        任何失敗路徑都先清空密碼欄位再返回：留在 DOM 上的密碼會被下一張截圖拍走。
+        """
+        await self._guard_cloudflare(page, "login")
+        user_field = await self._locate(
+            page, KKTIXSelectors.LOGIN_USER_INPUT, "login_user_input"
+        )
+        key_field = await self._locate(
+            page, KKTIXSelectors.LOGIN_KEY_FIELD, "login_key_field"
+        )
+        if user_field is None or key_field is None:
+            self.telemetry.record(
+                TimelineEventType.MARK,
+                "login_form_incomplete",
+                has_user_field=user_field is not None,
+                has_key_field=key_field is not None,
+            )
+            return False
+
+        await ng_fill(page, user_field, username)
+        await ng_fill(page, key_field, secret_token)
+
+        submit = await self._locate(
+            page, KKTIXSelectors.LOGIN_SUBMIT_BTN, "login_submit_btn"
+        )
+        if submit is None:
+            await self._clear_key_field(key_field)
+            self.telemetry.record(TimelineEventType.MARK, "login_submit_missing")
+            return False
+
+        await ng_click(page, submit, telemetry=self.telemetry)
+        await self._settle(page)
+        kind = await self.detect_page_kind(page)
+        ok = kind is not KKTIXPageKind.LOGIN
+        if not ok:
+            await self._clear_key_field(key_field)
+        self.telemetry.record(
+            TimelineEventType.MARK, "login_result", ok=ok, page_kind=kind.value
+        )
+        return ok
+
+    @staticmethod
+    async def _clear_key_field(field: Locator) -> None:
+        try:
+            await field.fill("")
+        except Exception:
+            # 欄位已隨導頁消失就算清完了；這裡不得把例外往上拋，
+            # 否則 traceback 反而會把登入現場的上下文寫進錯誤輸出。
+            return
+
+    async def _settle(self, page: Page) -> None:
+        try:
+            await page.wait_for_load_state(
+                NAVIGATION_WAIT_UNTIL, timeout=self.navigation_timeout_ms
+            )
+        except Exception as exc:
+            self.telemetry.record(
+                TimelineEventType.MARK, "settle_skipped", reason=type(exc).__name__
+            )
+
     async def detect_sale_opened(self, page: Page, timeout_ms: int) -> bool:
         await self._guard_cloudflare(page, "detect_sale")
         app = await first_visible(
