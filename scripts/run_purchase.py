@@ -33,7 +33,8 @@ from adapters.payment import (  # noqa: E402
     masked_last4,
 )
 from adapters.ticketing.kktix.adapter import KKTIXAdapter  # noqa: E402
-from adapters.verification import ManualVerificationProvider  # noqa: E402
+from adapters.verification import ManualVerificationProvider
+from adapters.verification.rule_based import RuleBasedVerificationProvider
 from browser.cdp_attach import (  # noqa: E402
     CdpEndpointError,
     parse_cdp_endpoint,
@@ -82,7 +83,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--dry-run",
         action=argparse.BooleanOptionalAction,
         default=True,
-        help="使用 Mock 付款並停在送出鈕之前（預設啟用）",
+        help="建立未付款保留訂單檢查點，不扣款發動金流（預設啟用）",
     )
     parser.add_argument(
         "--real-payment",
@@ -92,9 +93,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--profile",
-        default=None,
-        help="瀏覽器 profile 名稱（預設同 task_id）。登入狀態存在 .browser_profiles/<profile>／"
+        default="live",
+        help="瀏覽器 profile 名稱（預設 live）。登入狀態存在 .browser_profiles/<profile>／"
         "需要沿用已登入的 profile 時指定它",
+    )
+    parser.add_argument(
+        "--member-code",
+        default=None,
+        help="KKTIX 會員專屬邀請碼（亦可由環境變數 AUTO_TICKET_MEMBER_CODE 或 task.json 提供）",
     )
     parser.add_argument(
         "--session-gate-timeout",
@@ -197,18 +203,31 @@ async def run(args: argparse.Namespace) -> int:
         cdp_endpoint=args.cdp_endpoint,
         cdp_page_url=(args.cdp_page_url or spec.event_url) if cdp_endpoint else None,
     )
+    if args.member_code:
+        os.environ["AUTO_TICKET_MEMBER_CODE"] = args.member_code
+
+    if spec.verification_rules:
+        verification: Any = RuleBasedVerificationProvider(
+            spec.verification_rules, telemetry=telemetry
+        )
+    else:
+        verification = ManualVerificationProvider(
+            prompt_for_answer, telemetry=telemetry
+        )
+
     adapter = KKTIXAdapter(
         telemetry=telemetry,
         payment=payment,
-        verification=ManualVerificationProvider(prompt_for_answer, telemetry=telemetry),
+        verification=verification,
         attendees=spec.attendees,
     )
     scheduler = WarmupScheduler(telemetry)
-    effective = (
-        spec
-        if profile is None
-        else spec.model_copy(update={"payment_profile": profile})
-    )
+    updates: dict[str, Any] = {}
+    if profile is not None:
+        updates["payment_profile"] = profile
+    if args.member_code and not spec.qualification_code:
+        updates["qualification_code"] = args.member_code
+    effective = spec.model_copy(update=updates) if updates else spec
     gate_hints = {
         "CHALLENGE": "瀏覽器裡出現人機驗證，請自行通過（本程式不會代為繞過）",
         "LOGIN": "被導到登入頁，請在瀏覽器裡自行登入",

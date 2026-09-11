@@ -63,7 +63,21 @@ def test_payment_gates_keep_their_defaults() -> None:
     assert args.real_payment is False
     assert args.headless is True
     assert args.session_gate_timeout == 240.0
-    assert args.profile is None
+    assert args.profile == "live"
+    assert args.member_code is None
+
+
+def test_dry_run_help_text_matches_specification() -> None:
+    parser = run_purchase.build_parser()
+    action = next(a for a in parser._actions if a.dest == "dry_run")
+    assert "建立未付款保留訂單檢查點，不扣款發動金流" in action.help
+
+
+def test_member_code_option_is_parsed() -> None:
+    args = run_purchase.build_parser().parse_args(
+        ["--task", "t.json", "--member-code", "MYVIP"]
+    )
+    assert args.member_code == "MYVIP"
 
 
 def test_cdp_options_are_parsed() -> None:
@@ -167,3 +181,65 @@ async def test_browser_stops_even_when_scheduler_shutdown_fails(
     with pytest.raises(RuntimeError, match="scheduler cleanup failed"):
         await run_purchase.run(args)
     assert stopped == 1
+
+
+async def test_verification_rules_wires_rule_based_provider(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    task_data = json.loads(_task_file(tmp_path).read_text(encoding="utf-8"))
+    task_data["verification_rules"] = [
+        {"pattern": "台北場", "answer": "A", "is_regex": False}
+    ]
+    task_path = tmp_path / "task_rules.json"
+    task_path.write_text(json.dumps(task_data), encoding="utf-8")
+
+    captured_adapter_kwargs: dict[str, object] = {}
+
+    class FakeBrowser:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            self.profile = SimpleNamespace(name="live", user_data_dir=str(tmp_path / "u"))
+
+        async def stop(self) -> None:
+            pass
+
+    class FakeScheduler:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            pass
+
+        async def shutdown(self) -> None:
+            pass
+
+    class FakeOrchestrator:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            pass
+
+        async def run(self) -> object:
+            return SimpleNamespace(
+                task_id="t1",
+                final_state="COMPLETED",
+                sale_time_error_ms=0.0,
+                ticket_trace=(),
+                ticket_failure_reasons=(),
+                payment=None,
+                screenshots=(),
+                screenshots_expected=0,
+                timeline_path=None,
+                stages=(),
+                error=None,
+            )
+
+    def fake_adapter(**kwargs: object) -> object:
+        captured_adapter_kwargs.update(kwargs)
+        return object()
+
+    monkeypatch.setattr(run_purchase, "PlaywrightManager", FakeBrowser)
+    monkeypatch.setattr(run_purchase, "WarmupScheduler", FakeScheduler)
+    monkeypatch.setattr(run_purchase, "PurchaseOrchestrator", FakeOrchestrator)
+    monkeypatch.setattr(run_purchase, "KKTIXAdapter", fake_adapter)
+
+    args = run_purchase.build_parser().parse_args(["--task", str(task_path)])
+    code = await run_purchase.run(args)
+    assert code == 0
+
+    provider = captured_adapter_kwargs.get("verification")
+    assert isinstance(provider, run_purchase.RuleBasedVerificationProvider)
