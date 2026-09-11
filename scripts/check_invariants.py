@@ -85,11 +85,28 @@ GUARDED_TEST_FILES = (
     "tests/unit/test_cdp_attach.py",
     "tests/unit/test_run_purchase_cli.py",
     "tests/unit/test_invariant_gates.py",
+    "tests/unit/test_accounts_vault.py",
+    "tests/unit/test_broker_queue.py",
+    "tests/unit/test_broker_control.py",
+    "tests/unit/test_broker_outbox.py",
+    "tests/unit/test_api_events.py",
+    "tests/unit/test_api_tasks.py",
+    "tests/unit/test_api_accounts.py",
+    "tests/unit/test_api_experiments.py",
+    "tests/unit/test_worker_control.py",
+    "tests/unit/test_worker_telemetry_bridge.py",
+    "tests/unit/test_worker_loop.py",
+    "tests/unit/test_ws_hub.py",
+    "tests/unit/test_ws_endpoint.py",
+    "tests/integration/test_api_worker_e2e.py",
 )
 # 沒有測試函式的測試輔助模組：不適用「必須掛 netguard fixture」這條。
 TEST_HELPERS_WITHOUT_TESTS = ("tests/netguard.py", "tests/fake_page.py")
 # 白名單放行／阻擋案例本來就必須寫出真實網域字面值，改用較窄規則把關。
-G2_LITERAL_EXEMPT = ("tests/unit/test_clock_sync.py",)
+G2_LITERAL_EXEMPT = (
+    "tests/unit/test_clock_sync.py",
+    "tests/unit/test_api_events.py",
+)
 RESERVED_TEST_HOST_SUFFIXES = (
     ".invalid",
     ".test",
@@ -1067,6 +1084,75 @@ def g29_no_credentials_in_sinks() -> None:
                 fail("G29", f"src/domain/task.py:{cls} 出現憑證欄位 {name!r}")
 
 
+# --------------------------------------------------------------- G30
+def g30_ws_protocol_matches_sdd() -> None:
+    rel = "src/api/schemas/ws.py"
+    server_types = enum_members(rel, "ServerMessageType")
+    expected_server = {
+        "STATE_CHANGED",
+        "CLOCK_TICK",
+        "SCREENSHOT_CAPTURED",
+        "TASK_LOG",
+        "ERROR",
+    }
+    if server_types != expected_server:
+        fail(
+            "G30",
+            f"ServerMessageType 必須恰為 {expected_server}，實際為 {server_types}",
+        )
+    client_actions = enum_members(rel, "ClientAction")
+    expected_client = {
+        "EMERGENCY_STOP",
+        "PAUSE",
+        "RESUME",
+        "FORCE_TRANSITION",
+    }
+    if client_actions != expected_client:
+        fail(
+            "G30",
+            f"ClientAction 必須恰為 {expected_client}，實際為 {client_actions}",
+        )
+
+
+# --------------------------------------------------------------- G31
+def g31_card_secrets_isolated_from_api_and_broker() -> None:
+    forbidden_names = {"CreditCardProfile"}
+    for directory in ("src/api", "src/broker"):
+        for p in sorted((REPO_ROOT / directory).rglob("*.py")):
+            rel = str(p.relative_to(REPO_ROOT))
+            tree = parse(rel)
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Name) and node.id in forbidden_names:
+                    fail("G31", f"{rel}:{node.lineno} 出現卡片識別子 {node.id!r}")
+    tasks_router_src = read("src/api/routers/tasks.py")
+    if "to_persistable_dict(" not in tasks_router_src:
+        fail("G31", "src/api/routers/tasks.py 缺少 to_persistable_dict() 呼叫")
+
+
+# --------------------------------------------------------------- G32
+def g32_api_server_zero_browser_deps() -> None:
+    for p in sorted((REPO_ROOT / "src/api").rglob("*.py")):
+        rel = str(p.relative_to(REPO_ROOT))
+        tree = parse(rel)
+        for node in ast.walk(tree):
+            names: list[str] = []
+            if isinstance(node, ast.Import):
+                names = [a.name for a in node.names]
+            elif isinstance(node, ast.ImportFrom):
+                names = [node.module or ""]
+            for n in names:
+                if n == "playwright" or n.startswith("playwright."):
+                    fail(
+                        "G32",
+                        f"{rel}:{getattr(node, 'lineno', 0)} API 模組 import 了 playwright",
+                    )
+                if n == "browser.manager" or n.startswith("browser.manager."):
+                    fail(
+                        "G32",
+                        f"{rel}:{getattr(node, 'lineno', 0)} API 模組 import 了 browser.manager",
+                    )
+
+
 GATES = (
     g1_frozen_paths_untouched,
     g2_no_real_hosts_in_tests,
@@ -1096,6 +1182,9 @@ GATES = (
     g27_strategy_layer_is_pure,
     g28_cdp_no_defaults,
     g29_no_credentials_in_sinks,
+    g30_ws_protocol_matches_sdd,
+    g31_card_secrets_isolated_from_api_and_broker,
+    g32_api_server_zero_browser_deps,
 )
 
 
