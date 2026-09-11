@@ -31,38 +31,48 @@ class WarmupStage(str, Enum):
     TRIGGER_PURCHASE = "TRIGGER_PURCHASE"
 
 
-DEFAULT_STAGE_OFFSETS: Mapping[WarmupStage, timedelta] = MappingProxyType({
-    WarmupStage.PREPARE_BROWSER: timedelta(minutes=10),
-    WarmupStage.CHECK_SESSION: timedelta(minutes=5),
-    WarmupStage.NAVIGATE_PAGE: timedelta(minutes=1),
-    WarmupStage.ENTER_READY: timedelta(seconds=10),
-    WarmupStage.SPIN_WAIT: timedelta(milliseconds=500),
-    WarmupStage.TRIGGER_PURCHASE: timedelta(seconds=0),
-})
+DEFAULT_STAGE_OFFSETS: Mapping[WarmupStage, timedelta] = MappingProxyType(
+    {
+        WarmupStage.PREPARE_BROWSER: timedelta(minutes=10),
+        WarmupStage.CHECK_SESSION: timedelta(minutes=5),
+        WarmupStage.NAVIGATE_PAGE: timedelta(minutes=1),
+        WarmupStage.ENTER_READY: timedelta(seconds=10),
+        WarmupStage.SPIN_WAIT: timedelta(milliseconds=500),
+        WarmupStage.TRIGGER_PURCHASE: timedelta(seconds=0),
+    }
+)
 
-DEFAULT_RESYNC_STAGES = frozenset({
-    WarmupStage.CHECK_SESSION,
-    WarmupStage.NAVIGATE_PAGE,
-})
+DEFAULT_RESYNC_STAGES = frozenset(
+    {
+        WarmupStage.CHECK_SESSION,
+        WarmupStage.NAVIGATE_PAGE,
+    }
+)
 
 # 以字串常數本地宣告，避免 scheduler -> fsm 的模組耦合。
 # 必須與 fsm.states.FINAL_STATES 一致（由驗收指令 #27 機械化比對）。
-FSM_FINAL_STATE_IDS: frozenset[str] = frozenset({"COMPLETED", "SOLD_OUT", "TIMEOUT", "FAILED"})
+FSM_FINAL_STATE_IDS: frozenset[str] = frozenset(
+    {"COMPLETED", "SOLD_OUT", "TIMEOUT", "FAILED"}
+)
 
 # 就緒補齊路徑：(階段, 合法來源狀態, 應送事件)
 SALE_READINESS_PATH: tuple[tuple[WarmupStage, str, str], ...] = (
     (WarmupStage.PREPARE_BROWSER, "IDLE", "prepare_session"),
     (WarmupStage.CHECK_SESSION, "PREPARING", "session_ready"),
 )
-SALE_READINESS_EVENTS: Mapping[WarmupStage, tuple[str, str]] = MappingProxyType({
-    stage: (expected_from, event) for stage, expected_from, event in SALE_READINESS_PATH
-})
+SALE_READINESS_EVENTS: Mapping[WarmupStage, tuple[str, str]] = MappingProxyType(
+    {
+        stage: (expected_from, event)
+        for stage, expected_from, event in SALE_READINESS_PATH
+    }
+)
 
 # 開賣前必須完成的所有預熱階段（宣告順序即執行順序）。
 # 就緒補齊不只補 SALE_READINESS_PATH 的兩個 FSM 驅動階段：NAVIGATE_PAGE / ENTER_READY
 # 的 handler 是真正把頁面帶到可下單狀態的工作，晚排程同樣不得跳過。
 PRE_SALE_STAGES: tuple[WarmupStage, ...] = tuple(
-    st for st in WarmupStage
+    st
+    for st in WarmupStage
     if st not in {WarmupStage.SPIN_WAIT, WarmupStage.TRIGGER_PURCHASE}
 )
 
@@ -172,7 +182,8 @@ class WarmupScheduler:
         *,
         job_scheduler: JobScheduler | None = None,
         clock_synchronizer: ClockSynchronizerLike | None = None,
-        clock_synchronizer_factory: Callable[[str | None], ClockSynchronizerLike] | None = None,
+        clock_synchronizer_factory: Callable[[str | None], ClockSynchronizerLike]
+        | None = None,
         time_reference: TimeReference | None = None,
         resync_stages: Iterable[WarmupStage] = DEFAULT_RESYNC_STAGES,
         offset_epsilon_ms: float = 0.5,
@@ -185,11 +196,15 @@ class WarmupScheduler:
     ) -> None:
         self._telemetry = telemetry
         self._time_reference = time_reference or TimeReference(
-            offset_ms=0.0, samples=(), primary_source=None,
-            monotonic_anchor_perf=perf_counter(), monotonic_anchor_wall=wall_clock(),
+            offset_ms=0.0,
+            samples=(),
+            primary_source=None,
+            monotonic_anchor_perf=perf_counter(),
+            monotonic_anchor_wall=wall_clock(),
         )
         if job_scheduler is None:
             from apscheduler.schedulers.asyncio import AsyncIOScheduler
+
             self._jobs: JobScheduler = AsyncIOScheduler()
         else:
             self._jobs = job_scheduler
@@ -211,13 +226,17 @@ class WarmupScheduler:
 
         self._plans: dict[str, WarmupPlan] = {}
         self._active_tasks: dict[str, TaskSchedule] = {}
-        self._handlers: dict[WarmupStage, Callable[[WarmupContext], Awaitable[None]]] = {}
+        self._handlers: dict[
+            WarmupStage, Callable[[WarmupContext], Awaitable[None]]
+        ] = {}
         # rebase 後接手過期階段的本地協程；由 shutdown() 一併排空。
         self._background_tasks: set[asyncio.Task[Any]] = set()
         self._started = False
         self._shutdown = False
 
-    def _default_clock_sync_factory(self, server_url: str | None) -> ClockSynchronizerLike:
+    def _default_clock_sync_factory(
+        self, server_url: str | None
+    ) -> ClockSynchronizerLike:
         """每個 task 一個同步器。"""
         return ClockSynchronizer(
             ntp_host=DEFAULT_NTP_HOST,
@@ -226,7 +245,9 @@ class WarmupScheduler:
             wall_clock=self._wall,
         )
 
-    def register(self, stage: WarmupStage, handler: Callable[[WarmupContext], Awaitable[None]]) -> None:
+    def register(
+        self, stage: WarmupStage, handler: Callable[[WarmupContext], Awaitable[None]]
+    ) -> None:
         if not isinstance(stage, WarmupStage):
             raise ValueError(f"Invalid WarmupStage: {stage}")
         if stage in self._handlers:
@@ -243,21 +264,27 @@ class WarmupScheduler:
         self._started = True
         self._telemetry.record(TimelineEventType.MARK, "scheduler_started")
 
-    def _safe_create_task(self, coro: Coroutine[Any, Any, None], schedule: TaskSchedule) -> asyncio.Task[None]:
+    def _safe_create_task(
+        self, coro: Coroutine[Any, Any, None], schedule: TaskSchedule
+    ) -> asyncio.Task[None]:
         try:
             task = asyncio.create_task(coro)
         except BaseException as exc:
             coro.close()
             schedule.plan.finished.set()
             self._telemetry.record(
-                TimelineEventType.MARK, "trigger_path_aborted",
-                task_id=schedule.task_id, error=repr(exc),
+                TimelineEventType.MARK,
+                "trigger_path_aborted",
+                task_id=schedule.task_id,
+                error=repr(exc),
             )
             raise
         task.add_done_callback(lambda t: self._on_spin_task_done(schedule, t))
         return task
 
-    def _on_spin_task_done(self, schedule: TaskSchedule, task: asyncio.Task[None]) -> None:
+    def _on_spin_task_done(
+        self, schedule: TaskSchedule, task: asyncio.Task[None]
+    ) -> None:
         pass
 
     def attach_fsm(self, task_id: str, fsm: Any) -> None:
@@ -284,7 +311,9 @@ class WarmupScheduler:
                 raise AttributeError(f"FSM exposes no event {event_name!r}")
         except Exception as exc:
             self._telemetry.record_error(
-                f"fsm_event_error:{event_name}", exc, task_id=schedule.task_id,
+                f"fsm_event_error:{event_name}",
+                exc,
+                task_id=schedule.task_id,
             )
             self._abort_schedule(schedule, reason=f"fsm_event_failed:{event_name}")
             return False
@@ -311,8 +340,10 @@ class WarmupScheduler:
             can_send = getattr(fsm, "can_send", None)
             if callable(can_send) and not can_send("abort_failed"):
                 self._telemetry.record(
-                    TimelineEventType.MARK, "fsm_abort_not_allowed",
-                    task_id=schedule.task_id, current_fsm_state=str(current_id),
+                    TimelineEventType.MARK,
+                    "fsm_abort_not_allowed",
+                    task_id=schedule.task_id,
+                    current_fsm_state=str(current_id),
                 )
                 return
             if hasattr(fsm, "abort_failed"):
@@ -321,7 +352,9 @@ class WarmupScheduler:
                 fsm.send("abort_failed")
         except Exception as exc:
             self._telemetry.record_error(
-                "fsm_abort_failed_error", exc, task_id=schedule.task_id,
+                "fsm_abort_failed_error",
+                exc,
+                task_id=schedule.task_id,
             )
 
     def _abort_schedule(self, schedule: TaskSchedule, *, reason: str) -> None:
@@ -359,8 +392,10 @@ class WarmupScheduler:
         self._drive_fsm_abort_failed(schedule)
         if not already:
             self._telemetry.record(
-                TimelineEventType.MARK, "schedule_aborted",
-                task_id=schedule.task_id, reason=reason,
+                TimelineEventType.MARK,
+                "schedule_aborted",
+                task_id=schedule.task_id,
+                reason=reason,
             )
         schedule.plan.finished.set()
 
@@ -400,7 +435,11 @@ class WarmupScheduler:
         )
 
         existing = self._active_tasks.get(task_id)
-        if existing is not None and not existing.cancelled and not existing.plan.finished.is_set():
+        if (
+            existing is not None
+            and not existing.cancelled
+            and not existing.plan.finished.is_set()
+        ):
             raise ValueError(f"task {task_id} already scheduled")
 
         target_local = self._time_reference.to_local(target_sale_time)
@@ -412,13 +451,15 @@ class WarmupScheduler:
             planned = target_local - self._stage_offsets[stage]
             deadline = anchor_perf + (planned - anchor_wall).total_seconds()
             overdue = planned <= anchor_wall
-            stage_plans.append(StagePlan(
-                stage=stage,
-                target_true_at=target_sale_time,
-                planned_local_at=planned,
-                deadline_perf=deadline,
-                overdue=overdue,
-            ))
+            stage_plans.append(
+                StagePlan(
+                    stage=stage,
+                    target_true_at=target_sale_time,
+                    planned_local_at=planned,
+                    deadline_perf=deadline,
+                    overdue=overdue,
+                )
+            )
 
         plan = WarmupPlan(
             task_id=task_id,
@@ -430,7 +471,11 @@ class WarmupScheduler:
         )
         self._plans[task_id] = plan
         schedule = TaskSchedule(
-            task_id=task_id, plan=plan, job_ids=[], fsm=fsm, clock_sync=task_clock_sync,
+            task_id=task_id,
+            plan=plan,
+            job_ids=[],
+            fsm=fsm,
+            clock_sync=task_clock_sync,
         )
         self._active_tasks[task_id] = schedule
 
@@ -448,7 +493,8 @@ class WarmupScheduler:
             schedule.readiness_deferred = spin_plan.planned_local_at <= entry_wall
             if schedule.readiness_deferred:
                 self._telemetry.record(
-                    TimelineEventType.MARK, "readiness_deferred_to_trigger_path",
+                    TimelineEventType.MARK,
+                    "readiness_deferred_to_trigger_path",
                     task_id=task_id,
                 )
 
@@ -456,7 +502,10 @@ class WarmupScheduler:
             #    （僅適用非 deferred 路徑；deferred 由 _ensure_sale_ready() 全權負責）
             if not schedule.readiness_deferred:
                 for sp in plan.stages:
-                    if sp.stage in {WarmupStage.SPIN_WAIT, WarmupStage.TRIGGER_PURCHASE}:
+                    if sp.stage in {
+                        WarmupStage.SPIN_WAIT,
+                        WarmupStage.TRIGGER_PURCHASE,
+                    }:
                         continue
                     # 每輪動態更新目前牆鐘，防止長時間執行後 overdue 標記失真
                     current_loop_wall = self._wall()
@@ -506,7 +555,9 @@ class WarmupScheduler:
                 # Late-spin 路徑 (T-500ms ~ T=0)：直接啟動 spin 任務
                 spin_plan.job_id = None
                 schedule.spin_started = True
-                schedule.spin_task = self._safe_create_task(self._spin_and_trigger(schedule), schedule)
+                schedule.spin_task = self._safe_create_task(
+                    self._spin_and_trigger(schedule), schedule
+                )
             else:
                 # Post-sale 路徑 (T >= 0)：立即 inline 執行觸發
                 spin_plan.job_id = None
@@ -531,17 +582,26 @@ class WarmupScheduler:
             self._active_tasks.pop(task_id, None)
             plan.aborted = True
             plan.finished.set()
-            self._telemetry.record(TimelineEventType.MARK, "schedule_aborted", task_id=task_id)
+            self._telemetry.record(
+                TimelineEventType.MARK, "schedule_aborted", task_id=task_id
+            )
             raise
 
     async def _dispatch_stage(self, task_id: str, stage: WarmupStage) -> None:
         schedule = self._active_tasks.get(task_id)
-        if schedule is None or schedule.cancelled or schedule.failed or schedule.plan.aborted:
+        if (
+            schedule is None
+            or schedule.cancelled
+            or schedule.failed
+            or schedule.plan.aborted
+        ):
             return
         if stage == WarmupStage.SPIN_WAIT:
             if not schedule.spin_started:
                 schedule.spin_started = True
-                schedule.spin_task = self._safe_create_task(self._spin_and_trigger(schedule), schedule)
+                schedule.spin_task = self._safe_create_task(
+                    self._spin_and_trigger(schedule), schedule
+                )
         else:
             await self._run_stage(schedule, stage)
 
@@ -556,10 +616,17 @@ class WarmupScheduler:
         async with schedule.stage_lock:
             await self._run_stage_locked(schedule, stage)
 
-    async def _run_stage_locked(self, schedule: TaskSchedule, stage: WarmupStage) -> None:
+    async def _run_stage_locked(
+        self, schedule: TaskSchedule, stage: WarmupStage
+    ) -> None:
         """呼叫端必須已持有 schedule.stage_lock。"""
         if stage in schedule.fired_stages:
-            self._telemetry.record(TimelineEventType.MARK, "stage_dropped", task_id=schedule.task_id, stage=stage.value)
+            self._telemetry.record(
+                TimelineEventType.MARK,
+                "stage_dropped",
+                task_id=schedule.task_id,
+                stage=stage.value,
+            )
             return
 
         now_wall = self._wall()
@@ -577,7 +644,9 @@ class WarmupScheduler:
         schedule.fired_stages.add(stage)
 
         # 雙軌並行時鐘同步重校準（一律用本 task 專屬同步器）
-        task_clock_sync = schedule.clock_sync if schedule.clock_sync is not None else self._clock_sync
+        task_clock_sync = (
+            schedule.clock_sync if schedule.clock_sync is not None else self._clock_sync
+        )
         if stage in self._resync_stages and task_clock_sync is not None:
             try:
                 ref = await task_clock_sync.refresh()
@@ -602,9 +671,13 @@ class WarmupScheduler:
                     )
                 else:
                     self._telemetry.record_clock_sync(
-                        source="NONE", previous_offset_ms=self._time_reference.offset_ms,
-                        offset_ms=self._time_reference.offset_ms, delta_ms=0.0,
-                        applied=False, reason="no_samples", stage=stage.value,
+                        source="NONE",
+                        previous_offset_ms=self._time_reference.offset_ms,
+                        offset_ms=self._time_reference.offset_ms,
+                        delta_ms=0.0,
+                        applied=False,
+                        reason="no_samples",
+                        stage=stage.value,
                     )
 
         self._telemetry.record_stage(
@@ -666,7 +739,9 @@ class WarmupScheduler:
                 if res == "FAILED" or res is False:
                     outcome_status = "FAILED"
             except asyncio.CancelledError:
-                schedule.plan.outcomes.append(StageOutcome(stage, "CANCELLED", drift_us, executed_at=now_wall))
+                schedule.plan.outcomes.append(
+                    StageOutcome(stage, "CANCELLED", drift_us, executed_at=now_wall)
+                )
                 raise
             except Exception as exc:
                 self._telemetry.record_error(f"handler_error:{stage.value}", exc)
@@ -674,7 +749,13 @@ class WarmupScheduler:
                 outcome_error = exc
 
         schedule.plan.outcomes.append(
-            StageOutcome(stage, outcome_status, drift_us, error=outcome_error, executed_at=now_wall)
+            StageOutcome(
+                stage,
+                outcome_status,
+                drift_us,
+                error=outcome_error,
+                executed_at=now_wall,
+            )
         )
 
         # 階段與狀態機明確驅動契約：後置推進
@@ -699,8 +780,10 @@ class WarmupScheduler:
         try:
             if schedule.cancelled or schedule.failed or plan.aborted:
                 self._telemetry.record(
-                    TimelineEventType.MARK, "spin_cancelled",
-                    task_id=schedule.task_id, stage="entry",
+                    TimelineEventType.MARK,
+                    "spin_cancelled",
+                    task_id=schedule.task_id,
+                    stage="entry",
                 )
                 return
 
@@ -708,15 +791,19 @@ class WarmupScheduler:
             # 讓補齊耗時盡量落在 T=0 之前的剩餘視窗內，而不是整段加到開賣之後
             # （若補齊比剩餘時間長，超出部分仍會如實成為正的 sale_time_error_ms，不修飾）。
             # 非晚排程不進這條分支：補齊已由 schedule() 的 overdue 迴圈完成。
-            if schedule.readiness_deferred and not await self._ensure_sale_ready(schedule):
+            if schedule.readiness_deferred and not await self._ensure_sale_ready(
+                schedule
+            ):
                 return
 
             await self._run_stage(schedule, WarmupStage.SPIN_WAIT)
 
             if schedule.cancelled or schedule.failed or plan.aborted:
                 self._telemetry.record(
-                    TimelineEventType.MARK, "spin_cancelled",
-                    task_id=schedule.task_id, stage="after_spin_wait",
+                    TimelineEventType.MARK,
+                    "spin_cancelled",
+                    task_id=schedule.task_id,
+                    stage="after_spin_wait",
                 )
                 return
 
@@ -724,8 +811,10 @@ class WarmupScheduler:
             while True:
                 if schedule.cancelled or schedule.failed or plan.aborted:
                     self._telemetry.record(
-                        TimelineEventType.MARK, "spin_cancelled",
-                        task_id=schedule.task_id, stage="in_spin_loop",
+                        TimelineEventType.MARK,
+                        "spin_cancelled",
+                        task_id=schedule.task_id,
+                        stage="in_spin_loop",
                     )
                     return
                 remaining = trigger_plan.deadline_perf - self._perf()
@@ -736,8 +825,10 @@ class WarmupScheduler:
 
             if schedule.cancelled or schedule.failed or plan.aborted:
                 self._telemetry.record(
-                    TimelineEventType.MARK, "spin_cancelled",
-                    task_id=schedule.task_id, stage="before_trigger",
+                    TimelineEventType.MARK,
+                    "spin_cancelled",
+                    task_id=schedule.task_id,
+                    stage="before_trigger",
                 )
                 return
 
@@ -784,13 +875,17 @@ class WarmupScheduler:
         if fsm is None:
             self._telemetry.record_error(
                 "fsm_missing_before_trigger",
-                RuntimeError("FSM is None before trigger, refusing to send sale_triggered"),
+                RuntimeError(
+                    "FSM is None before trigger, refusing to send sale_triggered"
+                ),
                 task_id=schedule.task_id,
             )
             self._abort_schedule(schedule, reason="fsm_missing_before_trigger")
             return False
 
-        pending_stages = [st for st in PRE_SALE_STAGES if st not in schedule.fired_stages]
+        pending_stages = [
+            st for st in PRE_SALE_STAGES if st not in schedule.fired_stages
+        ]
 
         # 正常路徑（非晚排程）：階段都跑完且狀態已就緒 -> 直接放行，
         # 不記錄任何 readiness 事件（沒有發生補齊，就不得偽造恢復紀錄）。
@@ -800,14 +895,16 @@ class WarmupScheduler:
         if schedule.readiness_reported:
             # 防重入守衛：正常流程本函式每個 schedule 只會被呼叫一次。
             self._telemetry.record(
-                TimelineEventType.MARK, "sale_readiness_reentered",
+                TimelineEventType.MARK,
+                "sale_readiness_reentered",
                 task_id=schedule.task_id,
                 current_fsm_state=str(self._get_fsm_state_id(fsm)),
             )
         else:
             schedule.readiness_reported = True
             self._telemetry.record(
-                TimelineEventType.MARK, "sale_readiness_catch_up",
+                TimelineEventType.MARK,
+                "sale_readiness_catch_up",
                 task_id=schedule.task_id,
                 current_fsm_state=str(self._get_fsm_state_id(fsm)),
                 pending_stages=[st.value for st in pending_stages],
@@ -833,9 +930,12 @@ class WarmupScheduler:
         current_id = self._get_fsm_state_id(fsm)
         if current_id == "WAITING_FOR_SALE":
             self._telemetry.record(
-                TimelineEventType.MARK, "sale_readiness_recovered",
+                TimelineEventType.MARK,
+                "sale_readiness_recovered",
                 task_id=schedule.task_id,
-                readiness_cost_ms=round((self._perf() - readiness_start_perf) * 1000.0, 3),
+                readiness_cost_ms=round(
+                    (self._perf() - readiness_start_perf) * 1000.0, 3
+                ),
             )
             return True
 
@@ -875,8 +975,11 @@ class WarmupScheduler:
                             samples=new_samples,
                         )
             self._telemetry.record_clock_sync(
-                source=source_id, previous_offset_ms=previous,
-                offset_ms=previous, delta_ms=delta, applied=False,
+                source=source_id,
+                previous_offset_ms=previous,
+                offset_ms=previous,
+                delta_ms=delta,
+                applied=False,
                 reason="below_epsilon",
             )
             return ClockOffsetUpdate(
@@ -890,7 +993,9 @@ class WarmupScheduler:
             self._time_reference,
             offset_ms=offset_ms,
             samples=new_samples,
-            primary_source=source if isinstance(source, ClockSource) else ClockSource.MANUAL,
+            primary_source=source
+            if isinstance(source, ClockSource)
+            else ClockSource.MANUAL,
         )
         for sched in self._active_tasks.values():
             if getattr(sched.plan, "time_reference", None) is not None:
@@ -906,7 +1011,9 @@ class WarmupScheduler:
             if sched.cancelled or sched.failed or sched.plan.finished.is_set():
                 continue
             plan = sched.plan
-            plan.target_local_at = plan.target_true_at - timedelta(milliseconds=offset_ms)
+            plan.target_local_at = plan.target_true_at - timedelta(
+                milliseconds=offset_ms
+            )
             touched = False
             overdue_handoff: list[StagePlan] = []
             for sp in plan.stages:
@@ -958,9 +1065,13 @@ class WarmupScheduler:
             self._handoff_overdue_after_rebase(sched, overdue_handoff, now_wall)
 
         self._telemetry.record_clock_sync(
-            source=source_id, previous_offset_ms=previous,
-            offset_ms=offset_ms, delta_ms=delta, applied=True,
-            rebased_count=len(rebased), rescheduled_count=len(rescheduled),
+            source=source_id,
+            previous_offset_ms=previous,
+            offset_ms=offset_ms,
+            delta_ms=delta,
+            applied=True,
+            rebased_count=len(rebased),
+            rescheduled_count=len(rescheduled),
             handed_off_count=len(handed_off),
         )
         return ClockOffsetUpdate(
@@ -1010,7 +1121,9 @@ class WarmupScheduler:
             # late-spin / post-sale 由 _spin_and_trigger() 依 deadline_perf 自行分辨：
             # 尚未到 T=0 -> tight-loop 等待；已越過 T=0 -> 立即觸發。
             sched.spin_started = True
-            sched.spin_task = self._safe_create_task(self._spin_and_trigger(sched), sched)
+            sched.spin_task = self._safe_create_task(
+                self._spin_and_trigger(sched), sched
+            )
 
     def attach_clock_synchronizer(
         self,
@@ -1043,7 +1156,9 @@ class WarmupScheduler:
         if schedule.spin_task is not None and not schedule.spin_task.done():
             schedule.spin_task.cancel()
         schedule.plan.finished.set()
-        self._telemetry.record(TimelineEventType.MARK, "task_cancelled", task_id=task_id)
+        self._telemetry.record(
+            TimelineEventType.MARK, "task_cancelled", task_id=task_id
+        )
         return True
 
     async def shutdown(self, wait: bool = True) -> None:
@@ -1054,7 +1169,11 @@ class WarmupScheduler:
         tasks: list[asyncio.Task[Any]] = []
         for task_id in list(self._active_tasks.keys()):
             schedule = self._active_tasks.get(task_id)
-            if schedule is not None and schedule.spin_task is not None and not schedule.spin_task.done():
+            if (
+                schedule is not None
+                and schedule.spin_task is not None
+                and not schedule.spin_task.done()
+            ):
                 tasks.append(schedule.spin_task)
             self.cancel(task_id)
 
@@ -1069,12 +1188,18 @@ class WarmupScheduler:
             await asyncio.gather(*tasks, return_exceptions=True)
         self._background_tasks.clear()
 
-        if self._jobs is not None and hasattr(self._jobs, "running") and self._jobs.running:
+        if (
+            self._jobs is not None
+            and hasattr(self._jobs, "running")
+            and self._jobs.running
+        ):
             self._jobs.shutdown(wait=wait)
         self._started = False
         self._telemetry.record(TimelineEventType.MARK, "scheduler_shutdown")
 
-    async def wait_until_finished(self, task_id: str, timeout: float | None = None) -> bool:
+    async def wait_until_finished(
+        self, task_id: str, timeout: float | None = None
+    ) -> bool:
         plan = self.plan_of(task_id)
         try:
             if timeout is None:
@@ -1114,7 +1239,9 @@ class WarmupScheduler:
         if hasattr(fsm, "configuration"):
             try:
                 state_obj = next(iter(fsm.configuration))
-                return getattr(state_obj, "id", None) or getattr(state_obj, "value", str(state_obj))
+                return getattr(state_obj, "id", None) or getattr(
+                    state_obj, "value", str(state_obj)
+                )
             except Exception:
                 pass
         if hasattr(fsm, "state"):

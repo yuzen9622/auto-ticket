@@ -61,7 +61,9 @@ def build_parser() -> argparse.ArgumentParser:
         description="開有頭瀏覽器供使用者自行登入，登入狀態留在 persistent profile",
     )
     parser.add_argument("--profile", default="live", help="profile 名稱（預設 live）")
-    parser.add_argument("--url", default=DEFAULT_URL, help=f"起始網址（預設 {DEFAULT_URL}）")
+    parser.add_argument(
+        "--url", default=DEFAULT_URL, help=f"起始網址（預設 {DEFAULT_URL}）"
+    )
     parser.add_argument(
         "--auto-login",
         action=argparse.BooleanOptionalAction,
@@ -71,11 +73,14 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def summarize_cookies(cookies: list[dict], host_fragment: str = "kktix") -> tuple[int, bool]:
+def summarize_cookies(
+    cookies: list[dict], host_fragment: str = "kktix"
+) -> tuple[int, bool]:
     """只回報數量與「是否看起來有 session」——**絕不印出 cookie 內容**。"""
     relevant = [c for c in cookies if host_fragment in str(c.get("domain", ""))]
     has_session = any(
-        "session" in str(c.get("name", "")).lower() or "token" in str(c.get("name", "")).lower()
+        "session" in str(c.get("name", "")).lower()
+        or "token" in str(c.get("name", "")).lower()
         for c in relevant
     )
     return len(relevant), has_session
@@ -115,11 +120,15 @@ async def run(args: argparse.Namespace) -> int:
         page = context.pages[0] if context.pages else await context.new_page()
         try:
             await page.goto(
-                args.url, wait_until=NAVIGATION_WAIT_UNTIL, timeout=NAVIGATION_TIMEOUT_MS
+                args.url,
+                wait_until=NAVIGATION_WAIT_UNTIL,
+                timeout=NAVIGATION_TIMEOUT_MS,
             )
         except Exception as exc:
             # 這支腳本的目的是把瀏覽器開起來讓人登入；開頁不順不該讓人連登都登不了。
-            print(f"[warn] 自動開啟起始頁失敗（{type(exc).__name__}）；請在瀏覽器網址列自行前往。")
+            print(
+                f"[warn] 自動開啟起始頁失敗（{type(exc).__name__}）；請在瀏覽器網址列自行前往。"
+            )
         if args.auto_login:
             await attempt_auto_login(page)
         print("瀏覽器已開啟。請在裡面完成登入，然後回到這裡按 Enter。")
@@ -127,9 +136,13 @@ async def run(args: argparse.Namespace) -> int:
         count, has_session = summarize_cookies(await context.cookies())
         await context.close()
 
-    print(f"\n已關閉並保存 profile。kktix 相關 cookie：{count} 個"
-          f"{'（含 session／token）' if has_session else '（未偵測到 session／token，登入可能未完成）'}")
-    print(f"\n接下來可用：\n  uv run python scripts/run_purchase.py --task <task.json> --profile {profile.name}")
+    print(
+        f"\n已關閉並保存 profile。kktix 相關 cookie：{count} 個"
+        f"{'（含 session／token）' if has_session else '（未偵測到 session／token，登入可能未完成）'}"
+    )
+    print(
+        f"\n接下來可用：\n  uv run python scripts/run_purchase.py --task <task.json> --profile {profile.name}"
+    )
     return 0 if has_session else 1
 
 
