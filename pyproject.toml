@@ -20,6 +20,10 @@ dependencies = [
     "playwright>=1.60",
     "python-statemachine>=3.2.0",
     "structlog>=24.1.0",
+    "fastapi>=0.141.1",
+    "uvicorn[standard]>=0.52.4",
+    "websockets>=17.1",
+    "cryptography>=50.0.1",
 ]
 
 [project.optional-dependencies]
@@ -48,6 +52,10 @@ packages = [
     "src/browser",
     "src/strategy",
     "src/purchase",
+    "src/api",
+    "src/accounts",
+    "src/broker",
+    "src/worker",
 ]
 
 [tool.pytest.ini_options]
@@ -60,3 +68,6 @@ addopts = "-q --ignore=tests/live"
 markers = [
     "live: 需要真實網路與瀏覽器的實站唯讀驗證（預設不收集，需 --live）",
 ]
+
+[tool.pyright]
+extraPaths = ["src"]
