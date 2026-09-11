@@ -748,6 +748,41 @@ Procedure:
   4. RETURN SOLD_OUT
 ```
 
+#### 搶輸排除名單（`excluded_names`）
+
+`decide_ticket(options, preference, excluded_names=())` 額外吃一份「這一場已經搶輸過的
+票種名稱」。被「別人搶先一步」彈窗擋下的票種在 DOM 上仍然看起來可選，不排除就會
+無限重試同一張票。排除在比對**最前面**就生效，因此連 `fallback_to_any` 也繞不過；
+每次排除都會在 `trace` 留下一行 `EXCLUDED names=[...] remaining_options=n/m`。
+
+排除一律綁**票種名稱**而非 index：重新讀取頁面後票種順序可能改變，綁 index 會排除
+到錯的票。排除名單的生命週期是單次 `run()`，由 orchestrator 持有。
+
+---
+
+### 3.8 競速先決驅動迴圈（Race-First Driver）
+
+開賣瞬間的頁面不是一條直線：可能先進排隊等候室、可能跳出「別人搶先一步」、可能
+要求專屬會員碼、也可能完全沒有劃位頁而直接落到訂單表單。線性推進（選票 → 劃位 →
+表單 → 付款）在任何一個分支上都會白等整份 timeout 然後崩潰。
+
+驅動層因此改為**狀態偵測迴圈**：每一輪以 `KKTIXAdapter.detect_page_state(page)` 讀出
+目前頁面的物理狀態（`PageState`），再分流執行對應動作，直到抵達終態或耗盡時間預算。
+
+判定優先序（高 → 低）：`FAILURE_MODAL` → `GUEST_MODAL` → `QUEUE` → `COMPLETED` →
+`PAYMENT_REQUIRED` → `QUALIFICATION_CODE` → `FORM_FILLING` → `VERIFICATION_CHALLENGE`
+→ `SEAT_SELECTION` → `TICKET_SELECTION` → `UNKNOWN`。重疊由「已選票數是否 > 0」
+（分開選票與劃位）與「表單頁優先於局部驗證題」兩條規則解除。
+
+狀態機（`PurchaseWorkflow`）在這個架構下**不再是流程閘門**，而是歷程記錄器：
+`sync_to_state(target_state_id, event_name)` 讓真實頁面狀態帶著 FSM 走，仍然忠實觸發
+screenshot hook 與 telemetry。終態（COMPLETED／SOLD_OUT／TIMEOUT／FAILED）擁有最高
+優先防護，任何同步都不得覆寫或「復活」已經結束的流程。
+
+副作用以動作進度協議防重複：`_current_ticket_name`、`_seat_action_taken`、
+`_qualification_handled`、`_form_submitted`，以及全生命週期至多一次的付款鎖
+`_payment_attempted`。
+
 ---
 
 ### 3.7 付款自動化與 Mock 安全機制（Payment Module）

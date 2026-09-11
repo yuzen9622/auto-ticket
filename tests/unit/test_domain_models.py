@@ -22,6 +22,7 @@ from domain.task import (
     PurchaseTaskRecord,
     PurchaseTaskSpec,
     UserContactProfile,
+    VerificationRule,
 )
 from domain.types import DomainBaseModel
 
@@ -349,3 +350,45 @@ def test_assignment_to_unknown_field_is_rejected() -> None:
     unknown_field = "unexpected"
     with pytest.raises(ValueError):
         setattr(preference, unknown_field, "x")
+
+
+def test_new_optional_spec_fields_default_to_off() -> None:
+    spec = make_spec()
+    assert spec.verification_rules == ()
+    assert spec.auto_login is False
+    assert spec.qualification_code is None
+
+
+def test_verification_rules_round_trip_through_json() -> None:
+    spec = make_spec(
+        payment_method=PaymentMethod.MOCK,
+        payment_profile=None,
+        verification_rules=[
+            {"pattern": "主辦單位", "answer": "KKTIX"},
+            {"pattern": r"^\d+ \+ \d+", "answer": "4", "is_regex": True},
+        ],
+        auto_login=True,
+        qualification_code="VIP-2026",
+    )
+    assert [r.answer for r in spec.verification_rules] == ["KKTIX", "4"]
+    assert spec.verification_rules[1].is_regex is True
+
+    restored = PurchaseTaskSpec.model_validate(
+        json.loads(json.dumps(spec.to_persistable_dict()))
+    )
+    assert restored.verification_rules == spec.verification_rules
+    assert restored.auto_login is True
+    assert restored.qualification_code == "VIP-2026"
+
+
+def test_verification_rule_rejects_empty_pattern_or_answer() -> None:
+    with pytest.raises(ValidationError):
+        VerificationRule(pattern="", answer="A")
+    with pytest.raises(ValidationError):
+        VerificationRule(pattern="x", answer="")
+
+
+def test_spec_never_accepts_a_credential_field() -> None:
+    for field_name in ("password", "user_password", "secret_token"):
+        with pytest.raises(ValidationError):
+            make_spec(**{field_name: "hunter2"})

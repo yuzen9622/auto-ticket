@@ -4,6 +4,7 @@ import pytest
 
 from domain.preference import SeatPreference, TicketPreference, TicketPriority
 from strategy.ticket_strategy import (
+    EXCLUDED,
     INSUFFICIENT_REMAINING,
     INVALID_PATTERN,
     NO_NAME_MATCH,
@@ -189,3 +190,68 @@ def test_decision_and_option_are_immutable() -> None:
 )
 def test_is_selectable_matrix(available: bool, remaining: int | None, quantity: int, expected: bool) -> None:
     assert is_selectable(opt(0, "A", 100, available=available, remaining=remaining), quantity) is expected
+
+
+def test_excluded_name_is_skipped_within_a_single_priority() -> None:
+    """同一個 priority 下有 A/B 兩個同價票種：A 搶輸被排除後必須選到 B。"""
+    decision = decide_ticket(
+        [opt(0, "A區", 3200), opt(1, "B區", 3200)],
+        pref(TicketPriority(price=3200)),
+        excluded_names=("A區",),
+    )
+    assert decision.status == "SELECTED"
+    assert decision.option is not None and decision.option.name == "B區"
+
+
+def test_excluded_name_falls_through_to_next_priority() -> None:
+    decision = decide_ticket(
+        [opt(0, "A", 3200), opt(1, "B", 2400)],
+        pref(TicketPriority(price=3200, priority=1), TicketPriority(price=2400, priority=2)),
+        excluded_names={"A"},
+    )
+    assert decision.option is not None and decision.option.price == 2400
+
+
+def test_exclusion_also_applies_to_fallback_to_any() -> None:
+    decision = decide_ticket(
+        [opt(0, "A", 3200), opt(1, "B", 2400)],
+        pref(TicketPriority(price=9999), fallback=True),
+        excluded_names=("A", "B"),
+    )
+    assert decision.status == "SOLD_OUT"
+    assert decision.option is None
+
+
+def test_fallback_to_any_picks_the_first_non_excluded_option() -> None:
+    decision = decide_ticket(
+        [opt(0, "A", 3200), opt(1, "B", 2400)],
+        pref(TicketPriority(price=9999), fallback=True),
+        excluded_names=("A",),
+    )
+    assert decision.status == "SELECTED"
+    assert decision.option is not None and decision.option.name == "B"
+
+
+def test_exclusion_is_recorded_in_the_trace() -> None:
+    decision = decide_ticket(
+        [opt(0, "A", 3200), opt(1, "B", 3200)],
+        pref(TicketPriority(price=3200)),
+        excluded_names=("A",),
+    )
+    assert decision.trace[0].startswith(EXCLUDED)
+    assert "remaining_options=1/2" in decision.trace[0]
+
+
+def test_empty_exclusion_adds_no_trace_noise() -> None:
+    decision = decide_ticket([opt(0, "A", 3200)], pref(TicketPriority(price=3200)))
+    assert not any(line.startswith(EXCLUDED) for line in decision.trace)
+
+
+def test_exclusion_matches_by_name_not_by_index() -> None:
+    """票種順序在重新讀取後可能改變；排除必須綁名稱，不得綁 index。"""
+    decision = decide_ticket(
+        [opt(5, "B", 3200), opt(9, "A", 3200)],
+        pref(TicketPriority(price=3200)),
+        excluded_names=("A",),
+    )
+    assert decision.option is not None and decision.option.index == 5

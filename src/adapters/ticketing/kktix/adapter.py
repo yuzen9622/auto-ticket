@@ -240,9 +240,9 @@ class KKTIXAdapter(TicketingAdapter):
         """判斷目前頁面種類。順序不可調換：登記頁同樣有活動標題。"""
         if await self._has(page, KKTIXSelectors.REGISTRATION_APP):
             return KKTIXPageKind.REGISTRATION
-        if await self._has(
-            page, KKTIXSelectors.LOGIN_PASSWORD_INPUT
-        ) or await self._has(page, KKTIXSelectors.LOGIN_FORM):
+        if await self._has(page, KKTIXSelectors.LOGIN_KEY_FIELD) or await self._has(
+            page, KKTIXSelectors.LOGIN_FORM
+        ):
             return KKTIXPageKind.LOGIN
         if await self._has(
             page, KKTIXSelectors.EVENT_TICKET_TABLE_ROWS

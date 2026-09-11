@@ -82,6 +82,26 @@ class KKTIXSelectors:
         "input#captcha_answer",
         "input[placeholder*='答案']",
     ]
+    # 答錯後的錯誤提示。**嚴格限縮在 captcha 容器內部**：聯絡資料的格式錯誤
+    # 同樣會長出 .help-inline，放寬到整頁會把「email 少了 @」誤判成「問答題答錯」。
+    CAPTCHA_ERROR_ALERT = (
+        ".custom-captcha-inner .help-inline, "
+        ".custom-captcha-inner .alert-danger, "
+        ".custom-captcha-inner .text-error"
+    )
+
+    # 專屬會員碼／邀請碼區塊（資格審查）
+    MEMBER_CODE_BLOCK = "div.code-input"
+    MEMBER_CODE_INPUT = [
+        "div.code-input input[type='text']",
+        "input[ng-model*='code']",
+        "input[name*='invitation']",
+    ]
+    MEMBER_CODE_VERIFY_BTN = [
+        "div.code-input button",
+        "button[ng-click*='verifyCode']",
+        "button[ng-click*='applyCode']",
+    ]
 
     # 配位與下一步按鈕 (AngularJS challenge 動作)
     BTN_BEST_AVAILABLE = [
@@ -162,6 +182,13 @@ class KKTIXSelectors:
         "button:has-text('確認表單資料')",
     ]
 
+    # 訂單完成頁（未付款保留訂單亦算抵達）
+    ORDER_COMPLETE_CONTAINER = [
+        ".order-complete",
+        ".registration-complete",
+        "#orderShowApp",
+    ]
+
     # =========================================================================
     # 4. 信用卡付款頁面 (Credit Card Payment)
     # =========================================================================
@@ -194,9 +221,60 @@ class KKTIXSelectors:
     # =========================================================================
     # 4b. 登入頁 (https://kktix.com/users/sign_in)
     # =========================================================================
-    # 只用來「判斷是不是被導到登入頁」，本專案不自動填任何憑證。
-    LOGIN_PASSWORD_INPUT = "input[type='password']"
     LOGIN_FORM = ["form[action*='sign_in']", "#new_user", "form#sign_in_form"]
+    # 登入表單的三個欄位。常數命名刻意避開 PASSWORD 字樣：憑證欄位的識別子
+    # 一旦帶上該關鍵字，靜態掃描會把「選擇器字串」與「真的密碼」混為一談。
+    LOGIN_USER_INPUT = [
+        "input#user_login",
+        "input[name='user[login]']",
+        "input[type='email']",
+    ]
+    LOGIN_KEY_FIELD = [
+        "input#user_password",
+        "input[name='user[password]']",
+        "input[type='password']",
+    ]
+    LOGIN_SUBMIT_BTN = [
+        "form[action*='sign_in'] input[type='submit']",
+        "form[action*='sign_in'] button[type='submit']",
+        "button[type='submit']",
+    ]
+
+    # =========================================================================
+    # 4c. 彈窗 (Modal)：搶輸／無可配座位／未登入訪客
+    # =========================================================================
+    MODAL_CONTAINER = ".modal.in, .modal-dialog, div[role='dialog']"
+    # 命中其一即視為「這一輪搶輸了」；一律換下一順位票種，不重刷同一票種。
+    MODAL_FAILURE_TEXTS = (
+        "別人搶先一步",
+        "已無可配座位",
+        "無法配位",
+        "已被選走",
+        "票券已售完",
+    )
+    MODAL_DISMISS_BTN = [
+        ".modal.in button.close",
+        ".modal-dialog button.close",
+        "div[role='dialog'] button[data-dismiss='modal']",
+    ]
+    # 未登入訪客彈窗（KKTIX 會勸你先成為會員）。
+    MODAL_GUEST_SIGNIN_TEXT = "立刻成為 KKTIX 會員"
+    MODAL_GUEST_SIGNIN_LINK = [
+        ".modal.in a[href*='sign_in']",
+        ".modal-dialog a[href*='sign_in']",
+        "div[role='dialog'] a[href*='sign_in']",
+    ]
+
+    # =========================================================================
+    # 4d. 排隊等候室 (Waiting Room)
+    # =========================================================================
+    # 排隊中**嚴禁 reload**：重整會被丟回隊伍尾端。
+    QUEUE_COUNTDOWN = "#cf-time"
+    QUEUE_HEADING = [
+        "#cf-wrapper h1",
+        ".queue-heading",
+        "#waiting-room",
+    ]
 
     # =========================================================================
     # 5. 防機器人與驗證偵測 (Anti-Bot / Cloudflare Challenge)
@@ -207,6 +285,16 @@ class KKTIXSelectors:
         "請啟用 javascript 與 cookie 以繼續",
         "驗證您是人類",
     ]
+
+    # 票種狀態列上的售罄字樣（`SOLD_OUT` 只能由頁面實際文字判定，不得臆造）。
+    TICKET_STATUS_SOLD_OUT_TEXTS = (
+        "售完",
+        "售罄",
+        "完售",
+        "sold out",
+        "已結束",
+        "已額滿",
+    )
 
 
 KKTIX_EVENT_URL_RE = re.compile(

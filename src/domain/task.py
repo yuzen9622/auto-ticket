@@ -59,6 +59,18 @@ class AttendeeProfile(DomainBaseModel):
     id_number: str | None = None
 
 
+class VerificationRule(DomainBaseModel):
+    """文字問答題的一條作答規則。
+
+    只處理主辦自訂的**文字**問答題；本專案不辨識任何圖形驗證碼。
+    `is_regex` 為 False 時 `pattern` 以子字串比對題幹（不分大小寫）。
+    """
+
+    pattern: str = Field(min_length=1)
+    answer: str = Field(min_length=1)
+    is_regex: bool = False
+
+
 class PurchaseTaskSpec(DomainBaseModel):
     model_config = ConfigDict(
         validate_assignment=True,
@@ -77,6 +89,9 @@ class PurchaseTaskSpec(DomainBaseModel):
     payment_profile: CreditCardProfile | None = None
     max_retries: int = Field(default=3, ge=0)
     timeout_seconds: int = Field(default=120, gt=0)
+    verification_rules: tuple[VerificationRule, ...] = ()
+    auto_login: bool = False
+    qualification_code: str | None = None
 
     @model_validator(mode="after")
     def _require_payment_profile(self) -> PurchaseTaskSpec:

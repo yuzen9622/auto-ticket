@@ -7,7 +7,7 @@ DOM 讀取與決策分離是刻意的——決策是唯一能被大量、快速�
 from __future__ import annotations
 
 import re
-from collections.abc import Sequence
+from collections.abc import Collection, Sequence
 from dataclasses import dataclass
 from typing import Literal
 
@@ -46,6 +46,7 @@ INVALID_PATTERN = "INVALID_PATTERN"
 UNAVAILABLE = "UNAVAILABLE"
 INSUFFICIENT_REMAINING = "INSUFFICIENT_REMAINING"
 SELECTED = "SELECTED"
+EXCLUDED = "EXCLUDED"
 
 
 def is_selectable(option: TicketOption, quantity: int) -> bool:
@@ -55,16 +56,31 @@ def is_selectable(option: TicketOption, quantity: int) -> bool:
 
 
 def decide_ticket(
-    options: Sequence[TicketOption], preference: TicketPreference
+    options: Sequence[TicketOption],
+    preference: TicketPreference,
+    excluded_names: Collection[str] = (),
 ) -> TicketDecision:
     """依 `sorted_priorities` 逐一比對，回傳決策與完整比對軌跡。
 
     比對規則：價格相等；`ticket_name_pattern` 非 None 時同時要求名稱正則命中。
     命中且可選（`available` 且 `remaining` 足夠）即選取；全數落空時，
     `fallback_to_any=True` 才挑頁面順序上第一個可選票種；再落空回 `SOLD_OUT`。
+
+    `excluded_names` 是「這一場已經搶輸過的票種」：被別人搶先一步的票種在頁面上
+    仍然看起來可選，不排除就會無限重試同一張票。排除是完全性的，
+    連 `fallback_to_any` 也不得繞過。
     """
     quantity = preference.quantity
     trace: list[str] = []
+
+    excluded = frozenset(excluded_names)
+    if excluded:
+        candidates_before = len(options)
+        options = [o for o in options if o.name not in excluded]
+        trace.append(
+            f"{EXCLUDED} names={sorted(excluded)} "
+            f"remaining_options={len(options)}/{candidates_before}"
+        )
 
     for idx, priority in enumerate(preference.sorted_priorities):
         label = f"priority[{idx}] price={priority.price} pattern={priority.ticket_name_pattern or '*'}"
