@@ -19,6 +19,7 @@ from adapters.ticketing.kktix.adapter import (
     REASON_SOLD_OUT,
     REASON_TERMS_NOT_ACCEPTED,
     KKTIXPageKind,
+    PageState,
 )
 from domain.preference import SeatPreference, TicketPreference, TicketPriority
 from domain.task import PurchaseTaskSpec, UserContactProfile
@@ -29,7 +30,7 @@ from purchase.handlers import (
 )
 from purchase.orchestrator import PAYMENT_OUTCOME_EVENTS, PurchaseOrchestrator
 from scheduler.scheduler import StageOutcome, WarmupContext, WarmupStage
-from strategy.ticket_strategy import TicketDecision
+from strategy.ticket_strategy import TicketDecision, TicketOption
 from telemetry.timeline import TimelineRecorder
 from tests.fake_page import FakeBrowser, FakePage
 from tests.netguard import netguard_autouse  # noqa: F401
@@ -114,6 +115,9 @@ class StubAdapter:
     def __init__(
         self,
         *,
+        page_states: list[PageState] | None = None,
+        probe_kinds: list[KKTIXPageKind] | None = None,
+        registration_tickets: list[TicketOption] | None = None,
         ticket_results: list[tuple[bool, str]] | None = None,
         seat_ok: bool = True,
         form_ok: bool = True,
@@ -121,9 +125,22 @@ class StubAdapter:
         verification_results: list[bool] | None = None,
         submit_ok: bool = True,
         payment_outcome: PaymentOutcome = PaymentOutcome.CHECKPOINT_REACHED,
-        probe_kinds: list[KKTIXPageKind] | None = None,
+        reset_ok: bool = True,
+        dismiss_ok: bool = True,
+        login_ok: bool = True,
     ) -> None:
+        self.page_states = (
+            list(page_states)
+            if page_states is not None
+            else [
+                PageState.TICKET_SELECTION,
+                PageState.SEAT_SELECTION,
+                PageState.FORM_FILLING,
+                PageState.PAYMENT_REQUIRED,
+            ]
+        )
         self.probe_kinds = list(probe_kinds or [])
+        self.registration_tickets = registration_tickets
         self.ticket_results = list(ticket_results or [(True, REASON_SELECTED)])
         self.seat_ok = seat_ok
         self.form_ok = form_ok
@@ -131,6 +148,10 @@ class StubAdapter:
         self.verification_results = list(verification_results or [True])
         self.submit_ok = submit_ok
         self.payment_outcome = payment_outcome
+        self.reset_ok = reset_ok
+        self.dismiss_ok = dismiss_ok
+        self.login_ok = login_ok
+        self.on_login: Any = None
         self.calls: list[str] = []
         self.payment = "stub-payment-provider"
         self.verification = "stub-verification-provider"
@@ -144,6 +165,12 @@ class StubAdapter:
         )
         self.last_payment_result: PaymentResult | None = None
 
+    async def detect_page_state(self, page: Any) -> PageState:
+        self.calls.append("detect_page_state")
+        if self.page_states:
+            return self.page_states.pop(0)
+        return PageState.PAYMENT_REQUIRED
+
     async def probe_page(self, page: Any, url: str | None = None) -> KKTIXPageKind:
         self.calls.append("probe" if url is None else "probe_navigate")
         return (
@@ -156,6 +183,50 @@ class StubAdapter:
 
     async def detect_sale_opened(self, page: Any, timeout_ms: int) -> bool:
         self.calls.append("detect_sale")
+        return True
+
+    async def read_registration_tickets(self, page: Any) -> list[TicketOption]:
+        self.calls.append("read_registration_tickets")
+        if self.registration_tickets is not None:
+            return list(self.registration_tickets)
+        return [
+            TicketOption(
+                index=0,
+                name="全票",
+                price=3200,
+                available=True,
+                remaining=None,
+                status_text="全票/3200",
+            )
+        ]
+
+    async def apply_ticket_decision(
+        self, page: Any, decision: Any
+    ) -> tuple[bool, str]:
+        self.calls.append("apply_ticket_decision")
+        self.last_ticket_decision = decision
+        return (
+            self.ticket_results.pop(0)
+            if self.ticket_results
+            else (True, REASON_SELECTED)
+        )
+
+    async def reset_ticket_quantities(self, page: Any) -> bool:
+        self.calls.append("reset_ticket_quantities")
+        return self.reset_ok
+
+    async def dismiss_failure_modal(self, page: Any) -> bool:
+        self.calls.append("dismiss_failure_modal")
+        return self.dismiss_ok
+
+    async def login(self, page: Any, username: str, secret_token: str) -> bool:
+        self.calls.append("login")
+        if self.on_login is not None:
+            self.on_login()
+        return self.login_ok
+
+    async def navigate_to_login_from_guest_modal(self, page: Any) -> bool:
+        self.calls.append("navigate_to_login_from_guest_modal")
         return True
 
     async def select_tickets(self, page: Any, preference: Any) -> tuple[bool, str]:
@@ -199,6 +270,8 @@ def make_spec(
     *,
     max_retries: int = 2,
     prices: tuple[int, ...] = (3200,),
+    qualification_code: str | None = None,
+    auto_login: bool = False,
 ) -> PurchaseTaskSpec:
     return PurchaseTaskSpec(
         task_id=task_id,
@@ -217,6 +290,8 @@ def make_spec(
         ),
         payment_method="mock",
         max_retries=max_retries,
+        qualification_code=qualification_code,
+        auto_login=auto_login,
     )
 
 
@@ -306,11 +381,16 @@ async def test_adapter_call_order(tmp_path: Path) -> None:
         "probe_navigate",
         "navigate",
         "detect_sale",
-        "select_tickets",
+        "detect_page_state",
+        "read_registration_tickets",
+        "apply_ticket_decision",
+        "detect_page_state",
         "seat",
+        "detect_page_state",
         "form",
         "detect_verification",
         "submit_order",
+        "detect_page_state",
         "payment",
     ]
 
@@ -319,7 +399,7 @@ async def test_report_carries_sale_time_error_and_trace(tmp_path: Path) -> None:
     orchestrator, _, _, _ = build(tmp_path, StubAdapter())
     report = await orchestrator.run()
     assert report.sale_time_error_ms == TRIGGER_DRIFT_US / 1000.0
-    assert report.ticket_trace == ("priority[0] -> SELECTED",)
+    assert report.ticket_trace and "SELECTED" in report.ticket_trace[0]
     assert (
         report.payment is not None
         and report.payment.outcome is PaymentOutcome.CHECKPOINT_REACHED
@@ -381,7 +461,19 @@ async def test_providers_default_to_the_adapter_instances(tmp_path: Path) -> Non
 
 
 async def test_sold_out_is_a_terminal_conclusion_not_a_failure(tmp_path: Path) -> None:
-    adapter = StubAdapter(ticket_results=[(False, REASON_SOLD_OUT)])
+    adapter = StubAdapter(
+        page_states=[PageState.TICKET_SELECTION],
+        registration_tickets=[
+            TicketOption(
+                index=0,
+                name="全票",
+                price=3200,
+                available=False,
+                remaining=None,
+                status_text="已售完",
+            )
+        ],
+    )
     orchestrator, _, _, _ = build(tmp_path, adapter)
     report = await orchestrator.run()
     assert report.final_state == "SOLD_OUT"
@@ -392,13 +484,13 @@ async def test_sold_out_is_a_terminal_conclusion_not_a_failure(tmp_path: Path) -
 async def test_sold_out_report_discloses_the_real_failure_reason(
     tmp_path: Path,
 ) -> None:
-    """卡在勾條款而收在 SOLD_OUT，不得與「真的售罄」長得一模一樣。"""
+    """卡在勾條款而收在 FAILED，不得與「真的售罄」長得一模一樣。"""
     adapter = StubAdapter(ticket_results=[(False, REASON_TERMS_NOT_ACCEPTED)])
     orchestrator, _, _, telemetry = build(
         tmp_path, adapter, spec=make_spec(prices=(3200,))
     )
     report = await orchestrator.run()
-    assert report.final_state == "SOLD_OUT"
+    assert report.final_state == "FAILED"
     assert report.ticket_failure_reasons == (REASON_TERMS_NOT_ACCEPTED,)
     failed = [e for e in telemetry.events() if e.name == "ticket_attempt_failed"]
     assert [e.detail["reason"] for e in failed] == [REASON_TERMS_NOT_ACCEPTED]
@@ -406,10 +498,22 @@ async def test_sold_out_report_discloses_the_real_failure_reason(
 
 
 async def test_genuine_sold_out_is_still_reported_as_sold_out(tmp_path: Path) -> None:
-    adapter = StubAdapter(ticket_results=[(False, REASON_SOLD_OUT)])
+    adapter = StubAdapter(
+        page_states=[PageState.TICKET_SELECTION],
+        registration_tickets=[
+            TicketOption(
+                index=0,
+                name="全票",
+                price=3200,
+                available=False,
+                remaining=None,
+                status_text="已售完",
+            )
+        ],
+    )
     orchestrator, _, _, _ = build(tmp_path, adapter)
     report = await orchestrator.run()
-    assert report.ticket_failure_reasons == (REASON_SOLD_OUT,)
+    assert report.ticket_failure_reasons == ()
 
 
 async def test_successful_selection_records_no_failure_reason(tmp_path: Path) -> None:
@@ -420,32 +524,68 @@ async def test_successful_selection_records_no_failure_reason(tmp_path: Path) ->
 
 
 async def test_recoverable_ticket_failure_retries_next_priority(tmp_path: Path) -> None:
+    tickets = [
+        TicketOption(
+            index=0,
+            name="A 區",
+            price=3200,
+            available=True,
+            remaining=None,
+            status_text="A/3200",
+        ),
+        TicketOption(
+            index=1,
+            name="B 區",
+            price=2400,
+            available=True,
+            remaining=None,
+            status_text="B/2400",
+        ),
+    ]
     adapter = StubAdapter(
-        ticket_results=[(False, REASON_QUANTITY_MISMATCH), (True, REASON_SELECTED)]
+        page_states=[
+            PageState.TICKET_SELECTION,
+            PageState.FAILURE_MODAL,
+            PageState.SEAT_SELECTION,
+            PageState.FORM_FILLING,
+            PageState.PAYMENT_REQUIRED,
+        ],
+        registration_tickets=tickets,
     )
     orchestrator, _, _, _ = build(
         tmp_path, adapter, spec=make_spec(prices=(3200, 2400))
     )
     report = await orchestrator.run()
-    assert orchestrator._rt.events_sent[:3] == [
-        "page_loaded",
-        "retry_fallback_ticket",
-        "ticket_reserved",
-    ]
     assert report.final_state == "COMPLETED"
+    assert "ticket_fallback_reselected" in orchestrator._rt.events_sent
+    assert "A 區" in orchestrator._rt.excluded_ticket_names
+    assert orchestrator._rt.current_ticket_name == "B 區"
+    assert "dismiss_failure_modal" in adapter.calls
+    assert "reset_ticket_quantities" in adapter.calls
 
 
 async def test_exhausted_priorities_end_in_sold_out(tmp_path: Path) -> None:
+    tickets = [
+        TicketOption(
+            index=0,
+            name="A 區",
+            price=3200,
+            available=True,
+            remaining=None,
+            status_text="A/3200",
+        ),
+    ]
     adapter = StubAdapter(
-        ticket_results=[
-            (False, REASON_QUANTITY_MISMATCH),
-            (False, REASON_QUANTITY_MISMATCH),
-        ]
+        page_states=[
+            PageState.TICKET_SELECTION,
+            PageState.FAILURE_MODAL,
+        ],
+        registration_tickets=tickets,
     )
     orchestrator, _, _, _ = build(tmp_path, adapter, spec=make_spec(prices=(3200,)))
     report = await orchestrator.run()
     assert report.final_state == "SOLD_OUT"
-    assert adapter.calls.count("select_tickets") == 1
+    assert "all_tickets_unavailable" in orchestrator._rt.events_sent
 
 
 async def test_wrong_page_fails_closed_instead_of_reporting_sold_out(
@@ -457,7 +597,7 @@ async def test_wrong_page_fails_closed_instead_of_reporting_sold_out(
     assert report.final_state == "FAILED"
     assert report.final_state != "SOLD_OUT"
     assert REASON_NOT_REGISTRATION_PAGE in str(report.error)
-    assert adapter.calls.count("select_tickets") == 1
+    assert adapter.calls.count("apply_ticket_decision") == 1
 
 
 async def test_session_gate_waits_for_the_human_then_proceeds(tmp_path: Path) -> None:
@@ -504,7 +644,7 @@ async def test_session_gate_fails_closed_when_never_ready(tmp_path: Path) -> Non
     report = await orchestrator.run()
     assert report.final_state == "FAILED"
     assert "page not ready before sale: LOGIN" in str(report.error)
-    assert "select_tickets" not in adapter.calls
+    assert "read_registration_tickets" not in adapter.calls
 
 
 async def test_seat_failure_fails_closed(tmp_path: Path) -> None:
@@ -576,3 +716,134 @@ async def test_every_payment_outcome_lands_in_the_mapped_state(
     )
     assert report.final_state == expected
     assert orchestrator._rt.events_sent[-1] == PAYMENT_OUTCOME_EVENTS[outcome]
+
+
+async def test_single_payment_lock_prevents_duplicate_payment(tmp_path: Path) -> None:
+    """單次付款鎖：生命週期至多一次，不可重試。"""
+    adapter = StubAdapter()
+    orchestrator, _, _, _ = build(tmp_path, adapter)
+    page = FakePage("<div></div>")
+    orchestrator._rt.page = page
+    from fsm.machine import PurchaseWorkflow
+
+    orchestrator.fsm = PurchaseWorkflow(orchestrator.spec, orchestrator.telemetry)
+    orchestrator.fsm.sync_to_state("PAYMENT_REQUIRED", "form_submitted")
+    await orchestrator._handle_payment_required(page)
+    assert orchestrator._rt.payment_attempted is True
+    with pytest.raises(PurchaseStepError, match="payment already attempted"):
+        await orchestrator._handle_payment_required(page)
+
+
+QUALIFICATION_CODE_HTML = (
+    "<div id='registrationsNewApp'><div class='code-input'>"
+    "<input type='text' ng-model='code'>"
+    "<button type='button' class='btn' ng-click='checkCode()'>送出</button>"
+    "</div></div>"
+)
+
+
+async def test_qualification_code_flow(tmp_path: Path) -> None:
+    """專屬邀請碼自動解析並填入。"""
+    spec = make_spec(qualification_code="VIP2026")
+    adapter = StubAdapter(
+        page_states=[
+            PageState.QUALIFICATION_CODE,
+            PageState.TICKET_SELECTION,
+            PageState.SEAT_SELECTION,
+            PageState.FORM_FILLING,
+            PageState.PAYMENT_REQUIRED,
+        ]
+    )
+    orchestrator, _, browser, telemetry = build(tmp_path, adapter, spec=spec)
+    browser.page = FakePage(QUALIFICATION_CODE_HTML)
+    report = await orchestrator.run()
+    assert report.final_state == "COMPLETED"
+    assert orchestrator._rt.qualification_handled is True
+    assert any(e.name == "qualification_code_submitted" for e in telemetry.events())
+    assert browser.page.fills == [("div.code-input input[type='text']", "VIP2026")]
+
+
+async def test_qualification_code_missing_fails_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """無會員碼時 fail-closed 中止。"""
+    monkeypatch.delenv("AUTO_TICKET_MEMBER_CODE", raising=False)
+    monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+    spec = make_spec(qualification_code="")
+    adapter = StubAdapter(
+        page_states=[PageState.QUALIFICATION_CODE]
+    )
+    orchestrator, _, browser, telemetry = build(tmp_path, adapter, spec=spec)
+    browser.page = FakePage(QUALIFICATION_CODE_HTML)
+    report = await orchestrator.run()
+    assert report.final_state == "FAILED"
+    assert any(e.name == "qualification_code_missing" for e in telemetry.events())
+
+
+async def test_auto_login_screenshot_barrier(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """自動登入防截圖屏障：登入期間卸載 hook，且機密不落地。"""
+    monkeypatch.setenv("AUTO_TICKET_KKTIX_USERNAME", "testuser@example.com")
+    monkeypatch.setenv("AUTO_TICKET_KKTIX_PASSWORD", "supersecret123")
+    spec = make_spec(auto_login=True)
+
+    adapter = StubAdapter(
+        page_states=[
+            PageState.GUEST_MODAL,
+            PageState.TICKET_SELECTION,
+            PageState.SEAT_SELECTION,
+            PageState.FORM_FILLING,
+            PageState.PAYMENT_REQUIRED,
+        ]
+    )
+    timeline_file = tmp_path / "timeline.json"
+    orchestrator, _, browser, telemetry = build(
+        tmp_path, adapter, spec=spec, timeline_path=timeline_file
+    )
+
+    hook_during_login: Any = "UNSET"
+
+    def check_hook() -> None:
+        nonlocal hook_during_login
+        hook_during_login = orchestrator._rt.screenshot_hook
+
+    adapter.on_login = check_hook
+
+    report = await orchestrator.run()
+    assert report.final_state == "COMPLETED"
+    assert hook_during_login is None  # 屏障生效：登入中 hook 為 None
+    assert orchestrator._rt.screenshot_hook is not None  # 登入後恢復
+    assert "login" in adapter.calls
+    assert "navigate_to_login_from_guest_modal" in adapter.calls
+
+    # 驗證 timeline 絕無帳號密碼明文
+    exported_text = timeline_file.read_text(encoding="utf-8")
+    assert "testuser@example.com" not in exported_text
+    assert "supersecret123" not in exported_text
+
+
+async def test_reset_tickets_failure_fails_closed(tmp_path: Path) -> None:
+    """彈窗關閉後若數量歸零失敗，必須立即中止，避免多票送出。"""
+    tickets = [
+        TicketOption(
+            index=0,
+            name="A 區",
+            price=3200,
+            available=True,
+            remaining=None,
+            status_text="A/3200",
+        ),
+    ]
+    adapter = StubAdapter(
+        page_states=[
+            PageState.TICKET_SELECTION,
+            PageState.FAILURE_MODAL,
+        ],
+        registration_tickets=tickets,
+        reset_ok=False,
+    )
+    orchestrator, _, _, _ = build(tmp_path, adapter)
+    report = await orchestrator.run()
+    assert report.final_state == "FAILED"
+    assert "Failed to reset quantities to zero" in str(report.error)

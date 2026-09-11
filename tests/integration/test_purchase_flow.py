@@ -100,7 +100,14 @@ def answers(*values: str) -> Callable[[VerificationChallenge], Any]:
     return source
 
 
-def make_spec(sale_at: datetime, task_id: str = "flow-1") -> PurchaseTaskSpec:
+def make_spec(
+    sale_at: datetime,
+    task_id: str = "flow-1",
+    *,
+    priorities: list[TicketPriority] | None = None,
+    qualification_code: str | None = None,
+    auto_login: bool = False,
+) -> PurchaseTaskSpec:
     return PurchaseTaskSpec(
         task_id=task_id,
         event_title="去識別化測試活動",
@@ -108,7 +115,7 @@ def make_spec(sale_at: datetime, task_id: str = "flow-1") -> PurchaseTaskSpec:
         sale_start_at=sale_at,
         ticket_preference=TicketPreference(
             quantity=2,
-            priorities=[TicketPriority(price=3200)],
+            priorities=priorities or [TicketPriority(price=3200)],
             seat_preference=SeatPreference(strategy="best_available"),
         ),
         contact_profile=UserContactProfile(name="王小明", phone="0912345678", email="a@b.co"),
@@ -117,6 +124,8 @@ def make_spec(sale_at: datetime, task_id: str = "flow-1") -> PurchaseTaskSpec:
             AttendeeProfile(name="參加人二", phone="0987654322", id_number="A123456780"),
         ),
         payment_method="mock",
+        qualification_code=qualification_code,
+        auto_login=auto_login,
     )
 
 
@@ -147,7 +156,10 @@ class Flow:
         order_html: str | None = None,
         payment_simulate: PaymentOutcome = PaymentOutcome.CHECKPOINT_REACHED,
         verification_answers: tuple[str, ...] = ("ATA",),
+        spec: PurchaseTaskSpec | None = None,
     ) -> PurchaseOrchestrator:
+        if spec is not None:
+            self._spec = spec
         if start_html is not None:
             self.page = FakePage(start_html)
             self.browser.page = self.page
@@ -285,3 +297,76 @@ async def test_pre_sale_stages_all_run_before_trigger(flow: Flow) -> None:
         e.name for e in flow.telemetry.events_of(TimelineEventType.STAGE)
     ]
     assert stage_events == [s.value for s in WarmupStage]
+
+
+QUALIFICATION_CODE_PAGE_HTML = (
+    "<div id='registrationsNewApp'>"
+    "<div class='code-input'>"
+    "<input type='text' ng-model='code'>"
+    "<button type='button' class='btn' ng-click='checkCode()'>送出</button>"
+    "</div></div>"
+)
+
+
+async def test_flow_with_qualification_code(flow: Flow) -> None:
+    spec = make_spec(
+        flow.clock.wall + timedelta(milliseconds=300),
+        qualification_code="VIP999",
+    )
+    orch = flow.wire(start_html=QUALIFICATION_CODE_PAGE_HTML, spec=spec)
+    flow.page.on_click("checkCode()", load_page_html("kktix_registration_new.html"))
+    report = await orch.run()
+    assert report.final_state == "COMPLETED"
+    assert orch._rt.qualification_handled is True
+    assert any(e.name == "qualification_code_submitted" for e in flow.telemetry.events())
+
+
+LOGIN_PAGE_HTML = (
+    "<div id='signin'><form action='/users/sign_in'>"
+    "<input type='text' name='user[login]'>"
+    "<input type='password' name='user[password]'>"
+    "<button type='submit' class='btn-login'>登入</button>"
+    "</form></div>"
+)
+
+
+async def test_flow_auto_login_screenshot_barrier(
+    flow: Flow, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("AUTO_TICKET_KKTIX_USERNAME", "flowuser@example.com")
+    monkeypatch.setenv("AUTO_TICKET_KKTIX_PASSWORD", "flowpass123")
+    spec = make_spec(
+        flow.clock.wall + timedelta(milliseconds=300),
+        auto_login=True,
+    )
+    orch = flow.wire(start_html=LOGIN_PAGE_HTML, spec=spec)
+    flow.page.on_click("btn-login", load_page_html("kktix_registration_new.html"))
+    orig_nav = orch.adapter.navigate_to_event
+
+    async def nav_stub(page: Any, url: str) -> bool:
+        from bs4 import BeautifulSoup
+
+        flow.page.soup = BeautifulSoup(load_page_html("kktix_registration_new.html"), "html.parser")
+        return bool(await orig_nav(page, url))
+
+    orch.adapter.navigate_to_event = nav_stub
+    report = await orch.run()
+    assert report.final_state == "COMPLETED"
+    timeline_text = flow.timeline_path.read_text(encoding="utf-8")
+    assert "flowuser@example.com" not in timeline_text
+    assert "flowpass123" not in timeline_text
+
+
+async def test_flow_single_payment_lock(flow: Flow) -> None:
+    from purchase.handlers import PurchaseStepError
+
+    orch = flow.wire()
+    orch._rt.page = flow.page
+    from fsm.machine import PurchaseWorkflow
+
+    orch.fsm = PurchaseWorkflow(orch.spec, orch.telemetry)
+    orch.fsm.sync_to_state("PAYMENT_REQUIRED", "form_submitted")
+    await orch._handle_payment_required(flow.page)
+    assert orch._rt.payment_attempted is True
+    with pytest.raises(PurchaseStepError, match="payment already attempted"):
+        await orch._handle_payment_required(flow.page)
