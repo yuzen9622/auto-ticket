@@ -338,3 +338,157 @@ def test_no_deprecation_warning_during_full_flow() -> None:
         )
         assert wf.current_state_id == "COMPLETED"
         assert wf.can_send("abort_failed") is False
+
+
+# ------------------------------------------------- sync_to_state（觀察者同步）
+
+
+def workflow_with_trace(
+    *, priorities: int = 2, max_retries: int = 3
+) -> tuple[PurchaseWorkflow, Trace, TimelineRecorder]:
+    trace = Trace()
+    telemetry = TimelineRecorder()
+    wf = PurchaseWorkflow(
+        make_spec(priorities=priorities, max_retries=max_retries),
+        telemetry=telemetry,
+        on_transition_hook=trace,
+    )
+    return wf, trace, telemetry
+
+
+def transitions_of(telemetry: TimelineRecorder) -> list[tuple[str, str, str]]:
+    return [
+        (e.detail["from_state"], e.detail["event"], e.detail["to_state"])
+        for e in telemetry.events()
+        if e.event_type is TimelineEventType.TRANSITION
+    ]
+
+
+def test_sync_to_state_prefers_the_declared_event_path() -> None:
+    """相鄰狀態有合法事件時走事件鏈，條件分流與計數器才不會被繞過。"""
+    wf, trace, _ = workflow_with_trace()
+    assert wf.sync_to_state("PREPARING", "prepare_session") is True
+    assert wf.current_state_id == "PREPARING"
+    assert trace.triples == [("IDLE", "prepare_session", "PREPARING")]
+
+
+def test_sync_to_state_jumps_across_states_the_page_skipped() -> None:
+    """真實頁面會直接從選票彈到付款頁；硬走事件鏈只會讓審計歷程脫節。"""
+    wf, trace, telemetry = workflow_with_trace()
+    assert wf.sync_to_state("PAYMENT_REQUIRED", "state_sync") is True
+    assert wf.current_state_id == "PAYMENT_REQUIRED"
+    assert trace.triples == [("IDLE", "state_sync", "PAYMENT_REQUIRED")]
+    assert transitions_of(telemetry) == [("IDLE", "state_sync", "PAYMENT_REQUIRED")]
+
+
+def test_sync_to_state_still_advances_after_a_jump() -> None:
+    """跳躍同步不得讓機器停擺：落地後既有事件鏈必須照常可用。"""
+    wf, _, _ = workflow_with_trace()
+    assert wf.sync_to_state("PAYMENT_REQUIRED", "state_sync") is True
+    wf.submit_payment()
+    assert wf.current_state_id == "PAYMENT_PROCESSING"
+
+
+def test_sync_to_state_rejects_an_unknown_state() -> None:
+    wf, trace, _ = workflow_with_trace()
+    assert wf.sync_to_state("NOT_A_STATE", "state_sync") is False
+    assert wf.current_state_id == "IDLE"
+    assert trace.triples == []
+
+
+def test_sync_to_state_records_a_same_state_observer_event_exactly_once() -> None:
+    """票種降級只是換一張票，狀態沒變；但那一次重選必須在歷程裡看得見。"""
+    wf, trace, telemetry = workflow_with_trace()
+    wf.sync_to_state("TICKET_SELECTION", "state_sync")
+    trace.triples.clear()
+    assert wf.sync_to_state("TICKET_SELECTION", "ticket_fallback_reselected") is True
+    assert wf.current_state_id == "TICKET_SELECTION"
+    assert trace.triples == [
+        ("TICKET_SELECTION", "ticket_fallback_reselected", "TICKET_SELECTION")
+    ]
+    assert transitions_of(telemetry)[-1] == (
+        "TICKET_SELECTION",
+        "ticket_fallback_reselected",
+        "TICKET_SELECTION",
+    )
+
+
+def test_same_state_sync_does_not_inflate_the_retry_counters() -> None:
+    """借用 retry_fallback_ticket 會推進 priority 計數，把降級次數算成兩倍。"""
+    wf, _, _ = workflow_with_trace(priorities=3)
+    wf.sync_to_state("TICKET_SELECTION", "state_sync")
+    before = wf.current_priority_index
+    wf.sync_to_state("TICKET_SELECTION", "ticket_fallback_reselected")
+    wf.sync_to_state("TICKET_SELECTION", "ticket_fallback_reselected")
+    assert wf.current_priority_index == before
+
+
+def test_same_state_sync_does_not_inflate_the_verification_counter() -> None:
+    wf, _, _ = workflow_with_trace()
+    wf.sync_to_state("VERIFICATION_REQUIRED", "state_sync")
+    wf.sync_to_state("VERIFICATION_REQUIRED", "captcha_retry_sync")
+    assert wf.verification_retry_count == 0
+
+
+def test_sync_to_state_refuses_to_resurrect_a_terminal_state() -> None:
+    """已成交的實驗被覆寫回進行中，研究資料就再也分不出哪一次真的成交。"""
+    wf, trace, _ = workflow_with_trace()
+    wf.sync_to_state("PAYMENT_PROCESSING", "state_sync")
+    wf.payment_success()
+    trace.triples.clear()
+    assert wf.sync_to_state("TICKET_SELECTION", "state_sync") is False
+    assert wf.current_state_id == PurchaseState.COMPLETED.value
+    assert trace.triples == []
+
+
+def test_sync_to_state_refuses_a_terminal_self_sync() -> None:
+    """終態同目標同樣不得留下第二筆紀錄，否則終點會在歷程裡出現兩次。"""
+    wf, trace, telemetry = workflow_with_trace()
+    wf.sync_to_state("TICKET_SELECTION", "state_sync")
+    wf.all_tickets_unavailable()
+    trace.triples.clear()
+    before = len(transitions_of(telemetry))
+    assert wf.sync_to_state("SOLD_OUT", "all_tickets_unavailable") is False
+    assert wf.current_state_id == PurchaseState.SOLD_OUT.value
+    assert trace.triples == []
+    assert len(transitions_of(telemetry)) == before
+
+
+@pytest.mark.parametrize("final_state", sorted(s.value for s in FINAL_STATES))
+def test_every_terminal_state_is_irreversible(final_state: str) -> None:
+    wf, _, _ = workflow_with_trace()
+    wf.sync_to_state(final_state, "state_sync")
+    assert wf.current_state_id == final_state
+    assert wf.sync_to_state("IDLE", "state_sync") is False
+    assert wf.current_state_id == final_state
+
+
+def test_sync_to_state_reports_false_when_an_event_lands_in_a_terminal_state() -> None:
+    """事件把機器推進終態時必須回報 False，呼叫端才知道不能再繼續推流程。"""
+    wf, _, _ = workflow_with_trace()
+    wf.sync_to_state("TICKET_SELECTION", "state_sync")
+    assert wf.sync_to_state("SEAT_SELECTION", "all_tickets_unavailable") is False
+    assert wf.current_state_id == PurchaseState.SOLD_OUT.value
+
+
+def test_sync_to_state_does_not_swallow_a_send_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """空 except 會讓「事件送不出去」完全消失；至少要留下一筆錯誤紀錄。"""
+    wf, _, telemetry = workflow_with_trace()
+    boom = RuntimeError("send exploded")
+
+    def explode(event_name: str) -> None:
+        raise boom
+
+    monkeypatch.setattr(wf, "send", explode)
+    assert wf.sync_to_state("PREPARING", "prepare_session") is True
+    errors = [
+        e for e in telemetry.events() if e.event_type is TimelineEventType.ERROR
+    ]
+    assert any(e.name == "fsm_sync_send_error:prepare_session" for e in errors)
+
+
+def test_sync_to_state_keeps_the_declared_transition_table_intact() -> None:
+    """觀察者擴充不得偷改 33 條基本路徑，否則架構審計就失去基準。"""
+    assert PurchaseWorkflow.transition_count() == 33

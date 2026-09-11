@@ -4,6 +4,7 @@ from collections.abc import Callable
 from typing import Any
 
 from statemachine import State, StateMachine
+from statemachine.orderedset import OrderedSet
 
 from domain.task import PurchaseTaskSpec
 from fsm.states import FINAL_STATES, PurchaseState
@@ -164,6 +165,52 @@ class PurchaseWorkflow(StateMachine):
             )
         except Exception:
             return False
+
+    def sync_to_state(
+        self, target_state_id: str, event_name: str = "state_sync"
+    ) -> bool:
+        """把 FSM 對齊到頁面**實際**所處的狀態，作為觀察者而非流程控制器。
+
+        搶票由 `detect_page_state` 驅動，頁面會跳過 FSM 認得的中間步驟（例如直接
+        從選票彈到付款頁）。硬要走事件鏈只會讓審計歷程與真實頁面脫節，因此這裡
+        允許非終態之間的平滑跳躍——但**終態絕對不可逆**：已經 COMPLETED／SOLD_OUT
+        的實驗被覆寫回進行中，整份研究資料就再也分不出哪一次真的成交。
+        """
+        final_ids = {s.value for s in FINAL_STATES}
+        if self.current_state_id in final_ids:
+            return False
+
+        # 同狀態自事件（如 ticket_fallback_reselected）：只記錄，不動 configuration，
+        # 也不走 can_send/send——那會誤觸 self-transition 而讓重試計數憑空多一。
+        if self.current_state_id == target_state_id:
+            self._record_sync(self.current_state_id, target_state_id, event_name)
+            return True
+
+        if self.can_send(event_name):
+            try:
+                self.send(event_name)
+            except Exception as exc:
+                if self.telemetry is not None:
+                    self.telemetry.record_error(f"fsm_sync_send_error:{event_name}", exc)
+            if self.current_state_id in final_ids:
+                return False
+            if self.current_state_id == target_state_id:
+                return True
+
+        target = self.states_map.get(target_state_id)
+        if target is None:
+            return False
+        from_id = self.current_state_id
+        self.configuration = OrderedSet([target])
+        self._record_sync(from_id, target_state_id, event_name)
+        return True
+
+    def _record_sync(self, from_id: str, to_id: str, event_name: str) -> None:
+        """跳躍同步不經過 `on_transition`，歷程得在這裡補記，否則審計會缺一段。"""
+        if self.telemetry is not None:
+            self.telemetry.record_transition(from_id, to_id, event_name)
+        if self._on_transition_hook is not None:
+            self._on_transition_hook(from_id, to_id, event_name)
 
     def can_retry_verification(self) -> bool:
         return self.verification_retry_count < self.spec.max_retries
