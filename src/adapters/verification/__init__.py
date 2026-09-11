@@ -5,11 +5,17 @@ from adapters.verification.base import (
     VerificationResult,
 )
 from adapters.verification.manual import ManualVerificationProvider
+from adapters.verification.rule_based import (
+    BLIND_GUESS_ANSWER,
+    RuleBasedVerificationProvider,
+)
 from adapters.verification.synthetic_ocr import SyntheticOcrProvider
 
 __all__ = [
+    "BLIND_GUESS_ANSWER",
     "ChallengeKind",
     "ManualVerificationProvider",
+    "RuleBasedVerificationProvider",
     "SyntheticOcrProvider",
     "VerificationChallenge",
     "VerificationProvider",
