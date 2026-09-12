@@ -124,8 +124,11 @@ class WorkerLoop:
                 await self._broker.fail(
                     job.id, worker_id=self._worker_id, error=str(exc), retry=False
                 )
+            error_task_id = job.task_id
+            if error_task_id is None:
+                error_task_id = job.id
             self._outbox.publish(
-                task_id=job.task_id or job.id,
+                task_id=error_task_id,
                 type="ERROR",
                 payload={
                     "name": "job_execution_failed",
@@ -173,11 +176,8 @@ class WorkerLoop:
 
         loop = asyncio.get_running_loop()
         for sig in (signal.SIGINT, signal.SIGTERM):
-            try:
+            with contextlib.suppress(NotImplementedError, RuntimeError):
                 loop.add_signal_handler(sig, self.stop)
-            except (NotImplementedError, RuntimeError):
-                # e.g. on non-main thread or Windows
-                pass
 
         poll_interval = max(0.01, self._settings.poll_ms / 1000.0)
         reap_interval = max(1.0, self._settings.lease_ttl_s)

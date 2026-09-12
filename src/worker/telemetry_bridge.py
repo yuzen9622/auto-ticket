@@ -128,7 +128,11 @@ class ClockTicker:
         self._sale_start_at = sale_start_at
         self._experiment_id = experiment_id
         self._scheduler = scheduler
-        self._interval_s = max(0.05, 1.0 / max(0.1, float(hz)))
+        try:
+            val_hz = float(hz)
+        except Exception:
+            val_hz = 1.0
+        self._interval_s = max(0.05, 1.0 / max(0.1, val_hz))
         self._running = False
 
     async def run(self) -> None:
@@ -141,7 +145,10 @@ class ClockTicker:
             ):
                 ref = self._scheduler.time_reference
                 if ref is not None:
-                    offset_ms = float(getattr(ref, "offset_ms", 0.0))
+                    try:
+                        offset_ms = float(getattr(ref, "offset_ms", 0.0))
+                    except Exception:
+                        offset_ms = 0.0
 
             adjusted_now = now_utc + timedelta(milliseconds=offset_ms)
             time_to_sale_ms = (

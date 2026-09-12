@@ -74,6 +74,20 @@ async def amain(args: argparse.Namespace) -> None:
     broker = SqliteTaskBroker(db, lease_ttl_s=settings.lease_ttl_s)
     outbox = OutboxWriter(db, flush_ms=settings.outbox_flush_ms)
 
+    mode_str = (
+        "Headless (背景執行)"
+        if settings.headless
+        else "Headed (有頭模式，領取任務時會自動開啟 Chrome 視窗)"
+    )
+    print("=" * 60)
+    print("[*] Auto-Ticket Worker 已就緒！")
+    print(f"    - Worker ID : {worker_id}")
+    print(f"    - 運行模式  : {mode_str}")
+    print(f"    - 資料庫    : {settings.db_path}")
+    print(f"    - Profile   : {settings.profile}")
+    print("[*] 正在監聽任務隊列中...（建立並觸發任務後，瀏覽器才會開啟）")
+    print("=" * 60)
+
     loop = WorkerLoop(
         db,
         broker,

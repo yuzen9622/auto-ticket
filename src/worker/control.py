@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import Awaitable, Callable
 from typing import Any
 
@@ -10,6 +11,8 @@ from broker.outbox import OutboxWriter
 from scheduler.scheduler import WarmupContext, WarmupPlan, WarmupScheduler, WarmupStage
 from storage.database import Database
 from telemetry.timeline import TimelineRecorder
+
+logger = logging.getLogger(__name__)
 
 
 class ControlState:
@@ -145,7 +148,10 @@ class ControlPoller:
         self._task_id = task_id
         self._control = control_state
         self._outbox = outbox
-        self._poll_interval_s = float(poll_interval_s)
+        try:
+            self._poll_interval_s = float(poll_interval_s)
+        except Exception:
+            self._poll_interval_s = 0.2
         self._running = False
         self._last_signal_id = 0
 
@@ -164,8 +170,8 @@ class ControlPoller:
                     self._handle_signal(sig)
             except asyncio.CancelledError:
                 break
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("Control poller error: %s", exc)
 
             try:
                 await asyncio.sleep(self._poll_interval_s)
