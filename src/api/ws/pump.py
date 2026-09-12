@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
 import time
 
+from api.schemas.ws import ServerMessage, ServerMessageType
+from api.ws.hub import WsHub
 from broker.outbox import OutboxReader
 
-from ..schemas.ws import ServerMessage, ServerMessageType
-from .hub import WsHub
+logger = logging.getLogger(__name__)
 
 
 class OutboxPump:
@@ -23,8 +25,15 @@ class OutboxPump:
     ) -> None:
         self._reader = reader
         self._hub = hub
-        self._poll_interval_s = float(poll_interval_s)
-        self._prune_interval_s = float(prune_interval_s)
+        try:
+            self._poll_interval_s = float(poll_interval_s)
+        except Exception:
+            self._poll_interval_s = 0.1
+
+        try:
+            self._prune_interval_s = float(prune_interval_s)
+        except Exception:
+            self._prune_interval_s = 60.0
         self._running = False
         self._last_prune = 0.0
 
@@ -55,8 +64,8 @@ class OutboxPump:
 
             except asyncio.CancelledError:
                 break
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("Outbox pump error: %s", exc)
 
             await asyncio.sleep(self._poll_interval_s)
 

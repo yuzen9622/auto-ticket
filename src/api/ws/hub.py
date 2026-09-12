@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
@@ -42,10 +43,8 @@ class WsHub:
             try:
                 sub.queue.put_nowait(message)
             except asyncio.QueueFull:
-                try:
+                with contextlib.suppress(asyncio.QueueEmpty):
                     sub.queue.get_nowait()
-                except asyncio.QueueEmpty:
-                    pass
                 lag_msg = ServerMessage(
                     type=ServerMessageType.ERROR,
                     task_id=task_id,
@@ -53,14 +52,10 @@ class WsHub:
                     timestamp=now_iso,
                     payload={"reason": "subscriber_lagging"},
                 )
-                try:
+                with contextlib.suppress(asyncio.QueueFull):
                     sub.queue.put_nowait(lag_msg)
-                except asyncio.QueueFull:
-                    pass
-                try:
+                with contextlib.suppress(asyncio.QueueFull):
                     sub.queue.put_nowait(message)
-                except asyncio.QueueFull:
-                    pass
 
     def room_size(self, task_id: str) -> int:
         return len(self._rooms.get(task_id, set()))
