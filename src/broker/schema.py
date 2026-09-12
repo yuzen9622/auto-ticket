@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from broker.models import BrokerBase
+from .models import BrokerBase
 
 
 async def create_broker_schema(engine: Any) -> None:

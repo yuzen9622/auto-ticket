@@ -15,7 +15,7 @@ from typing import Any
 
 from sqlalchemy import delete, func, select
 
-from broker.models import OutboxEventModel
+from .models import OutboxEventModel
 
 
 @dataclass(frozen=True, slots=True)

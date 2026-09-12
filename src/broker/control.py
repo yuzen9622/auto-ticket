@@ -13,7 +13,7 @@ from typing import Any
 
 from sqlalchemy import select
 
-from broker.models import ControlSignalModel
+from .models import ControlSignalModel
 
 
 class ControlAction(str, Enum):
@@ -21,6 +21,20 @@ class ControlAction(str, Enum):
     PAUSE = "PAUSE"
     RESUME = "RESUME"
     FORCE_TRANSITION = "FORCE_TRANSITION"
+
+
+def _safe_action(value: Any) -> ControlAction:
+    try:
+        return ControlAction(value)
+    except Exception:
+        return ControlAction.EMERGENCY_STOP
+
+
+def _safe_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
+    except Exception:
+        return default
 
 
 @dataclass(frozen=True, slots=True)
@@ -46,14 +60,14 @@ async def publish(
 ) -> int:
     orm = ControlSignalModel(
         task_id=task_id,
-        action=ControlAction(action).value,
+        action=_safe_action(action).value,
         payload=dict(payload) if payload else None,
         created_at=_utcnow(),
     )
     async with db.session() as session:
         session.add(orm)
         await session.flush()
-        return int(orm.id)
+        return _safe_int(orm.id)
 
 
 async def consume(
@@ -77,9 +91,9 @@ async def consume(
             orm.consumed_at = now
             records.append(
                 ControlSignalRecord(
-                    id=int(orm.id),
+                    id=_safe_int(orm.id),
                     task_id=orm.task_id,
-                    action=ControlAction(orm.action),
+                    action=_safe_action(orm.action),
                     payload=dict(orm.payload) if orm.payload else None,
                     created_at=orm.created_at,
                     consumed_at=now,
@@ -103,9 +117,9 @@ async def list_signals(
         rows = (await session.execute(stmt)).scalars().all()
         return [
             ControlSignalRecord(
-                id=int(orm.id),
+                id=_safe_int(orm.id),
                 task_id=orm.task_id,
-                action=ControlAction(orm.action),
+                action=_safe_action(orm.action),
                 payload=dict(orm.payload) if orm.payload else None,
                 created_at=orm.created_at,
                 consumed_at=orm.consumed_at,
