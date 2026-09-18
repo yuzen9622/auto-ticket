@@ -18,3 +18,9 @@ data/
 graphify-out/
 out/
 task.json
+
+node_modules/
+.next/
+web/.env.local
+*.tsbuildinfo
+next-env.d.ts
