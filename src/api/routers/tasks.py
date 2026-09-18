@@ -5,8 +5,10 @@ from datetime import UTC, datetime, timedelta
 
 from fastapi import APIRouter, Depends, Query, Response, status
 
+from accounts.service import AccountService
 from broker.broker import SqliteTaskBroker
 from broker.jobs import JobKind
+from domain.execution import ExecutionMode
 from domain.task import PaymentMethod, PurchaseTaskSpec
 from storage.database import Database
 from storage.models import PurchaseTaskModel
@@ -14,8 +16,13 @@ from storage.repositories.event_repository import EventRepository
 from storage.repositories.task_repository import TaskRepository
 
 from .. import queries
-from ..deps import get_broker, get_db
-from ..errors import ConflictError, NotFoundError, UnsupportedError
+from ..deps import get_accounts, get_broker, get_db
+from ..errors import (
+    ConflictError,
+    InvalidRequestError,
+    NotFoundError,
+    UnsupportedError,
+)
 from ..schemas.tasks import (
     CreateTaskRequest,
     TaskDetailResponse,
@@ -25,17 +32,30 @@ from ..schemas.tasks import (
 
 router = APIRouter(prefix="/api/v1/tasks", tags=["tasks"])
 
+#: 目前只有 kktix 有 resolver 與帳號流程；正式模式的前置檢查對準這個平台。
+LIVE_PLATFORM = "kktix"
+
 
 @router.post("", response_model=TaskResponse, status_code=status.HTTP_201_CREATED)
 async def create_task(
     req: CreateTaskRequest,
     db: Database = Depends(get_db),
     broker: SqliteTaskBroker = Depends(get_broker),
+    accounts: AccountService = Depends(get_accounts),
 ) -> TaskResponse:
-    if req.payment_method.lower() != "mock":
+    # 前端不得指定付款 adapter：這裡只認遺留的 "mock" 值，其餘一律拒絕。
+    if req.payment_method is not None and req.payment_method.lower() != "mock":
         raise UnsupportedError(
             f"payment_method '{req.payment_method}' is unsupported via API; "
-            "use scripts/run_purchase.py --real-payment for credit card checkout"
+            "the execution mode decides the payment adapter"
+        )
+
+    if req.execution_mode is ExecutionMode.LIVE and not accounts.status(
+        LIVE_PLATFORM
+    ).configured:
+        raise InvalidRequestError(
+            "live execution requires a configured ticketing account",
+            details={"reason": "account_not_configured", "platform": LIVE_PLATFORM},
         )
 
     task_id = f"task_{uuid.uuid4().hex[:16]}"
@@ -47,6 +67,9 @@ async def create_task(
         ticket_preference=req.ticket_preference,
         contact_profile=req.contact_profile,
         attendees=tuple(req.attendees),
+        execution_mode=req.execution_mode,
+        # 卡片資料從不經過 API，因此 spec 一定沒有 payment_profile；
+        # 這個遺留欄位不參與 adapter 選擇，實際 adapter 看 execution_mode。
         payment_method=PaymentMethod.MOCK,
         max_retries=req.max_retries,
         timeout_seconds=req.timeout_seconds,

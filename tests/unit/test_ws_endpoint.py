@@ -21,14 +21,20 @@ def test_ws_endpoint_connect_and_control(tmp_path) -> None:
                         assert init_msg["payload"]["phase"] == "snapshot"
                         assert init_msg["task_id"] == task_id
 
-                        # 2. 發送控制指令 PAUSE
+                        # 2. 緊接著是倒數快照，讓重連的前端知道目前階段
+                        clock_msg = ws.receive_json()
+                        assert clock_msg["type"] == "CLOCK_TICK"
+                        assert clock_msg["payload"]["phase"] == "finished"
+                        assert clock_msg["payload"]["time_to_sale_ms"] is None
+
+                        # 3. 發送控制指令 PAUSE
                         ws.send_json({"action": "PAUSE", "task_id": task_id})
                         ack = ws.receive_json()
                         assert ack["type"] == "TASK_LOG"
                         assert ack["payload"]["action"] == "PAUSE"
                         assert ack["payload"]["accepted"] is True
 
-                        # 3. 發送無效控制指令（task_id 不符）應回 ERROR frame 而不中斷
+                        # 4. 發送無效控制指令（task_id 不符）應回 ERROR frame 而不中斷
                         ws.send_json({"action": "RESUME", "task_id": "other_task"})
                         err_msg = ws.receive_json()
                         assert err_msg["type"] == "ERROR"

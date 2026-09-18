@@ -23,6 +23,7 @@ ENV_DB_PATH = "AUTO_TICKET_DB_PATH"
 ENV_SCREENSHOT_DIR = "AUTO_TICKET_SCREENSHOT_DIR"
 ENV_VAULT_ROOT = "AUTO_TICKET_VAULT_ROOT"
 ENV_CORS_ORIGINS = "AUTO_TICKET_CORS_ORIGINS"
+ENV_RESOLVER_ORGS = "AUTO_TICKET_RESOLVER_ORGS"
 
 
 @dataclass(frozen=True, slots=True)
@@ -44,6 +45,8 @@ class ApiSettings:
     lease_ttl_s: float = 30.0
     version: str = "0.1.0"
     resolver_orgs: tuple[str, ...] = field(default_factory=tuple)
+    """票券平台 feed 的主辦來源。搜尋範圍由這裡與已同步活動推導，
+    **不**向使用者索取——主辦代號是內部資料來源設定，不是使用者該懂的東西。"""
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "db_path", Path(self.db_path))
@@ -54,6 +57,7 @@ class ApiSettings:
     def from_env(cls, environ: Mapping[str, str] | None = None) -> ApiSettings:
         source = os.environ if environ is None else environ
         origins = source.get(ENV_CORS_ORIGINS, "").strip()
+        orgs = source.get(ENV_RESOLVER_ORGS, "").strip()
         return cls(
             db_path=Path(source.get(ENV_DB_PATH, str(DEFAULT_DB_PATH))),
             screenshot_dir=Path(
@@ -65,4 +69,5 @@ class ApiSettings:
                 if origins
                 else DEFAULT_CORS_ORIGINS
             ),
+            resolver_orgs=tuple(o.strip() for o in orgs.split(",") if o.strip()),
         )

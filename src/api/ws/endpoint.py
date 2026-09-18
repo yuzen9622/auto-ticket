@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 from datetime import datetime, timezone
+from typing import Any
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
@@ -10,6 +11,7 @@ from broker import control
 from broker.broker import SqliteTaskBroker
 from broker.outbox import OutboxReader
 from storage.database import Database
+from telemetry.clock import build_clock_payload, ticketing_deadline
 
 from .. import queries
 from ..schemas.ws import (
@@ -23,8 +25,41 @@ from .hub import Subscription, WsHub
 router = APIRouter(tags=["websocket"])
 
 
+#: 任務走到這些狀態就不再倒數。
+FINISHED_TASK_STATUS = frozenset({"COMPLETED", "FAILED", "CANCELLED"})
+
+
 def _utcnow_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _as_utc(value: datetime | None) -> datetime | None:
+    if value is None:
+        return None
+    return value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
+
+
+def build_clock_snapshot(task: Any, task_id: str) -> ServerMessage:
+    """重連後先補一則 CLOCK_TICK，讓前端不必靠本地時間猜 Worker 走到哪一階段。
+
+    Worker 的 ticker 只在任務執行期間跑；重新整理或重連時它可能早就停了，
+    此時唯一知道階段的人是伺服器。
+    """
+    spec = dict(getattr(task, "spec", None) or {}) if task is not None else {}
+    sale_start_at = _as_utc(getattr(task, "scheduled_at", None))
+    status_value = str(getattr(task, "status", "")) if task is not None else ""
+
+    return ServerMessage(
+        type=ServerMessageType.CLOCK_TICK,
+        task_id=task_id,
+        timestamp=_utcnow_iso(),
+        payload=build_clock_payload(
+            now=datetime.now(timezone.utc),
+            sale_start_at=sale_start_at,
+            deadline=ticketing_deadline(sale_start_at, spec.get("timeout_seconds")),
+            finished=task is None or status_value in FINISHED_TASK_STATUS,
+        ),
+    )
 
 
 @router.websocket("/ws/tasks/{task_id}")
@@ -65,6 +100,9 @@ async def task_websocket_endpoint(websocket: WebSocket, task_id: str) -> None:
             },
         )
         await websocket.send_json(snapshot_msg.model_dump(mode="json"))
+        await websocket.send_json(
+            build_clock_snapshot(task, task_id).model_dump(mode="json")
+        )
 
         # 2. 查詢歷史回放
         replayed = await outbox_reader.replay(task_id, limit=50)

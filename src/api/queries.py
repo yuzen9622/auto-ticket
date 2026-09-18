@@ -5,6 +5,7 @@ from typing import Any
 
 from sqlalchemy import func, select
 
+from domain.execution import coerce_execution_mode
 from storage.models import (
     ExperimentEventModel,
     ExperimentMetricsModel,
@@ -22,11 +23,13 @@ from .schemas.tasks import TaskResponse
 
 
 def _to_task_response(orm: PurchaseTaskModel) -> TaskResponse:
+    spec = dict(orm.spec or {})
     return TaskResponse(
         id=orm.id,
         event_id=orm.event_id,
         status=orm.status,
-        spec=dict(orm.spec or {}),
+        execution_mode=coerce_execution_mode(spec.get("execution_mode")).value,
+        spec=spec,
         scheduled_at=orm.scheduled_at,
         started_at=orm.started_at,
         finished_at=orm.finished_at,

@@ -11,8 +11,11 @@ from .common import ErrorDetail, ErrorResponse
 from .events import (
     EventCandidateOut,
     EventOut,
+    EventSearchResponse,
+    EventSearchResultOut,
     ResolveEventRequest,
     ResolveEventResponse,
+    TicketingProviderOut,
     TicketTypeOut,
 )
 from .experiments import (
@@ -44,6 +47,8 @@ __all__ = [
     "ErrorResponse",
     "EventCandidateOut",
     "EventOut",
+    "EventSearchResponse",
+    "EventSearchResultOut",
     "ExperimentDetailResponse",
     "ExperimentEventOut",
     "ExperimentListResponse",
@@ -61,4 +66,5 @@ __all__ = [
     "TaskListResponse",
     "TaskResponse",
     "TicketTypeOut",
+    "TicketingProviderOut",
 ]

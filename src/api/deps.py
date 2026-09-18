@@ -6,6 +6,7 @@ import httpx
 from fastapi import Request
 
 from accounts.service import AccountService
+from accounts.vault import EncryptedFileVault
 from adapters.ticketing.kktix.resolver import KKTIXEventResolver
 from broker.broker import SqliteTaskBroker
 from storage.database import Database
@@ -26,7 +27,16 @@ def get_broker(request: Request) -> SqliteTaskBroker:
 
 
 def get_accounts(request: Request) -> AccountService:
-    return request.app.state.accounts
+    accounts = getattr(request.app.state, "accounts", None)
+    if accounts is not None:
+        return accounts
+    # 沒跑 lifespan 的呼叫端（例如直接掛 ASGITransport）也要拿得到帳號狀態，
+    # 否則正式模式的前置檢查會變成 500 而不是「尚未設定帳號」。
+    settings: ApiSettings = request.app.state.settings
+    return AccountService(
+        getattr(request.app.state, "broker", None),
+        vault=EncryptedFileVault.from_env(settings.vault_root),
+    )
 
 
 def get_hub(request: Request) -> Any:

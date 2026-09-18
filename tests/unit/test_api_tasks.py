@@ -3,6 +3,7 @@ from __future__ import annotations
 import httpx
 import pytest
 
+from accounts.models import AccountStatus
 from api.main import create_app
 from broker.broker import SqliteTaskBroker
 from broker.jobs import JobKind, JobState
@@ -32,8 +33,23 @@ VALID_TASK_PAYLOAD = {
         "phone": "0912345678",
         "email": "user@example.test",
     },
-    "payment_method": "mock",
+    "execution_mode": "mock",
 }
+
+
+class _StubAccounts:
+    """帳號狀態樁：正式模式的前置檢查只看 `configured`。"""
+
+    def __init__(self, configured: bool) -> None:
+        self._configured = configured
+
+    def status(self, platform: str) -> AccountStatus:
+        return AccountStatus(
+            platform=platform,
+            source="vault" if self._configured else "none",
+            configured=self._configured,
+            masked_account="us***er@example.test" if self._configured else None,
+        )
 
 
 async def test_create_task_success(app_instance, db: Database) -> None:
@@ -59,6 +75,8 @@ async def test_create_task_success(app_instance, db: Database) -> None:
         # G31 契約檢驗：spec 嚴禁包含 payment_profile
         spec = job.payload.get("spec", {})
         assert "payment_profile" not in spec
+        assert spec["execution_mode"] == "mock"
+        assert data["execution_mode"] == "mock"
 
         # 查詢單一任務細節
         get_resp = await client.get(f"/api/v1/tasks/{task_id}")
@@ -86,6 +104,58 @@ async def test_create_task_credit_card_unsupported(app_instance) -> None:
         assert resp.status_code == 400
         err = resp.json()
         assert err["error"]["code"] == "unsupported"
+
+
+async def test_create_task_live_mode_requires_configured_account(
+    app_instance,
+) -> None:
+    app, _ = app_instance
+    app.state.accounts = _StubAccounts(configured=False)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://test",
+    ) as client:
+        payload = dict(VALID_TASK_PAYLOAD, execution_mode="live")
+        resp = await client.post("/api/v1/tasks", json=payload)
+        assert resp.status_code == 400
+        err = resp.json()["error"]
+        assert err["code"] == "invalid_request"
+        assert err["details"]["reason"] == "account_not_configured"
+
+
+async def test_create_task_live_mode_is_not_downgraded_to_mock(
+    app_instance,
+) -> None:
+    app, broker = app_instance
+    app.state.accounts = _StubAccounts(configured=True)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://test",
+    ) as client:
+        payload = dict(VALID_TASK_PAYLOAD, execution_mode="live")
+        resp = await client.post("/api/v1/tasks", json=payload)
+        assert resp.status_code == 201
+        data = resp.json()
+        assert data["execution_mode"] == "live"
+
+        jobs = await broker.list_jobs(task_id=data["id"])
+        spec = jobs[0].payload["spec"]
+        assert spec["execution_mode"] == "live"
+        # 正式模式一樣不得夾帶任何付款機密。
+        assert "payment_profile" not in spec
+
+
+async def test_create_task_defaults_to_live_mode(app_instance) -> None:
+    app, _ = app_instance
+    app.state.accounts = _StubAccounts(configured=True)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://test",
+    ) as client:
+        payload = {k: v for k, v in VALID_TASK_PAYLOAD.items() if k != "execution_mode"}
+        resp = await client.post("/api/v1/tasks", json=payload)
+        assert resp.status_code == 201
+        assert resp.json()["execution_mode"] == "live"
 
 
 async def test_create_task_invalid_preference(app_instance) -> None:

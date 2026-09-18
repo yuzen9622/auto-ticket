@@ -5,6 +5,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from domain.execution import ExecutionMode
 from domain.preference import TicketPreference
 from domain.task import AttendeeProfile, UserContactProfile, VerificationRule
 
@@ -18,7 +19,10 @@ class CreateTaskRequest(BaseModel):
     ticket_preference: TicketPreference
     contact_profile: UserContactProfile
     attendees: list[AttendeeProfile] = Field(default_factory=list)
-    payment_method: str = Field(default="mock")
+    execution_mode: ExecutionMode = ExecutionMode.LIVE
+    """正式或測試；付款 adapter 由後端依此決定，前端無法指定 adapter。"""
+    payment_method: str | None = None
+    """遺留欄位。只接受空值或 `"mock"`，其餘一律拒絕。"""
     max_retries: int = Field(default=3, ge=0)
     timeout_seconds: int = Field(default=120, gt=0)
     verification_rules: list[VerificationRule] = Field(default_factory=list)
@@ -33,6 +37,7 @@ class TaskResponse(BaseModel):
     id: str
     event_id: str | None = None
     status: str
+    execution_mode: str = ExecutionMode.MOCK.value
     spec: dict[str, Any] = Field(default_factory=dict)
     scheduled_at: datetime | None = None
     started_at: datetime | None = None

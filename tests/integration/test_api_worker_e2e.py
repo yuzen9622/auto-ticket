@@ -44,7 +44,7 @@ async def test_e2e_task_lifecycle_api_and_worker(e2e_env) -> None:
             "phone": "0988123456",
             "email": "e2e@example.test",
         },
-        "payment_method": "mock",
+        "execution_mode": "mock",
     }
 
     async with httpx.AsyncClient(
@@ -133,7 +133,15 @@ async def test_e2e_task_lifecycle_api_and_worker(e2e_env) -> None:
         assert snapshot["type"] == "TASK_LOG"
         assert snapshot["payload"]["phase"] == "snapshot"
 
-        # 第二筆為 replay 的 STATE_CHANGED
+        # 第二筆是倒數快照：重連時由伺服器告知階段，前端不必猜
+        clock = ws.receive_json()
+        assert clock["type"] == "CLOCK_TICK"
+        payload = clock["payload"]
+        assert payload["phase"] in {"waiting_for_sale", "ticketing", "finished"}
+        for key in ("time_to_sale_ms", "time_to_timeout_ms"):
+            assert payload[key] is None or payload[key] >= 0
+
+        # 第三筆為 replay 的 STATE_CHANGED
         msg = ws.receive_json()
         assert msg["type"] == "STATE_CHANGED"
         assert msg["payload"]["to_state"] == "COMPLETED"
