@@ -1,21 +1,23 @@
+"use client"
+
 import * as React from "react"
 
-import { NavRail } from "@/components/layout/nav-rail"
+import { AppSidebar } from "@/components/layout/app-sidebar"
 import { StatusBar } from "@/components/layout/status-bar"
 import { Toaster } from "@/components/ui/sonner"
+import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar"
 
 export function AppShell({ children }: { children: React.ReactNode }) {
   return (
-    <div className="flex h-dvh min-h-0 flex-col bg-[var(--oc-bg)]">
-      <StatusBar />
-      <div className="flex min-h-0 flex-1 overflow-hidden">
-        <NavRail />
-        {/* 唯一的捲動容器：內容再高也只捲這裡，不會長出全頁垂直捲軸。 */}
-        <main className="oc-scroll min-h-0 min-w-0 flex-1 overflow-auto p-4">
+    <SidebarProvider className="min-h-0">
+      <AppSidebar />
+      <SidebarInset className="flex h-dvh min-h-0 flex-col overflow-hidden bg-background">
+        <StatusBar />
+        <main className="min-h-0 min-w-0 flex-1 overflow-auto p-4">
           {children}
         </main>
-      </div>
+      </SidebarInset>
       <Toaster />
-    </div>
+    </SidebarProvider>
   )
 }

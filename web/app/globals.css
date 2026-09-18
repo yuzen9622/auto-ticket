@@ -3,53 +3,7 @@
 
 @custom-variant dark (&:is(.dark *));
 
-:root {
-  /* — OpenCode Terminal Mono 原始 token — */
-  --oc-bg: #201d1d;
-  --oc-fg: #fdfcfc;
-  --oc-muted: #9a9898;
-  --oc-accent: #007aff; /* Apple HIG blue   — focus / active / link */
-  --oc-danger: #ff3b30; /* Apple HIG red    — error / emergency    */
-  --oc-success: #30d158; /* Apple HIG green  — success / active     */
-  --oc-warning: #ff9f0a; /* Apple HIG orange — warning / countdown  */
-  --oc-border: rgba(255, 255, 255, 0.12);
-  --oc-radius: 4px;
-
-  /* — 由 --oc-bg 沿暖黑軸推導的層級（唯一允許的衍生色） — */
-  --oc-sunken: #1a1818;
-  --oc-surface: #262222;
-  --oc-surface-2: #2c2727;
-
-  /* — shadcn/ui 對接 — */
-  --background: var(--oc-bg);
-  --foreground: var(--oc-fg);
-  --card: var(--oc-surface);
-  --card-foreground: var(--oc-fg);
-  --popover: var(--oc-surface);
-  --popover-foreground: var(--oc-fg);
-  --primary: var(--oc-accent);
-  --primary-foreground: var(--oc-fg);
-  --secondary: var(--oc-surface-2);
-  --secondary-foreground: var(--oc-fg);
-  --muted: var(--oc-surface-2);
-  --muted-foreground: var(--oc-muted);
-  --accent: var(--oc-surface-2);
-  --accent-foreground: var(--oc-fg);
-  --destructive: var(--oc-danger);
-  --destructive-foreground: var(--oc-fg);
-  --border: var(--oc-border);
-  --input: var(--oc-border);
-  --ring: var(--oc-accent);
-  --radius: var(--oc-radius);
-}
-
 @theme inline {
-  --font-mono:
-    var(--font-geist-mono), var(--font-jetbrains-mono), ui-monospace,
-    SFMono-Regular, Menlo, monospace;
-  --font-sans: var(--font-mono); /* 全站純等寬：sans 指向 mono */
-  --font-serif: var(--font-mono); /* 全站純等寬：serif 指向 mono */
-
   --color-background: var(--background);
   --color-foreground: var(--foreground);
   --color-card: var(--card);
@@ -69,128 +23,185 @@
   --color-border: var(--border);
   --color-input: var(--input);
   --color-ring: var(--ring);
-
-  --color-oc-accent: var(--oc-accent);
-  --color-oc-danger: var(--oc-danger);
-  --color-oc-success: var(--oc-success);
-  --color-oc-warning: var(--oc-warning);
-  --color-oc-muted: var(--oc-muted);
-  --color-oc-sunken: var(--oc-sunken);
-  --color-oc-surface: var(--oc-surface);
-  --color-oc-surface-2: var(--oc-surface-2);
-
-  --radius-sm: 2px;
-  --radius-md: 4px;
-  --radius-lg: 4px; /* 刻意：不提供大圓角，杜絕典型 AI Dashboard 卡片 */
-  --radius-xl: 4px;
-
-  --text-xs: 11px;
-  --text-sm: 12px;
-  --text-base: 13px; /* 密度 8/10：基準字級壓到 13px */
-  --text-lg: 15px;
-  --text-xl: 18px;
-  --text-2xl: 22px;
-
-  --spacing: 4px; /* 4px 網格，對齊字符格 */
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+  --font-sans: Geist, sans-serif;
+  --font-mono: Geist Mono, monospace;
+  --font-serif: Georgia, serif;
+  --radius: 0.5rem;
+  --tracking-tighter: calc(var(--tracking-normal) - 0.05em);
+  --tracking-tight: calc(var(--tracking-normal) - 0.025em);
+  --tracking-wide: calc(var(--tracking-normal) + 0.025em);
+  --tracking-wider: calc(var(--tracking-normal) + 0.05em);
+  --tracking-widest: calc(var(--tracking-normal) + 0.1em);
+  --tracking-normal: var(--tracking-normal);
+  --shadow-2xl: var(--shadow-2xl);
+  --shadow-xl: var(--shadow-xl);
+  --shadow-lg: var(--shadow-lg);
+  --shadow-md: var(--shadow-md);
+  --shadow: var(--shadow);
+  --shadow-sm: var(--shadow-sm);
+  --shadow-xs: var(--shadow-xs);
+  --shadow-2xs: var(--shadow-2xs);
+  --spacing: var(--spacing);
+  --letter-spacing: var(--letter-spacing);
+  --shadow-offset-y: var(--shadow-offset-y);
+  --shadow-offset-x: var(--shadow-offset-x);
+  --shadow-spread: var(--shadow-spread);
+  --shadow-blur: var(--shadow-blur);
+  --shadow-opacity: var(--shadow-opacity);
+  --color-shadow-color: var(--shadow-color);
+  --radius-2xl: calc(var(--radius) * 1.8);
+  --radius-3xl: calc(var(--radius) * 2.2);
+  --radius-4xl: calc(var(--radius) * 2.6);
 }
 
-* {
+:root {
+  --radius: 0.5rem;
+  --background: oklch(0.9900 0 0);
+  --foreground: oklch(0 0 0);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0 0 0);
+  --popover: oklch(0.9900 0 0);
+  --popover-foreground: oklch(0 0 0);
+  --primary: oklch(0 0 0);
+  --primary-foreground: oklch(1 0 0);
+  --secondary: oklch(0.9400 0 0);
+  --secondary-foreground: oklch(0 0 0);
+  --muted: oklch(0.9700 0 0);
+  --muted-foreground: oklch(0.4400 0 0);
+  --accent: oklch(0.9400 0 0);
+  --accent-foreground: oklch(0 0 0);
+  --destructive: oklch(0.6300 0.1900 23.0300);
+  --destructive-foreground: oklch(1 0 0);
+  --border: oklch(0.9200 0 0);
+  --border: oklch(0.922 0 0);
+  --input: oklch(0.9400 0 0);
+  --input: oklch(0.922 0 0);
+  --ring: oklch(0 0 0);
+  --chart-1: oklch(0.8100 0.1700 75.3500);
+  --chart-2: oklch(0.5500 0.2200 264.5300);
+  --chart-3: oklch(0.7200 0 0);
+  --chart-4: oklch(0.9200 0 0);
+  --chart-5: oklch(0.5600 0 0);
+  --sidebar: oklch(0.9900 0 0);
+  --sidebar-foreground: oklch(0 0 0);
+  --sidebar-primary: oklch(0 0 0);
+  --sidebar-primary-foreground: oklch(1 0 0);
+  --sidebar-accent: oklch(0.9400 0 0);
+  --sidebar-accent-foreground: oklch(0 0 0);
+  --sidebar-border: oklch(0.9400 0 0);
+  --sidebar-border: oklch(0.922 0 0);
+  --sidebar-ring: oklch(0 0 0);
+  --font-sans: Geist, sans-serif;
+  --font-serif: Georgia, serif;
+  --font-mono: Geist Mono, monospace;
+  --shadow-color: hsl(0 0% 0%);
+  --shadow-opacity: 0.18;
+  --shadow-blur: 2px;
+  --shadow-spread: 0px;
+  --shadow-offset-x: 0px;
+  --shadow-offset-y: 1px;
+  --letter-spacing: 0em;
+  --spacing: 0.25rem;
+  --shadow-2xs: 0px 1px 2px 0px hsl(0 0% 0% / 0.09);
+  --shadow-xs: 0px 1px 2px 0px hsl(0 0% 0% / 0.09);
+  --shadow-sm: 0px 1px 2px 0px hsl(0 0% 0% / 0.18), 0px 1px 2px -1px hsl(0 0% 0% / 0.18);
+  --shadow: 0px 1px 2px 0px hsl(0 0% 0% / 0.18), 0px 1px 2px -1px hsl(0 0% 0% / 0.18);
+  --shadow-md: 0px 1px 2px 0px hsl(0 0% 0% / 0.18), 0px 2px 4px -1px hsl(0 0% 0% / 0.18);
+  --shadow-lg: 0px 1px 2px 0px hsl(0 0% 0% / 0.18), 0px 4px 6px -1px hsl(0 0% 0% / 0.18);
+  --shadow-xl: 0px 1px 2px 0px hsl(0 0% 0% / 0.18), 0px 8px 10px -1px hsl(0 0% 0% / 0.18);
+  --shadow-2xl: 0px 1px 2px 0px hsl(0 0% 0% / 0.45);
+  --tracking-normal: 0em;
+}
+
+.dark {
+  --background: oklch(0 0 0);
+  --foreground: oklch(1 0 0);
+  --card: oklch(0.1400 0 0);
+  --card-foreground: oklch(1 0 0);
+  --popover: oklch(0.1800 0 0);
+  --popover-foreground: oklch(1 0 0);
+  --primary: oklch(1 0 0);
+  --primary-foreground: oklch(0 0 0);
+  --secondary: oklch(0.2500 0 0);
+  --secondary-foreground: oklch(1 0 0);
+  --muted: oklch(0.2300 0 0);
+  --muted-foreground: oklch(0.7200 0 0);
+  --accent: oklch(0.3200 0 0);
+  --accent-foreground: oklch(1 0 0);
+  --destructive: oklch(0.6900 0.2000 23.9100);
+  --destructive-foreground: oklch(0 0 0);
+  --border: oklch(0.2600 0 0);
+  --border: oklch(0.269 0 0);
+  --input: oklch(0.3200 0 0);
+  --input: oklch(0.269 0 0);
+  --ring: oklch(0.7200 0 0);
+  --chart-1: oklch(0.8100 0.1700 75.3500);
+  --chart-2: oklch(0.5800 0.2100 260.8400);
+  --chart-3: oklch(0.5600 0 0);
+  --chart-4: oklch(0.4400 0 0);
+  --chart-5: oklch(0.9200 0 0);
+  --sidebar: oklch(0.1800 0 0);
+  --sidebar-foreground: oklch(1 0 0);
+  --sidebar-primary: oklch(1 0 0);
+  --sidebar-primary-foreground: oklch(0 0 0);
+  --sidebar-accent: oklch(0.3200 0 0);
+  --sidebar-accent-foreground: oklch(1 0 0);
+  --sidebar-border: oklch(0.3200 0 0);
+  --sidebar-border: oklch(0.269 0 0);
+  --sidebar-ring: oklch(0.7200 0 0);
+  --radius: 0.5rem;
+  --font-sans: Geist, sans-serif;
+  --font-serif: Georgia, serif;
+  --font-mono: Geist Mono, monospace;
+  --shadow-color: hsl(0 0% 0%);
+  --shadow-opacity: 0.18;
+  --shadow-blur: 2px;
+  --shadow-spread: 0px;
+  --shadow-offset-x: 0px;
+  --shadow-offset-y: 1px;
+  --letter-spacing: 0em;
+  --spacing: 0.25rem;
+  --shadow-2xs: 0px 1px 2px 0px hsl(0 0% 0% / 0.09);
+  --shadow-xs: 0px 1px 2px 0px hsl(0 0% 0% / 0.09);
+  --shadow-sm: 0px 1px 2px 0px hsl(0 0% 0% / 0.18), 0px 1px 2px -1px hsl(0 0% 0% / 0.18);
+  --shadow: 0px 1px 2px 0px hsl(0 0% 0% / 0.18), 0px 1px 2px -1px hsl(0 0% 0% / 0.18);
+  --shadow-md: 0px 1px 2px 0px hsl(0 0% 0% / 0.18), 0px 2px 4px -1px hsl(0 0% 0% / 0.18);
+  --shadow-lg: 0px 1px 2px 0px hsl(0 0% 0% / 0.18), 0px 4px 6px -1px hsl(0 0% 0% / 0.18);
+  --shadow-xl: 0px 1px 2px 0px hsl(0 0% 0% / 0.18), 0px 8px 10px -1px hsl(0 0% 0% / 0.18);
+  --shadow-2xl: 0px 1px 2px 0px hsl(0 0% 0% / 0.45);
+}
+
+*,
+::after,
+::before,
+::backdrop,
+::file-selector-button {
   border-color: var(--border);
 }
 
-html,
-body {
-  background: var(--oc-bg);
-  color: var(--oc-fg);
-  font-family: var(--font-mono);
-  font-variant-ligatures: none; /* 終端機語意：不連字 */
-  line-height: 1.5;
-  -webkit-font-smoothing: antialiased;
-}
-
-body {
-  font-size: var(--text-base);
-}
-
-h1,
-h2,
-h3,
-h4 {
-  font-weight: 700;
-  letter-spacing: -0.01em;
-}
-p,
-div,
-span {
-  font-weight: 400;
-}
-label,
-th,
-button {
-  font-weight: 500;
-}
-
-a {
-  color: var(--oc-accent);
-  text-decoration: underline; /* 規格：連結預設帶底線 */
-  text-underline-offset: 2px;
-}
-
-:focus-visible {
-  outline: 2px solid var(--oc-accent);
-  outline-offset: 2px;
-}
-
-.tabular {
-  font-variant-numeric: tabular-nums;
-}
-
-/* 唯二允許的動態：狀態轉移淡入、游標閃爍 */
-@keyframes oc-fade-in {
-  from {
-    opacity: 0;
+@layer base {
+  * {
+    @apply outline-ring/50;
   }
-  to {
-    opacity: 1;
-  }
-}
-@keyframes oc-blink {
-  0%,
-  49% {
-    opacity: 1;
-  }
-  50%,
-  100% {
-    opacity: 0;
-  }
-}
-
-.oc-enter {
-  animation: oc-fade-in 180ms ease-out both;
-}
-.oc-cursor {
-  animation: oc-blink 1s step-end infinite;
-}
-
-/* 日誌／終端機捲軸：細軌、暖黑，避免預設亮色捲軸破壞暗色終端語意 */
-.oc-scroll::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
-}
-.oc-scroll::-webkit-scrollbar-track {
-  background: transparent;
-}
-.oc-scroll::-webkit-scrollbar-thumb {
-  background: var(--oc-surface-2);
-  border-radius: 0;
-}
-
-@media (prefers-reduced-motion: reduce) {
-  *,
-  *::before,
-  *::after {
-    animation-duration: 0.01ms !important;
-    animation-iteration-count: 1 !important;
-    transition-duration: 0.01ms !important;
+  body {
+    @apply bg-background text-foreground;
+    letter-spacing: var(--tracking-normal);
   }
 }
