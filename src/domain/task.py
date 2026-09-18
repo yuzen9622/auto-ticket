@@ -6,6 +6,7 @@ from typing import Any, Self
 
 from pydantic import ConfigDict, Field, model_validator
 
+from domain.execution import ExecutionMode
 from domain.preference import TicketPreference
 from domain.types import DomainBaseModel, UtcDatetime
 
@@ -85,6 +86,8 @@ class PurchaseTaskSpec(DomainBaseModel):
     ticket_preference: TicketPreference
     contact_profile: UserContactProfile
     attendees: tuple[AttendeeProfile, ...] = ()
+    execution_mode: ExecutionMode = ExecutionMode.MOCK
+    """決定 Worker 掛哪一顆付款 adapter；舊 payload 沒有這個欄位時退回最保守的 MOCK。"""
     payment_method: PaymentMethod = PaymentMethod.CREDIT_CARD
     payment_profile: CreditCardProfile | None = None
     max_retries: int = Field(default=3, ge=0)

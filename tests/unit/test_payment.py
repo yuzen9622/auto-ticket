@@ -11,11 +11,14 @@ from adapters.payment import (
     MockPaymentProvider,
     PaymentOutcome,
     PaymentResult,
+    ManualCheckoutProvider,
     RealPaymentNotEnabledError,
     masked_last4,
+    select_payment_provider,
 )
 from adapters.payment.mock import TEST_CARD_SECURITY_CODE
 from adapters.ticketing.kktix.selectors import KKTIXSelectors
+from domain.execution import ExecutionMode, provider_allowed
 from domain.task import CreditCardProfile
 from telemetry.timeline import TimelineRecorder
 from tests.fake_page import FakePage
@@ -279,3 +282,59 @@ def test_masked_last4_handles_missing_profile() -> None:
 def test_payment_result_submitted_property() -> None:
     assert PaymentResult(PaymentOutcome.SUBMITTED, "x").submitted is True
     assert PaymentResult(PaymentOutcome.CHECKPOINT_REACHED, "x").submitted is False
+
+
+# ------------------------------------------------- 執行模式 → provider 選擇
+
+
+def test_mock_mode_selects_the_mock_provider() -> None:
+    provider = select_payment_provider(ExecutionMode.MOCK)
+    assert provider.name == "mock"
+
+
+def test_live_mode_never_falls_back_to_the_mock_provider() -> None:
+    """正式模式不得借用測試 provider——那會把公開測試卡號填進真實訂單。"""
+    provider = select_payment_provider(ExecutionMode.LIVE)
+    assert provider.name != "mock"
+    assert provider.name == "manual_checkout"
+
+
+def test_live_mode_with_both_switches_uses_the_real_card_provider(
+    enabled_env: None, profile: CreditCardProfile
+) -> None:
+    provider = select_payment_provider(ExecutionMode.LIVE, payment_profile=profile)
+    assert provider.name == "automated_credit_card"
+
+
+def test_live_mode_without_env_switch_hands_off_to_the_operator(
+    monkeypatch: pytest.MonkeyPatch, profile: CreditCardProfile
+) -> None:
+    monkeypatch.delenv(REAL_PAYMENT_ENV_VAR, raising=False)
+    provider = select_payment_provider(ExecutionMode.LIVE, payment_profile=profile)
+    assert provider.name == "manual_checkout"
+
+
+def test_every_selectable_provider_is_on_the_mode_allowlist() -> None:
+    for mode in ExecutionMode:
+        provider = select_payment_provider(mode)
+        assert provider_allowed(mode, provider.name)
+
+
+async def test_manual_checkout_never_clicks_confirm(payment_page: FakePage) -> None:
+    result = await ManualCheckoutProvider().pay(payment_page, None)
+    assert result.outcome is PaymentOutcome.CHECKPOINT_REACHED
+    assert result.detail["submitted"] is False
+    assert result.detail["requires_manual_completion"] is True
+    assert KKTIXSelectors.BTN_CONFIRM_PAYMENT not in payment_page.clicks
+
+
+async def test_manual_checkout_fills_no_card_fields(
+    payment_page: FakePage, profile: CreditCardProfile
+) -> None:
+    result = await ManualCheckoutProvider().pay(payment_page, profile)
+    blob = json.dumps(dict(result.detail), ensure_ascii=False)
+    assert REAL_PAN not in blob
+    assert REAL_CODE not in blob
+    assert TEST_CARD_NUMBER not in blob
+    assert TEST_CARD_NUMBER not in json.dumps(payment_page.fills, ensure_ascii=False)
+    assert REAL_PAN not in json.dumps(payment_page.fills, ensure_ascii=False)
