@@ -45,6 +45,9 @@ export interface VerificationRule {
 
 /* ---------- tasks ---------- */
 
+/** 正式或測試。付款 adapter 由後端依此決定，前端無法指定 adapter。 */
+export type ExecutionMode = "live" | "mock"
+
 export interface CreateTaskRequest {
   event_title: string
   event_url: string
@@ -53,7 +56,7 @@ export interface CreateTaskRequest {
   ticket_preference: TicketPreference
   contact_profile: UserContactProfile
   attendees: AttendeeProfile[]
-  payment_method: "mock"
+  execution_mode: ExecutionMode
   max_retries: number
   timeout_seconds: number
   verification_rules: VerificationRule[]
@@ -66,6 +69,7 @@ export interface TaskResponse {
   id: string
   event_id: string | null
   status: string
+  execution_mode: ExecutionMode
   spec: Record<string, unknown>
   scheduled_at: string | null
   started_at: string | null
@@ -116,19 +120,48 @@ export interface TicketTypeOut {
   raw_id: string | null
 }
 
+export interface TicketingProviderOut {
+  id: string
+  name: string
+  event_url: string
+}
+
 export interface EventOut {
   id: string
   platform: string
+  /** 內部主辦代號；顯示一律用 `organizer_name`。 */
   organizer: string
+  organizer_name: string | null
   event_slug: string
   title: string
+  description: string | null
   canonical_url: string
+  ticketing_providers: TicketingProviderOut[]
   status: string
   sale_start_at: string | null
   sale_end_at: string | null
   event_start_at: string | null
   ticket_types: TicketTypeOut[]
+  /** false 代表票種與開賣時間尚未由活動頁補齊。 */
+  detail_loaded: boolean
   raw_metadata: Record<string, unknown> | null
+}
+
+export interface EventSearchResult {
+  id: string
+  title: string
+  description: string | null
+  organizer: string | null
+  ticketing_providers: TicketingProviderOut[]
+  canonical_url: string
+  sale_start_at: string | null
+  event_start_at: string | null
+  status: string
+}
+
+export interface EventSearchResponse {
+  query: string
+  results: EventSearchResult[]
 }
 
 export interface EventCandidateOut {

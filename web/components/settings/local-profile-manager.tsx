@@ -2,6 +2,7 @@
 
 import * as React from "react"
 import { Trash2 } from "lucide-react"
+import { useTranslations } from "next-intl"
 import { toast } from "sonner"
 
 import { Panel } from "@/components/terminal/panel"
@@ -29,6 +30,8 @@ import {
 import { maskEmail, maskPhone } from "@/lib/mask"
 
 export function LocalProfileManager() {
+  const t = useTranslations("settings")
+  const tc = useTranslations("common")
   const [contacts, setContacts] = React.useState<StoredContact[]>([])
   const [attendees, setAttendees] = React.useState<StoredAttendee[]>([])
 
@@ -41,40 +44,38 @@ export function LocalProfileManager() {
   }, [])
 
   return (
-    <Panel title="本機聯絡人">
+    <Panel title={t("localProfileHeading")}>
       <div className="flex flex-col gap-3">
-        <p className="rounded-[4px] border border-[var(--oc-border)] bg-[var(--oc-sunken)] px-2 py-1 text-[11px] text-[var(--oc-muted)]">
-          這些資料只存在此瀏覽器，不會上傳。身分證字號從不寫入瀏覽器，只隨單次送出。
+        <p className="rounded-md border border-border bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
+          {t("localProfileNotice")}
         </p>
 
         <section className="flex flex-col gap-1">
-          <h3 className="text-[11px] tracking-wider text-[var(--oc-muted)] uppercase">
-            聯絡人 · {contacts.length}
+          <h3 className="text-xs font-semibold tracking-wider text-muted-foreground uppercase">
+            {t("contactsCount", { count: contacts.length })}
           </h3>
           {contacts.length === 0 ? (
-            <p className="text-[11px] text-[var(--oc-muted)]">
-              尚未儲存任何聯絡人。
-            </p>
+            <p className="text-xs text-muted-foreground">{t("noContacts")}</p>
           ) : (
             <ul className="flex flex-col">
               {contacts.map((c, i) => (
                 <li
                   key={`${c.name}-${c.phone}-${i}`}
-                  className="flex items-center gap-3 border-b border-[var(--oc-border)] py-1 text-[12px] last:border-b-0"
+                  className="flex items-center gap-3 border-b border-border py-1.5 text-xs last:border-b-0"
                 >
                   <span className="w-24 shrink-0 truncate">
                     {c.name || "—"}
                   </span>
-                  <span className="tabular w-28 shrink-0 text-[var(--oc-muted)]">
+                  <span className="tabular w-28 shrink-0 text-muted-foreground">
                     {maskPhone(c.phone)}
                   </span>
-                  <span className="min-w-0 flex-1 truncate text-[var(--oc-muted)]">
+                  <span className="min-w-0 flex-1 truncate text-muted-foreground">
                     {maskEmail(c.email)}
                   </span>
                   <Button
                     size="icon-sm"
                     variant="ghost"
-                    aria-label={`刪除聯絡人 ${c.name}`}
+                    aria-label={t("deleteContact", { name: c.name })}
                     onClick={() => setContacts(removeContact(i))}
                   >
                     <Trash2 />
@@ -86,30 +87,28 @@ export function LocalProfileManager() {
         </section>
 
         <section className="flex flex-col gap-1">
-          <h3 className="text-[11px] tracking-wider text-[var(--oc-muted)] uppercase">
-            參加人 · {attendees.length}
+          <h3 className="text-xs font-semibold tracking-wider text-muted-foreground uppercase">
+            {t("attendeesCount", { count: attendees.length })}
           </h3>
           {attendees.length === 0 ? (
-            <p className="text-[11px] text-[var(--oc-muted)]">
-              尚未儲存任何參加人。
-            </p>
+            <p className="text-xs text-muted-foreground">{t("noAttendees")}</p>
           ) : (
             <ul className="flex flex-col">
               {attendees.map((a, i) => (
                 <li
                   key={`${a.name}-${a.phone}-${i}`}
-                  className="flex items-center gap-3 border-b border-[var(--oc-border)] py-1 text-[12px] last:border-b-0"
+                  className="flex items-center gap-3 border-b border-border py-1.5 text-xs last:border-b-0"
                 >
                   <span className="w-24 shrink-0 truncate">
                     {a.name || "—"}
                   </span>
-                  <span className="tabular min-w-0 flex-1 text-[var(--oc-muted)]">
+                  <span className="tabular min-w-0 flex-1 text-muted-foreground">
                     {maskPhone(a.phone)}
                   </span>
                   <Button
                     size="icon-sm"
                     variant="ghost"
-                    aria-label={`刪除參加人 ${a.name}`}
+                    aria-label={t("deleteAttendee", { name: a.name })}
                     onClick={() => setAttendees(removeAttendee(i))}
                   >
                     <Trash2 />
@@ -128,27 +127,25 @@ export function LocalProfileManager() {
               className="self-start"
               disabled={contacts.length === 0 && attendees.length === 0}
             >
-              全部清除
+              {t("clearAll")}
             </Button>
           </AlertDialogTrigger>
           <AlertDialogContent>
             <AlertDialogHeader>
-              <AlertDialogTitle>清除所有本機聯絡人？</AlertDialogTitle>
-              <AlertDialogDescription>
-                將刪除此瀏覽器儲存的全部聯絡人與參加人資料，此操作無法復原。
-              </AlertDialogDescription>
+              <AlertDialogTitle>{t("clearHeading")}</AlertDialogTitle>
+              <AlertDialogDescription>{t("clearBody")}</AlertDialogDescription>
             </AlertDialogHeader>
             <AlertDialogFooter>
-              <AlertDialogCancel>取消</AlertDialogCancel>
+              <AlertDialogCancel>{tc("cancel")}</AlertDialogCancel>
               <AlertDialogAction
                 onClick={() => {
                   clearAllLocalProfiles()
                   setContacts([])
                   setAttendees([])
-                  toast.success("已清除本機聯絡人")
+                  toast.success(t("cleared"))
                 }}
               >
-                確認清除
+                {t("clearConfirm")}
               </AlertDialogAction>
             </AlertDialogFooter>
           </AlertDialogContent>

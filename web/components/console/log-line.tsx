@@ -1,17 +1,18 @@
 "use client"
 
 import { Copy } from "lucide-react"
+import { useTranslations } from "next-intl"
 
 import { levelLabel, type LogEntry, type LogLevel } from "@/lib/log-buffer"
 import { cn } from "@/lib/utils"
 
 export const LEVEL_TEXT_CLASS: Record<LogLevel, string> = {
-  error: "text-[var(--oc-danger)]",
-  state: "text-[var(--oc-accent)]",
-  shot: "text-[var(--oc-muted)]",
-  tick: "text-[var(--oc-warning)]",
-  info: "text-[var(--oc-fg)]",
-  snap: "text-[var(--oc-success)]",
+  error: "text-destructive",
+  state: "text-primary",
+  shot: "text-muted-foreground",
+  tick: "text-amber-600 dark:text-amber-400",
+  info: "text-foreground",
+  snap: "text-emerald-600 dark:text-emerald-400",
 }
 
 /** 單行日誌：`HH:mm:ss.SSS LEVEL <摘要>`，LEVEL 欄固定 5 字元寬。 */
@@ -24,14 +25,15 @@ export function LogLine({
   height: number
   onCopy: (text: string) => void
 }) {
+  const t = useTranslations("taskConsole")
   const text = `${entry.time}  ${levelLabel(entry.level)}  ${entry.summary}`
 
   return (
     <div
       style={{ height }}
-      className="group flex min-w-0 items-center gap-2 overflow-hidden px-3 leading-none hover:bg-[var(--oc-surface-2)]"
+      className="group flex min-w-0 items-center gap-2 overflow-hidden px-3 font-mono text-xs leading-none hover:bg-muted/50"
     >
-      <span className="tabular shrink-0 text-[var(--oc-muted)]">
+      <span className="tabular shrink-0 text-muted-foreground">
         {entry.time}
       </span>
       <span
@@ -47,10 +49,10 @@ export function LogLine({
       </span>
       <button
         type="button"
-        aria-label="複製此行"
-        title="複製此行"
+        aria-label={t("copyLine")}
+        title={t("copyLine")}
         onClick={() => onCopy(text)}
-        className="shrink-0 text-[var(--oc-muted)] opacity-0 group-hover:opacity-100 hover:text-[var(--oc-fg)] focus-visible:opacity-100"
+        className="shrink-0 cursor-pointer text-muted-foreground opacity-0 group-hover:opacity-100 hover:text-foreground focus-visible:opacity-100"
       >
         <Copy className="size-3" aria-hidden />
       </button>

@@ -1,22 +1,18 @@
 "use client"
 
+import { useTranslations } from "next-intl"
+
 import { Button } from "@/components/ui/button"
 import { EmptyState } from "@/components/terminal/empty-state"
 
-export default function GlobalError({
-  error,
-  reset,
-}: {
-  error: Error & { digest?: string }
-  reset: () => void
-}) {
+export default function GlobalError({ reset }: { reset: () => void }) {
+  const t = useTranslations("common")
   return (
     <EmptyState
-      message="發生未預期的錯誤"
-      hint={error.message}
+      message={t("unexpectedError")}
       action={
         <Button variant="outline" size="sm" onClick={reset}>
-          重試
+          {t("retry")}
         </Button>
       }
     />

@@ -2,21 +2,22 @@
 
 import * as React from "react"
 
+import { Badge } from "@/components/ui/badge"
 import {
   TONE_DOT_CLASS,
   TONE_TEXT_CLASS,
-  purchaseStateLabel,
+  jobStateTone,
   purchaseStateTone,
-  taskStatusLabel,
   taskStatusTone,
   type SemanticTone,
 } from "@/lib/fsm"
+import {
+  useJobStateLabel,
+  usePurchaseStateLabel,
+  useTaskStatusLabel,
+} from "@/lib/i18n/labels"
 import { cn } from "@/lib/utils"
 
-/**
- * 狀態色票。狀態轉移時以 180ms 淡入（`.oc-enter`），受 prefers-reduced-motion 保護。
- * `announce` 開啟時掛 aria-live="polite"：日誌區高頻更新不掛，只在狀態徽章播報。
- */
 export function StateBadge({
   value,
   tone,
@@ -26,26 +27,27 @@ export function StateBadge({
 }: {
   value: string
   tone: SemanticTone
-  label?: string
+  label: string
   announce?: boolean
   className?: string
 }) {
   return (
-    <span
+    <Badge
       key={value}
+      variant="secondary"
       {...(announce ? { "aria-live": "polite" as const } : {})}
       className={cn(
-        "oc-enter inline-flex items-center gap-1.5 rounded-[4px] border border-[var(--oc-border)] px-2 py-0.5 text-[11px] tracking-wider whitespace-nowrap uppercase",
+        "gap-1.5 border-0 font-normal",
         TONE_TEXT_CLASS[tone],
         className
       )}
     >
       <span
         aria-hidden
-        className={cn("size-2 shrink-0 rounded-full", TONE_DOT_CLASS[tone])}
+        className={cn("size-1.5 shrink-0 rounded-full", TONE_DOT_CLASS[tone])}
       />
-      {label ?? value}
-    </span>
+      {label}
+    </Badge>
   )
 }
 
@@ -58,11 +60,12 @@ export function TaskStatusBadge({
   announce?: boolean
   className?: string
 }) {
+  const label = useTaskStatusLabel()
   return (
     <StateBadge
       value={status}
       tone={taskStatusTone(status)}
-      label={`${status} ${taskStatusLabel(status)}`}
+      label={label(status)}
       announce={announce}
       className={className}
     />
@@ -78,12 +81,31 @@ export function PurchaseStateBadge({
   announce?: boolean
   className?: string
 }) {
+  const label = usePurchaseStateLabel()
   return (
     <StateBadge
       value={state}
       tone={purchaseStateTone(state)}
-      label={`${state} ${purchaseStateLabel(state)}`}
+      label={label(state)}
       announce={announce}
+      className={className}
+    />
+  )
+}
+
+export function JobStateBadge({
+  state,
+  className,
+}: {
+  state: string
+  className?: string
+}) {
+  const label = useJobStateLabel()
+  return (
+    <StateBadge
+      value={state}
+      tone={jobStateTone(state)}
+      label={label(state)}
       className={className}
     />
   )

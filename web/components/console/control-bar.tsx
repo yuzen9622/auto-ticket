@@ -1,6 +1,7 @@
 "use client"
 
 import * as React from "react"
+import { useTranslations } from "next-intl"
 import { toast } from "sonner"
 
 import { EmergencyDialog } from "@/components/console/emergency-dialog"
@@ -14,7 +15,7 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { PURCHASE_STATE, type PurchaseState } from "@/lib/contract"
-import { purchaseStateLabel } from "@/lib/fsm"
+import { useClientActionLabel, usePurchaseStateLabel } from "@/lib/i18n/labels"
 import type { ClientCommand } from "@/lib/ws/types"
 
 export function ControlBar({
@@ -24,26 +25,29 @@ export function ControlBar({
   connected: boolean
   onSend: (cmd: Omit<ClientCommand, "task_id">) => boolean
 }) {
+  const t = useTranslations("taskConsole")
+  const purchaseStateLabel = usePurchaseStateLabel()
+  const actionLabel = useClientActionLabel()
   const [targetState, setTargetState] =
     React.useState<PurchaseState>("SALE_OPEN")
 
   const send = (cmd: Omit<ClientCommand, "task_id">) => {
     if (onSend(cmd)) {
-      toast.success(`已送出 ${cmd.action}`)
+      toast.success(t("commandSent", { action: actionLabel(cmd.action) }))
     } else {
-      toast.error("WebSocket 未連線，指令未送出")
+      toast.error(t("commandNotSent"))
     }
   }
 
   return (
-    <div className="flex flex-wrap items-center gap-2 rounded-[4px] border border-[var(--oc-border)] bg-[var(--oc-surface)] px-3 py-2">
+    <div className="flex flex-wrap items-center gap-2 py-2">
       <Button
         variant="outline"
         size="sm"
         disabled={!connected}
         onClick={() => send({ action: "PAUSE" })}
       >
-        暫停
+        {t("pause")}
       </Button>
       <Button
         variant="outline"
@@ -51,16 +55,13 @@ export function ControlBar({
         disabled={!connected}
         onClick={() => send({ action: "RESUME" })}
       >
-        繼續
+        {t("resume")}
       </Button>
 
-      <span aria-hidden className="h-5 w-px bg-[var(--oc-border)]" />
+      <span aria-hidden className="h-5 w-px bg-border" />
 
-      <Label
-        htmlFor="target-state"
-        className="text-[11px] text-[var(--oc-muted)]"
-      >
-        強制轉移至
+      <Label htmlFor="target-state" className="text-xs text-muted-foreground">
+        {t("forceTransitionTo")}
       </Label>
       {/* target_state 只能從 PurchaseState 下拉選取，不接受自由輸入（計畫 §3.4 第 5 點）。 */}
       <Select
@@ -77,26 +78,26 @@ export function ControlBar({
         <SelectContent>
           {PURCHASE_STATE.map((s) => (
             <SelectItem key={s} value={s}>
-              {s} — {purchaseStateLabel(s)}
+              {purchaseStateLabel(s)}
             </SelectItem>
           ))}
         </SelectContent>
       </Select>
       <Button
-        variant="accent"
+        variant="default"
         size="sm"
         disabled={!connected}
         onClick={() =>
           send({ action: "FORCE_TRANSITION", target_state: targetState })
         }
       >
-        強制轉移
+        {t("forceTransition")}
       </Button>
 
       <div className="ml-auto flex items-center gap-2">
         {!connected && (
-          <span className="text-[11px] text-[var(--oc-muted)]">
-            未連線，控制指令不可用
+          <span className="text-xs text-muted-foreground">
+            {t("disconnected")}
           </span>
         )}
         <EmergencyDialog

@@ -1,5 +1,7 @@
 "use client"
 
+import * as React from "react"
+import { useTranslations } from "next-intl"
 import { useQuery } from "@tanstack/react-query"
 
 import { ClockPanel } from "@/components/console/clock-panel"
@@ -14,13 +16,49 @@ import { Panel } from "@/components/terminal/panel"
 import { getTask } from "@/lib/api/tasks"
 import { formatDateTime } from "@/lib/format"
 import { isTaskFinished } from "@/lib/fsm"
+import { useApiErrorMessage } from "@/lib/i18n/errors"
+import {
+  useExecutionModeLabel,
+  useJobStateLabel,
+  usePurchaseStateLabel,
+} from "@/lib/i18n/labels"
 import { useTaskSocket } from "@/lib/ws/use-task-socket"
 
+/** 倒數停止後要說的結果，取自任務終態與最後一個購票狀態。 */
+function useResultLabel() {
+  const t = useTranslations("taskConsole")
+  return React.useCallback(
+    (taskStatus: string | null, purchaseState: string | null): string => {
+      if (purchaseState === "SOLD_OUT") return t("resultSoldOut")
+      if (purchaseState === "TIMEOUT") return t("resultTimeout")
+      switch (taskStatus) {
+        case "COMPLETED":
+          return t("resultCompleted")
+        case "FAILED":
+          return t("resultFailed")
+        case "CANCELLED":
+          return t("resultCancelled")
+        default:
+          return t("resultFinished")
+      }
+    },
+    [t]
+  )
+}
+
 export function LiveConsole({ taskId }: { taskId: string }) {
+  const t = useTranslations("taskConsole")
+  const common = useTranslations("common")
+  const apiErrorMessage = useApiErrorMessage()
+  const purchaseStateLabel = usePurchaseStateLabel()
+  const executionModeLabel = useExecutionModeLabel()
+  const jobStateLabel = useJobStateLabel()
+  const resultLabel = useResultLabel()
+
   const { data, isLoading, isError, error } = useQuery({
     queryKey: ["task", taskId],
     queryFn: () => getTask(taskId),
-    // 終態後停止輪詢；其餘 3s 跟上 job_state 變化。
+    // 終態後停止輪詢；其餘 3s 跟上執行狀態變化。
     refetchInterval: (query) =>
       query.state.data && isTaskFinished(query.state.data.task.status)
         ? false
@@ -30,13 +68,10 @@ export function LiveConsole({ taskId }: { taskId: string }) {
   const taskStatus = data?.task.status ?? null
   const socket = useTaskSocket(taskId, { taskStatus })
 
-  if (isLoading) return <EmptyState message="載入任務" />
+  if (isLoading) return <EmptyState message={t("loading")} />
   if (isError || !data) {
     return (
-      <EmptyState
-        message="無法載入此任務"
-        hint={error instanceof Error ? error.message : undefined}
-      />
+      <EmptyState message={t("loadFailed")} hint={apiErrorMessage(error)} />
     )
   }
 
@@ -52,8 +87,8 @@ export function LiveConsole({ taskId }: { taskId: string }) {
       />
 
       {/* xl 以上鎖死單列高（面板各自內捲）；窄幅改成網格自己捲動，
-          兩者都不讓內容擐破 flex-1，底部 ControlBar 才不會被擠出畫面。 */}
-      <div className="oc-scroll grid min-h-0 min-w-0 flex-1 grid-cols-1 gap-3 overflow-y-auto xl:grid-cols-[220px_minmax(0,1fr)_260px] xl:grid-rows-[minmax(0,1fr)] xl:overflow-hidden">
+          兩者都不讓內容撐破 flex-1，底部 ControlBar 才不會被擠出畫面。 */}
+      <div className="grid min-h-0 min-w-0 flex-1 grid-cols-1 gap-3 overflow-y-auto xl:grid-cols-[220px_minmax(0,1fr)_260px] xl:grid-rows-[minmax(0,1fr)] xl:overflow-hidden">
         <StateRail
           currentState={currentState}
           visitedStates={socket.visitedStates}
@@ -61,38 +96,65 @@ export function LiveConsole({ taskId }: { taskId: string }) {
 
         <div className="flex min-h-0 min-w-0 flex-col gap-3">
           <div className="grid min-w-0 shrink-0 grid-cols-1 gap-3 md:grid-cols-2">
-            <ClockPanel clock={socket.clock} />
-            <Panel title="任務摘要">
-              <KvRow label="目前狀態" value={currentState ?? "—"} />
+            <ClockPanel
+              clock={socket.clock}
+              clockReceivedAt={socket.clockReceivedAt}
+              resultLabel={resultLabel(taskStatus, currentState)}
+            />
+
+            <Panel title={t("summaryHeading")}>
               <KvRow
-                label="已通過狀態"
+                label={t("currentState")}
+                value={
+                  currentState
+                    ? purchaseStateLabel(currentState)
+                    : common("none")
+                }
+              />
+              <KvRow
+                label={t("visitedStates")}
                 value={String(socket.visitedStates.length)}
               />
               <KvRow
-                label="scheduled_at"
+                label={t("executionMode")}
+                value={executionModeLabel(data.task.execution_mode)}
+              />
+              <KvRow
+                label={t("scheduledAt")}
                 value={formatDateTime(data.task.scheduled_at)}
               />
               <KvRow
-                label="started_at"
+                label={t("startedAt")}
                 value={formatDateTime(data.task.started_at)}
               />
               <KvRow
-                label="finished_at"
+                label={t("finishedAt")}
                 value={formatDateTime(data.task.finished_at)}
               />
-              <KvRow
-                label="payment_method"
-                value="mock"
-                tone="text-[var(--oc-warning)]"
-              />
-              <p className="pt-1 text-[10px] text-[var(--oc-warning)]">
-                MOCK 測試模式 — 不會發生真實付款
-              </p>
+
               {data.task.error_message && (
-                <p className="pt-1 text-[11px] text-[var(--oc-danger)]">
+                <p className="pt-1 text-xs text-destructive">
                   {data.task.error_message}
                 </p>
               )}
+
+              {/* 技術資訊預設收起：一般使用者不需要看到內部識別碼。 */}
+              <details className="pt-2">
+                <summary className="cursor-pointer text-xs text-muted-foreground">
+                  {t("technicalDetails")}
+                </summary>
+                <div className="pt-1">
+                  <KvRow label={t("taskId")} value={data.task.id} />
+                  <KvRow
+                    label={t("jobId")}
+                    value={data.job_id ?? common("none")}
+                  />
+                  <KvRow
+                    label={t("jobState")}
+                    value={jobState ? jobStateLabel(jobState) : common("none")}
+                  />
+                </div>
+              </details>
             </Panel>
           </div>
 

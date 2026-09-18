@@ -5,7 +5,6 @@ import {
   isFinalState,
   isTaskFinished,
   purchaseStateIndex,
-  purchaseStateLabel,
   purchaseStateTone,
   taskStatusTone,
 } from "@/lib/fsm"
@@ -44,13 +43,12 @@ describe("isTaskFinished", () => {
   })
 })
 
-describe("色票與標籤涵蓋全部 enum 值", () => {
-  it("每個 PurchaseState 都有語意色與標籤", () => {
+describe("色票涵蓋全部 enum 值", () => {
+  it("每個 PurchaseState 都有語意色", () => {
     for (const s of PURCHASE_STATE) {
       expect(["muted", "accent", "success", "warning", "danger"]).toContain(
         purchaseStateTone(s)
       )
-      expect(purchaseStateLabel(s)).not.toBe("")
     }
   })
 

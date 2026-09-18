@@ -50,7 +50,13 @@ describe("deriveLevel", () => {
         type: "CLOCK_TICK",
         task_id: "t1",
         timestamp: TS,
-        payload: { server_time: TS, time_to_sale_ms: 1000, clock_offset_ms: 3 },
+        payload: {
+          server_time: TS,
+          phase: "waiting_for_sale",
+          time_to_sale_ms: 1000,
+          time_to_timeout_ms: null,
+          clock_offset_ms: 3,
+        },
       })
     ).toBe("tick")
     expect(

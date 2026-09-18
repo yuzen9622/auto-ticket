@@ -27,15 +27,6 @@ export function derivePageState(
   return "UNKNOWN"
 }
 
-export const PAGE_STATE_LABEL: Record<PageState, string> = {
-  LIVE: "即時連線",
-  SCHEDULED: "已排程",
-  WARMING_UP: "預熱中",
-  PAUSED: "已暫停",
-  FINISHED: "已結束",
-  UNKNOWN: "未知",
-}
-
 export const PAGE_STATE_TONE: Record<PageState, SemanticTone> = {
   LIVE: "success",
   SCHEDULED: "accent",
@@ -43,13 +34,6 @@ export const PAGE_STATE_TONE: Record<PageState, SemanticTone> = {
   PAUSED: "warning",
   FINISHED: "muted",
   UNKNOWN: "muted",
-}
-
-export const WS_STATUS_LABEL: Record<WsStatus, string> = {
-  connecting: "連線中",
-  open: "已連線",
-  reconnecting: "重連中",
-  closed: "連線已結束",
 }
 
 export const WS_STATUS_TONE: Record<WsStatus, SemanticTone> = {

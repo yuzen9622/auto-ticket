@@ -1,12 +1,16 @@
+"use client"
+
 import Link from "next/link"
+import { useTranslations } from "next-intl"
 
 import { EmptyState } from "@/components/terminal/empty-state"
 
 export default function NotFound() {
+  const t = useTranslations("common")
   return (
     <EmptyState
-      message="404 — 找不到這個頁面"
-      action={<Link href="/">回到儀表板</Link>}
+      message={t("notFoundTitle")}
+      action={<Link href="/">{t("backToSearch")}</Link>}
     />
   )
 }

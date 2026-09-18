@@ -1,8 +1,18 @@
+"use client"
+
 import * as React from "react"
+import { useTranslations } from "next-intl"
 
 import { cn } from "@/lib/utils"
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table"
 
-/** 高密度表格：列高 36px、px-3、1px 分隔線、hover 底色，全部數值用 .tabular。 */
 export interface Column<T> {
   key: string
   header: React.ReactNode
@@ -24,57 +34,62 @@ export function DataGrid<T>({
   empty?: React.ReactNode
   className?: string
 }) {
+  const t = useTranslations("common")
   return (
-    <div className={cn("oc-scroll min-w-0 overflow-x-auto", className)}>
-      <table className="w-full border-collapse text-[12px]">
-        <thead>
-          <tr className="border-b border-[var(--oc-border)]">
+    <div
+      className={cn(
+        "w-full overflow-hidden rounded-md border border-border bg-card",
+        className
+      )}
+    >
+      <Table>
+        <TableHeader>
+          <TableRow className="border-b border-border hover:bg-transparent">
             {columns.map((c) => (
-              <th
+              <TableHead
                 key={c.key}
-                scope="col"
                 className={cn(
-                  "h-8 px-3 text-left text-[11px] tracking-wider whitespace-nowrap text-[var(--oc-muted)] uppercase",
+                  "h-10 px-4 text-xs font-semibold whitespace-nowrap text-muted-foreground",
                   c.headerClassName
                 )}
               >
                 {c.header}
-              </th>
+              </TableHead>
             ))}
-          </tr>
-        </thead>
-        <tbody>
+          </TableRow>
+        </TableHeader>
+        <TableBody>
           {rows.length === 0 ? (
-            <tr>
-              <td
+            <TableRow>
+              <TableCell
                 colSpan={columns.length}
-                className="h-24 px-3 text-center text-[var(--oc-muted)]"
+                className="h-24 text-center text-sm text-muted-foreground"
               >
-                {empty ?? "無資料"}
-              </td>
-            </tr>
+                {empty ?? t("noData")}
+              </TableCell>
+            </TableRow>
           ) : (
             rows.map((row) => (
-              <tr
+              <TableRow
                 key={rowKey(row)}
-                className="h-9 border-b border-[var(--oc-border)] transition-colors duration-150 ease-out hover:bg-[var(--oc-surface-2)]"
+                className="border-b border-border/50 transition-colors last:border-0 hover:bg-muted/40"
               >
                 {columns.map((c) => (
-                  <td
+                  <TableCell
                     key={c.key}
                     className={cn(
-                      "px-3 align-middle whitespace-nowrap",
+                      "px-4 py-2.5 align-middle text-sm whitespace-nowrap",
                       c.className
                     )}
                   >
                     {c.cell(row)}
-                  </td>
+                  </TableCell>
                 ))}
-              </tr>
+              </TableRow>
             ))
           )}
-        </tbody>
-      </table>
+        </TableBody>
+      </Table>
     </div>
   )
 }

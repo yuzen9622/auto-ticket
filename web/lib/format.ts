@@ -24,21 +24,27 @@ export function formatTimeOfDay(d: Date): string {
   return `${hh}:${mm}:${ss}.${ms}`
 }
 
-export function formatRelative(
+/** 相對時間的形狀；文案由 i18n 提供，這裡只決定用哪一個單位。 */
+export type RelativeTime =
+  | { unit: "never" }
+  | { unit: "justNow" }
+  | { unit: "seconds" | "minutes" | "hours" | "days"; value: number }
+
+export function relativeTime(
   value: string | null | undefined,
   now = Date.now()
-): string {
+): RelativeTime {
   const d = parseServerDate(value)
-  if (!d) return "從未"
+  if (!d) return { unit: "never" }
   const diff = Math.max(0, now - d.getTime())
-  if (diff < 1000) return "剛剛"
+  if (diff < 1000) return { unit: "justNow" }
   const s = Math.floor(diff / 1000)
-  if (s < 60) return `${s} 秒前`
+  if (s < 60) return { unit: "seconds", value: s }
   const m = Math.floor(s / 60)
-  if (m < 60) return `${m} 分前`
+  if (m < 60) return { unit: "minutes", value: m }
   const h = Math.floor(m / 60)
-  if (h < 24) return `${h} 小時前`
-  return `${Math.floor(h / 24)} 天前`
+  if (h < 24) return { unit: "hours", value: h }
+  return { unit: "days", value: Math.floor(h / 24) }
 }
 
 /** 毫秒 → 人眼可讀；null 顯示 `—`（不顯示 0，避免與「真的是 0」混淆）。 */
@@ -53,15 +59,17 @@ export function formatMs(value: number | null | undefined): string {
   return `${totalSeconds < 0 ? "-" : ""}${m}m ${s.toFixed(1)}s`
 }
 
-/** 倒數專用：固定 `-HH:MM:SS` 寬度，配合 tabular-nums 不跳動。 */
+/**
+ * 倒數專用：固定 `HH:MM:SS` 寬度，配合 tabular-nums 不跳動。
+ * 負數一律夾成 0——倒數過了頭是 `00:00:00`，不是負的時間。
+ */
 export function formatCountdown(ms: number | null | undefined): string {
   if (ms === null || ms === undefined) return "--:--:--"
-  const past = ms < 0
-  const total = Math.floor(Math.abs(ms) / 1000)
+  const total = Math.floor(Math.max(0, ms) / 1000)
   const hh = String(Math.floor(total / 3600)).padStart(2, "0")
   const mm = String(Math.floor((total % 3600) / 60)).padStart(2, "0")
   const ss = String(total % 60).padStart(2, "0")
-  return `${past ? "+" : "-"}${hh}:${mm}:${ss}`
+  return `${hh}:${mm}:${ss}`
 }
 
 export function formatCurrency(value: number | null | undefined): string {

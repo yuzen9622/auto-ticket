@@ -1,9 +1,38 @@
 import { apiFetch } from "./client"
 import type {
   EventOut,
+  EventSearchResponse,
   ResolveEventRequest,
   ResolveEventResponse,
 } from "./types"
+
+/**
+ * 依關鍵字或活動網址搜尋活動。
+ *
+ * 只送查詢字串——票券平台需要的主辦範圍由後端決定，使用者不必也不應該知道。
+ */
+export function searchEvents(
+  query: string,
+  options: { signal?: AbortSignal } = {}
+): Promise<EventSearchResponse> {
+  return apiFetch<EventSearchResponse>("/api/v1/events/search", {
+    query: { q: query },
+    signal: options.signal,
+  })
+}
+
+export function getEvent(
+  eventId: string,
+  options: { signal?: AbortSignal } = {}
+): Promise<EventOut> {
+  return apiFetch<EventOut>(`/api/v1/events/${encodeURIComponent(eventId)}`, {
+    signal: options.signal,
+  })
+}
+
+export function listEvents(platform = "kktix"): Promise<EventOut[]> {
+  return apiFetch<EventOut[]>("/api/v1/events", { query: { platform } })
+}
 
 export function resolveEvent(
   body: ResolveEventRequest
@@ -12,20 +41,4 @@ export function resolveEvent(
     method: "POST",
     body,
   })
-}
-
-export function listEvents(platform = "kktix"): Promise<EventOut[]> {
-  return apiFetch<EventOut[]>("/api/v1/events", { query: { platform } })
-}
-
-export function getEvent(eventId: string): Promise<EventOut> {
-  return apiFetch<EventOut>(`/api/v1/events/${encodeURIComponent(eventId)}`)
-}
-
-/**
- * 後端在缺少主辦代號時回 400 invalid_request，訊息含 "organizer feed scope"。
- * UI 據此導引使用者補 `orgs`，而不是把 400 當成通用錯誤。
- */
-export function needsOrganizerScope(message: string): boolean {
-  return message.toLowerCase().includes("organizer feed scope")
 }

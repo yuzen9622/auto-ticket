@@ -1,6 +1,7 @@
 "use client"
 
 import * as React from "react"
+import { useTranslations } from "next-intl"
 
 import { Button } from "@/components/ui/button"
 import type { UserContactProfile } from "@/lib/api/types"
@@ -11,7 +12,7 @@ import {
 } from "@/lib/local-profile"
 import { maskEmail, maskPhone } from "@/lib/mask"
 
-/** 常用聯絡人只存在此瀏覽器；身分證字號與密碼永遠不在其中。 */
+/** 常用聯絡人只存在這個瀏覽器；身分識別碼與密碼永遠不在其中。 */
 export function ContactPicker({
   current,
   onPick,
@@ -19,6 +20,7 @@ export function ContactPicker({
   current: UserContactProfile
   onPick: (contact: UserContactProfile) => void
 }) {
+  const t = useTranslations("taskForm")
   const [contacts, setContacts] = React.useState<StoredContact[]>([])
 
   // localStorage 只在瀏覽器存在，必須等掛載後才讀，否則 SSR/CSR 內容不一致。
@@ -29,42 +31,46 @@ export function ContactPicker({
   }, [])
 
   return (
-    <div className="flex flex-col gap-2 rounded-[4px] border border-[var(--oc-border)] p-2">
-      <div className="flex items-center justify-between">
-        <span className="text-[11px] text-[var(--oc-muted)]">
-          常用聯絡人（只存在此瀏覽器，不會上傳）
+    <div className="flex flex-col gap-2 rounded-md bg-muted/30 p-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <span className="text-xs text-muted-foreground">
+          {t("savedContacts")}
         </span>
         <Button
           type="button"
           size="sm"
           variant="outline"
-          disabled={!current.name || !current.phone}
+          disabled={current.name.trim() === ""}
           onClick={() => setContacts(saveContact(current))}
         >
-          儲存此聯絡人
+          {t("saveContact")}
         </Button>
       </div>
 
       {contacts.length === 0 ? (
-        <p className="text-[11px] text-[var(--oc-muted)]">
-          尚未儲存任何聯絡人。
-        </p>
+        <p className="text-xs text-muted-foreground">{t("noSavedContacts")}</p>
       ) : (
-        <ul className="flex flex-wrap gap-1">
-          {contacts.map((c, i) => (
-            <li key={`${c.name}-${c.phone}-${i}`}>
+        <ul className="flex flex-col gap-1">
+          {contacts.map((contact, i) => (
+            <li key={`${contact.email}-${i}`}>
               <Button
                 type="button"
                 size="sm"
                 variant="ghost"
+                className="w-full justify-start"
                 onClick={() =>
-                  onPick({ name: c.name, phone: c.phone, email: c.email })
+                  onPick({
+                    name: contact.name,
+                    phone: contact.phone,
+                    email: contact.email,
+                  })
                 }
-                title="帶入此聯絡人"
               >
-                <span className="tabular">
-                  {c.name} · {maskPhone(c.phone)} · {maskEmail(c.email)}
+                <span className="truncate">
+                  {contact.name} · {maskPhone(contact.phone)} ·{" "}
+                  {maskEmail(contact.email)}
                 </span>
+                <span className="sr-only">{t("useContact")}</span>
               </Button>
             </li>
           ))}

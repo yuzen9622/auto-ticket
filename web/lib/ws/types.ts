@@ -19,9 +19,16 @@ export interface StateChangedPayload {
   elapsed_ms: number
 }
 
+/** 倒數階段由伺服器判定，前端不得用本地時間自行推測。 */
+export type ClockPhase = "waiting_for_sale" | "ticketing" | "finished"
+
 export interface ClockTickPayload {
   server_time: string
-  time_to_sale_ms: number
+  phase: ClockPhase
+  /** 已夾在 0 以上；`finished` 階段為 null。 */
+  time_to_sale_ms: number | null
+  /** 本次搶票剩餘時間，同樣夾在 0 以上；未知或尚未開賣時為 null。 */
+  time_to_timeout_ms: number | null
   clock_offset_ms: number
 }
 

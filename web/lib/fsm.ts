@@ -6,7 +6,10 @@ import {
 
 export type SemanticTone = "muted" | "accent" | "success" | "warning" | "danger"
 
-/** 計畫 §4.4 狀態色映射。 */
+/**
+ * 狀態色映射。標籤不在這裡——所有面向使用者的文字一律走 i18n，
+ * 這個模組只決定顏色語意。
+ */
 const PURCHASE_STATE_TONE: Record<PurchaseState, SemanticTone> = {
   IDLE: "muted",
   PREPARING: "muted",
@@ -24,23 +27,6 @@ const PURCHASE_STATE_TONE: Record<PurchaseState, SemanticTone> = {
   FAILED: "danger",
 }
 
-const PURCHASE_STATE_LABEL: Record<PurchaseState, string> = {
-  IDLE: "閒置",
-  PREPARING: "準備中",
-  WAITING_FOR_SALE: "等待開賣",
-  SALE_OPEN: "開賣",
-  TICKET_SELECTION: "選票種",
-  SEAT_SELECTION: "選座位",
-  FORM_FILLING: "填表",
-  VERIFICATION_REQUIRED: "需驗證",
-  PAYMENT_REQUIRED: "需付款",
-  PAYMENT_PROCESSING: "付款中",
-  COMPLETED: "完成",
-  SOLD_OUT: "售罄",
-  TIMEOUT: "逾時",
-  FAILED: "失敗",
-}
-
 const TASK_STATUS_TONE: Record<string, SemanticTone> = {
   CREATED: "muted",
   CANCELLED: "muted",
@@ -51,18 +37,6 @@ const TASK_STATUS_TONE: Record<string, SemanticTone> = {
   PAUSED: "warning",
   COMPLETED: "success",
   FAILED: "danger",
-}
-
-const TASK_STATUS_LABEL: Record<string, string> = {
-  CREATED: "已建立",
-  SCHEDULED: "已排程",
-  PREPARING: "準備中",
-  READY: "就緒",
-  RUNNING: "執行中",
-  PAUSED: "已暫停",
-  COMPLETED: "已完成",
-  FAILED: "失敗",
-  CANCELLED: "已取消",
 }
 
 const JOB_STATE_TONE: Record<string, SemanticTone> = {
@@ -78,16 +52,8 @@ export function purchaseStateTone(state: string): SemanticTone {
   return PURCHASE_STATE_TONE[state as PurchaseState] ?? "muted"
 }
 
-export function purchaseStateLabel(state: string): string {
-  return PURCHASE_STATE_LABEL[state as PurchaseState] ?? state
-}
-
 export function taskStatusTone(status: string): SemanticTone {
   return TASK_STATUS_TONE[status] ?? "muted"
-}
-
-export function taskStatusLabel(status: string): string {
-  return TASK_STATUS_LABEL[status] ?? status
 }
 
 export function jobStateTone(state: string): SemanticTone {
@@ -110,25 +76,25 @@ export function purchaseStateIndex(state: string): number {
 }
 
 export const TONE_TEXT_CLASS: Record<SemanticTone, string> = {
-  muted: "text-[var(--oc-muted)]",
-  accent: "text-[var(--oc-accent)]",
-  success: "text-[var(--oc-success)]",
-  warning: "text-[var(--oc-warning)]",
-  danger: "text-[var(--oc-danger)]",
+  muted: "text-muted-foreground",
+  accent: "text-primary",
+  success: "text-emerald-600 dark:text-emerald-400",
+  warning: "text-amber-600 dark:text-amber-400",
+  danger: "text-destructive",
 }
 
 export const TONE_DOT_CLASS: Record<SemanticTone, string> = {
-  muted: "bg-[var(--oc-muted)]",
-  accent: "bg-[var(--oc-accent)]",
-  success: "bg-[var(--oc-success)]",
-  warning: "bg-[var(--oc-warning)]",
-  danger: "bg-[var(--oc-danger)]",
+  muted: "bg-muted-foreground",
+  accent: "bg-primary",
+  success: "bg-emerald-500",
+  warning: "bg-amber-500",
+  danger: "bg-destructive",
 }
 
 export const TONE_BORDER_CLASS: Record<SemanticTone, string> = {
-  muted: "border-[var(--oc-border)]",
-  accent: "border-[var(--oc-accent)]",
-  success: "border-[var(--oc-success)]",
-  warning: "border-[var(--oc-warning)]",
-  danger: "border-[var(--oc-danger)]",
+  muted: "border-border",
+  accent: "border-primary",
+  success: "border-emerald-500",
+  warning: "border-amber-500",
+  danger: "border-destructive",
 }

@@ -21,6 +21,7 @@ export interface TaskSocketState {
   status: WsStatus
   entries: LogEntry[]
   clock: ClockTickPayload | null
+  clockReceivedAt: number
   screenshots: ScreenshotPayload[]
   currentState: string | null
   visitedStates: string[]
@@ -38,6 +39,8 @@ export function useTaskSocket(
   const [status, setStatus] = React.useState<WsStatus>("connecting")
   const [entries, setEntries] = React.useState<LogEntry[]>([])
   const [clock, setClock] = React.useState<ClockTickPayload | null>(null)
+  // 收到這則時鐘訊息的本地時刻；倒數靠它補兩則訊息之間的秒數。
+  const [clockReceivedAt, setClockReceivedAt] = React.useState(0)
   const [screenshots, setScreenshots] = React.useState<ScreenshotPayload[]>([])
   const [currentState, setCurrentState] = React.useState<string | null>(null)
   const [visitedStates, setVisitedStates] = React.useState<string[]>([])
@@ -63,6 +66,7 @@ export function useTaskSocket(
     // CLOCK_TICK 是 1Hz ephemeral，不進日誌緩衝，否則數分鐘內淹沒畫面（R3）。
     if (msg.type === "CLOCK_TICK") {
       setClock(msg.payload)
+      setClockReceivedAt(Date.now())
     }
 
     if (msg.type === "STATE_CHANGED") {
@@ -198,6 +202,7 @@ export function useTaskSocket(
     status,
     entries,
     clock,
+    clockReceivedAt,
     screenshots,
     currentState,
     visitedStates,

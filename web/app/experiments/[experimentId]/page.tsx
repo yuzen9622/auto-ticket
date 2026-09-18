@@ -3,6 +3,7 @@
 import * as React from "react"
 import Link from "next/link"
 import { useQuery } from "@tanstack/react-query"
+import { useTranslations } from "next-intl"
 
 import { MetricsPanel } from "@/components/experiments/metrics-panel"
 import { TimelineView } from "@/components/experiments/timeline-view"
@@ -15,19 +16,21 @@ export default function ExperimentDetailPage({
   params: Promise<{ experimentId: string }>
 }) {
   const { experimentId } = React.use(params)
+  const t = useTranslations("history")
+  const tc = useTranslations("common")
 
   const { data, isLoading, isError, error } = useQuery({
     queryKey: ["experiment", experimentId],
     queryFn: () => getExperiment(experimentId),
   })
 
-  if (isLoading) return <EmptyState message="載入中" />
+  if (isLoading) return <EmptyState message={tc("loading")} />
   if (isError || !data) {
     return (
       <EmptyState
-        message="無法載入此實驗"
+        message={t("detailNotFound")}
         hint={error instanceof Error ? error.message : undefined}
-        action={<Link href="/experiments">回到實驗列表</Link>}
+        action={<Link href="/experiments">{t("backToList")}</Link>}
       />
     )
   }

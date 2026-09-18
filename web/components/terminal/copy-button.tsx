@@ -2,6 +2,7 @@
 
 import * as React from "react"
 import { Check, Copy } from "lucide-react"
+import { useTranslations } from "next-intl"
 
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
@@ -17,6 +18,7 @@ export function CopyButton({
   className?: string
   size?: "icon-sm" | "sm"
 }) {
+  const t = useTranslations("common")
   const [copied, setCopied] = React.useState(false)
 
   React.useEffect(() => {
@@ -38,12 +40,14 @@ export function CopyButton({
       variant="ghost"
       size={size}
       onClick={onCopy}
-      aria-label={label ?? "複製"}
-      title={label ?? "複製"}
+      aria-label={label ?? t("copy")}
+      title={label ?? t("copy")}
       className={cn(className)}
     >
-      {copied ? <Check className="text-[var(--oc-success)]" /> : <Copy />}
-      {size === "sm" && <span>{copied ? "已複製" : (label ?? "複製")}</span>}
+      {copied ? <Check className="text-emerald-500" /> : <Copy />}
+      {size === "sm" && (
+        <span>{copied ? t("copied") : (label ?? t("copy"))}</span>
+      )}
     </Button>
   )
 }

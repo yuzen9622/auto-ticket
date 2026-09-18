@@ -2,6 +2,7 @@
 
 import * as React from "react"
 import { ArrowDown } from "lucide-react"
+import { useTranslations } from "next-intl"
 import { toast } from "sonner"
 
 import { LEVEL_TEXT_CLASS, LogLine } from "@/components/console/log-line"
@@ -41,6 +42,8 @@ const LEVELS: { level: LogLevel; label: string }[] = [
 const DEFAULT_LEVELS: LogLevel[] = ["info", "state", "error", "snap", "shot"]
 
 export function LogStream({ entries }: { entries: LogEntry[] }) {
+  const t = useTranslations("taskConsole")
+  const tc = useTranslations("common")
   const [levels, setLevels] = React.useState<Set<LogLevel>>(
     () => new Set(DEFAULT_LEVELS)
   )
@@ -101,12 +104,15 @@ export function LogStream({ entries }: { entries: LogEntry[] }) {
     }
   }, [])
 
-  const copyText = React.useCallback((text: string) => {
-    void navigator.clipboard.writeText(text).then(
-      () => toast.success("已複製"),
-      () => toast.error("複製失敗，瀏覽器未授權剪貼簿")
-    )
-  }, [])
+  const copyText = React.useCallback(
+    (text: string) => {
+      void navigator.clipboard.writeText(text).then(
+        () => toast.success(tc("copied")),
+        () => toast.error(tc("copyFailed"))
+      )
+    },
+    [tc]
+  )
 
   const toggleLevel = (level: LogLevel) => {
     setLevels((prev) => {
@@ -137,7 +143,7 @@ export function LogStream({ entries }: { entries: LogEntry[] }) {
 
   return (
     <Panel
-      title={`即時日誌 · ${visible.length} / ${entries.length}`}
+      title={t("logsCount", { visible: visible.length, total: entries.length })}
       bodyClassName="flex min-h-0 min-w-0 flex-col overflow-hidden p-0"
       className="min-h-[180px] min-w-0 flex-1 overflow-hidden"
       actions={
@@ -147,11 +153,11 @@ export function LogStream({ entries }: { entries: LogEntry[] }) {
           onClick={() => copyText(entriesToText(visible))}
           disabled={visible.length === 0}
         >
-          複製全部
+          {tc("copyAll")}
         </Button>
       }
     >
-      <div className="flex min-w-0 shrink-0 flex-wrap items-center gap-x-3 gap-y-1.5 border-b border-[var(--oc-border)] px-3 py-1.5">
+      <div className="flex min-w-0 shrink-0 flex-wrap items-center gap-x-3 gap-y-1.5 border-b border-border px-3 py-1.5">
         <div className="flex min-w-0 flex-wrap items-center gap-1">
           {LEVELS.map(({ level, label }) => {
             const on = levels.has(level)
@@ -162,13 +168,13 @@ export function LogStream({ entries }: { entries: LogEntry[] }) {
                 aria-pressed={on}
                 onClick={() => toggleLevel(level)}
                 className={cn(
-                  "shrink-0 rounded-[4px] border px-2 py-0.5 text-[10px] tracking-wider transition-colors duration-150 ease-out",
+                  "shrink-0 cursor-pointer rounded-md border px-2 py-0.5 text-[11px] tracking-wider transition-colors duration-150 ease-out",
                   on
                     ? cn(
-                        "border-[var(--oc-border)] bg-[var(--oc-surface-2)]",
+                        "border-border bg-accent font-medium",
                         LEVEL_TEXT_CLASS[level]
                       )
-                    : "border-transparent text-[var(--oc-muted)] hover:bg-[var(--oc-surface-2)]"
+                    : "border-transparent text-muted-foreground hover:bg-muted"
                 )}
               >
                 {label}
@@ -179,9 +185,9 @@ export function LogStream({ entries }: { entries: LogEntry[] }) {
         <Input
           value={search}
           onChange={(e) => setSearch(e.target.value)}
-          placeholder="搜尋日誌"
-          aria-label="搜尋日誌"
-          className="h-6 w-full min-w-0 text-[11px] sm:ml-auto sm:w-48"
+          placeholder={t("searchLogs")}
+          aria-label={t("searchLogs")}
+          className="h-7 w-full min-w-0 text-xs sm:ml-auto sm:w-48"
           autoComplete="off"
         />
       </div>
@@ -190,13 +196,11 @@ export function LogStream({ entries }: { entries: LogEntry[] }) {
         <div
           ref={scrollRef}
           onScroll={onScroll}
-          className="oc-scroll absolute inset-0 overflow-x-hidden overflow-y-auto bg-[var(--oc-sunken)] py-1 text-[12px]"
+          className="absolute inset-0 overflow-x-hidden overflow-y-auto bg-muted/20 py-1 text-xs"
         >
           {visible.length === 0 ? (
-            <p className="px-3 py-6 text-center text-[11px] text-[var(--oc-muted)]">
-              {entries.length === 0
-                ? "尚無日誌；連線後會先收到 snapshot。"
-                : "目前的等級篩選或搜尋條件沒有符合的日誌。"}
+            <p className="px-3 py-6 text-center text-xs text-muted-foreground">
+              {entries.length === 0 ? t("logsEmpty") : t("logsFiltered")}
             </p>
           ) : (
             <>
@@ -220,10 +224,10 @@ export function LogStream({ entries }: { entries: LogEntry[] }) {
           <button
             type="button"
             onClick={scrollToBottom}
-            className="absolute bottom-2 left-1/2 flex max-w-[calc(100%-1rem)] -translate-x-1/2 items-center gap-1.5 rounded-[4px] border border-[var(--oc-accent)] bg-[var(--oc-surface)] px-3 py-1 text-[11px] whitespace-nowrap text-[var(--oc-accent)]"
+            className="absolute bottom-2 left-1/2 flex max-w-[calc(100%-1rem)] -translate-x-1/2 cursor-pointer items-center gap-1.5 rounded-full border border-primary bg-card px-3 py-1 text-xs whitespace-nowrap text-primary shadow-xs"
           >
             <ArrowDown className="size-3" aria-hidden />
-            已暫停 · {pendingCount} 筆新訊息
+            {t("logsPaused", { count: pendingCount })}
           </button>
         )}
       </div>

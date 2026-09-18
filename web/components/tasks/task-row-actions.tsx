@@ -1,8 +1,10 @@
 "use client"
 
 import * as React from "react"
+import { useTranslations } from "next-intl"
 import Link from "next/link"
 import { useMutation, useQueryClient } from "@tanstack/react-query"
+import { CircuitBoard, Copy, MoreHorizontal } from "lucide-react"
 import { toast } from "sonner"
 
 import {
@@ -14,14 +16,16 @@ import {
   AlertDialogFooter,
   AlertDialogHeader,
   AlertDialogTitle,
-  AlertDialogTrigger,
 } from "@/components/ui/alert-dialog"
 import { Button } from "@/components/ui/button"
 import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
-} from "@/components/ui/tooltip"
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/animate-ui/components/radix/dropdown-menu"
 import { ApiError } from "@/lib/api/client"
 import {
   cancelTask,
@@ -32,12 +36,21 @@ import {
   startTask,
 } from "@/lib/api/tasks"
 import type { TaskResponse } from "@/lib/api/types"
-
-function errorMessage(err: unknown): string {
-  return err instanceof ApiError ? err.message : "操作失敗"
-}
+import { useApiErrorMessage } from "@/lib/i18n/errors"
+import { useTaskStatusLabel } from "@/lib/i18n/labels"
 
 export function TaskRowActions({ task }: { task: TaskResponse }) {
+  const t = useTranslations("taskList")
+  const common = useTranslations("common")
+  const apiErrorMessage = useApiErrorMessage()
+  const taskStatusLabel = useTaskStatusLabel()
+  const [showDeleteDialog, setShowDeleteDialog] = React.useState(false)
+
+  const onError = (error: unknown) =>
+    toast.error(
+      error instanceof ApiError ? apiErrorMessage(error) : t("actionFailed")
+    )
+
   const qc = useQueryClient()
   const invalidate = React.useCallback(() => {
     void qc.invalidateQueries({ queryKey: ["tasks"] })
@@ -46,93 +59,112 @@ export function TaskRowActions({ task }: { task: TaskResponse }) {
   const start = useMutation({
     mutationFn: () => startTask(task.id),
     onSuccess: (r) => {
-      toast.success(r.triggered ? "已觸發執行" : "已接受，等待排程")
+      toast.success(r.triggered ? t("started") : t("queued"))
       invalidate()
     },
-    onError: (e) => toast.error(errorMessage(e)),
+    onError,
   })
 
   const cancel = useMutation({
     mutationFn: () => cancelTask(task.id),
     onSuccess: (r) => {
-      toast.success(`已取消（${r.status}）`)
+      // 後端回的是原始狀態，播報前先翻譯。
+      toast.success(t("cancelled", { status: taskStatusLabel(r.status) }))
       invalidate()
     },
-    onError: (e) => toast.error(errorMessage(e)),
+    onError,
   })
 
   const remove = useMutation({
     mutationFn: () => deleteTask(task.id),
     onSuccess: () => {
-      toast.success("任務已刪除")
+      toast.success(t("deleted"))
       invalidate()
     },
-    onError: (e) => toast.error(errorMessage(e)),
+    onError,
   })
 
   const canDelete = isDeletable(task.status)
 
   return (
-    <div className="flex items-center justify-end gap-1">
-      <Button asChild variant="ghost" size="sm">
-        <Link href={`/tasks/${task.id}`}>主控台</Link>
-      </Button>
+    <>
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <Button variant="ghost" className="h-8 w-8 p-0">
+            <span className="sr-only">Open menu</span>
+            <MoreHorizontal className="h-4 w-4" />
+          </Button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="end">
+          <DropdownMenuLabel>{common("actions")}</DropdownMenuLabel>
+          <DropdownMenuItem
+            onClick={() => {
+              void navigator.clipboard.writeText(task.id)
+              toast.success(common("copied"))
+            }}
+          >
+            <Copy />
+            {common("copy")}
+          </DropdownMenuItem>
+          <DropdownMenuSeparator />
+          <DropdownMenuItem inset>
+            <Link href={`/tasks/${task.id}`}>{t("openConsole")}</Link>
+          </DropdownMenuItem>
+          {isStartable(task.status) && (
+            <DropdownMenuItem
+              disabled={start.isPending}
+              onClick={() => start.mutate()}
+            >
+              {t("start")}
+            </DropdownMenuItem>
+          )}
+          {isCancellable(task.status) && (
+            <DropdownMenuItem
+              disabled={cancel.isPending}
+              onClick={() => cancel.mutate()}
+            >
+              {t("cancelTask")}
+            </DropdownMenuItem>
+          )}
+          <DropdownMenuSeparator />
+          <DropdownMenuItem
+            disabled={!canDelete || remove.isPending}
+            className="text-destructive focus:text-destructive"
+            onClick={() => {
+              if (canDelete) setShowDeleteDialog(true)
+            }}
+          >
+            {t("deleteTask")}
+          </DropdownMenuItem>
+          {!canDelete && (
+            <p className="max-w-xs px-2 py-1 text-xs text-muted-foreground">
+              {t("deleteBlocked")}
+            </p>
+          )}
+        </DropdownMenuContent>
+      </DropdownMenu>
 
-      <Button
-        variant="accent"
-        size="sm"
-        disabled={!isStartable(task.status) || start.isPending}
-        onClick={() => start.mutate()}
-      >
-        啟動
-      </Button>
-
-      <Button
-        variant="outline"
-        size="sm"
-        disabled={!isCancellable(task.status) || cancel.isPending}
-        onClick={() => cancel.mutate()}
-      >
-        取消
-      </Button>
-
-      {canDelete ? (
-        <AlertDialog>
-          <AlertDialogTrigger asChild>
-            <Button variant="destructive" size="sm" disabled={remove.isPending}>
-              刪除
-            </Button>
-          </AlertDialogTrigger>
-          <AlertDialogContent>
-            <AlertDialogHeader>
-              <AlertDialogTitle>刪除任務？</AlertDialogTitle>
-              <AlertDialogDescription>
-                將永久刪除任務 {task.id}，此操作無法復原。
-              </AlertDialogDescription>
-            </AlertDialogHeader>
-            <AlertDialogFooter>
-              <AlertDialogCancel>取消</AlertDialogCancel>
-              <AlertDialogAction onClick={() => remove.mutate()}>
-                確認刪除
-              </AlertDialogAction>
-            </AlertDialogFooter>
-          </AlertDialogContent>
-        </AlertDialog>
-      ) : (
-        <Tooltip>
-          <TooltipTrigger asChild>
-            {/* disabled 按鈕不觸發 pointer 事件，用 span 承接 tooltip。 */}
-            <span tabIndex={0}>
-              <Button variant="destructive" size="sm" disabled>
-                刪除
-              </Button>
-            </span>
-          </TooltipTrigger>
-          <TooltipContent>
-            狀態 {task.status} 不可刪除；僅 CREATED / CANCELLED / FAILED 可刪。
-          </TooltipContent>
-        </Tooltip>
-      )}
-    </div>
+      <AlertDialog open={showDeleteDialog} onOpenChange={setShowDeleteDialog}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{t("deleteHeading")}</AlertDialogTitle>
+            <AlertDialogDescription>
+              {t("deleteBody", { id: task.id })}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>{common("cancel")}</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => {
+                remove.mutate()
+                setShowDeleteDialog(false)
+              }}
+            >
+              {t("deleteConfirm")}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </>
   )
 }

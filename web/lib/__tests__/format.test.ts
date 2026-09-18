@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest"
 import {
   formatCountdown,
   formatMs,
-  formatRelative,
+  relativeTime,
   parseServerDate,
   toOffsetIso,
 } from "@/lib/format"
@@ -44,12 +44,13 @@ describe("formatMs", () => {
 })
 
 describe("formatCountdown", () => {
-  it("未來時間帶負號，固定寬度", () => {
-    expect(formatCountdown(3661_000)).toBe("-01:01:01")
+  it("固定寬度，不帶正負號", () => {
+    expect(formatCountdown(3661_000)).toBe("01:01:01")
   })
 
-  it("已過時間帶正號", () => {
-    expect(formatCountdown(-5000)).toBe("+00:00:05")
+  it("負數一律夾成 00:00:00，畫面不會出現負的倒數", () => {
+    expect(formatCountdown(-5000)).toBe("00:00:00")
+    expect(formatCountdown(-1)).toBe("00:00:00")
   })
 
   it("null 顯示佔位", () => {
@@ -57,17 +58,26 @@ describe("formatCountdown", () => {
   })
 })
 
-describe("formatRelative", () => {
+describe("relativeTime", () => {
   const now = Date.parse("2026-09-18T10:00:00Z")
 
-  it("null 顯示「從未」", () => {
-    expect(formatRelative(null, now)).toBe("從未")
+  it("null 回 never，文案交給字典", () => {
+    expect(relativeTime(null, now)).toEqual({ unit: "never" })
   })
 
   it("各級距", () => {
-    expect(formatRelative("2026-09-18T09:59:30Z", now)).toBe("30 秒前")
-    expect(formatRelative("2026-09-18T09:30:00Z", now)).toBe("30 分前")
-    expect(formatRelative("2026-09-18T08:00:00Z", now)).toBe("2 小時前")
+    expect(relativeTime("2026-09-18T09:59:30Z", now)).toEqual({
+      unit: "seconds",
+      value: 30,
+    })
+    expect(relativeTime("2026-09-18T09:30:00Z", now)).toEqual({
+      unit: "minutes",
+      value: 30,
+    })
+    expect(relativeTime("2026-09-18T08:00:00Z", now)).toEqual({
+      unit: "hours",
+      value: 2,
+    })
   })
 })
 

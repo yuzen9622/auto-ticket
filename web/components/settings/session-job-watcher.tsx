@@ -2,6 +2,7 @@
 
 import * as React from "react"
 import { useMutation, useQuery } from "@tanstack/react-query"
+import { useTranslations } from "next-intl"
 import { toast } from "sonner"
 
 import { KvRow } from "@/components/terminal/kv-row"
@@ -14,7 +15,6 @@ import {
   requestLogin,
   requestSessionCheck,
 } from "@/lib/api/accounts"
-import { ApiError } from "@/lib/api/client"
 import type { JobOut } from "@/lib/api/types"
 import {
   TONE_BORDER_CLASS,
@@ -22,6 +22,8 @@ import {
   TONE_TEXT_CLASS,
   jobStateTone,
 } from "@/lib/fsm"
+import { useApiErrorMessage } from "@/lib/i18n/errors"
+import { useJobStateLabel } from "@/lib/i18n/labels"
 import {
   JOB_PROGRESS_STEPS,
   explainJobError,
@@ -29,17 +31,12 @@ import {
   jobKindLabel,
   jobOutcomeTone,
   jobStateHint,
-  jobStateLabel,
   jobStepCount,
   summarizeJobResult,
 } from "@/lib/session-job"
 import { cn } from "@/lib/utils"
 
 const POLL_INTERVAL_MS = 1000
-
-function errorMessage(err: unknown): string {
-  return err instanceof ApiError ? err.message : "操作失敗"
-}
 
 /** 三段式進度條：已完成的段落點亮，非終態時最後一段脈動表示仍在跑。 */
 function ProgressTrack({ state }: { state: string | null }) {
@@ -54,7 +51,7 @@ function ProgressTrack({ state }: { state: string | null }) {
           key={i}
           className={cn(
             "h-1 flex-1 rounded-[2px] transition-colors duration-200 ease-out",
-            i < done ? TONE_DOT_CLASS[tone] : "bg-[var(--oc-border)]",
+            i < done ? TONE_DOT_CLASS[tone] : "bg-muted",
             live && i === done - 1 && "animate-pulse"
           )}
         />
@@ -64,6 +61,9 @@ function ProgressTrack({ state }: { state: string | null }) {
 }
 
 export function SessionJobWatcher({ platform }: { platform: string }) {
+  const t = useTranslations("settings")
+  const apiErrorMessage = useApiErrorMessage()
+  const jobStateLabel = useJobStateLabel()
   const [jobId, setJobId] = React.useState<string | null>(null)
   const [startedAt, setStartedAt] = React.useState<number | null>(null)
   const [now, setNow] = React.useState(() => Date.now())
@@ -72,26 +72,26 @@ export function SessionJobWatcher({ platform }: { platform: string }) {
     setJobId(job.job_id)
     setStartedAt(Date.now())
     setNow(Date.now())
-    toast.success(`已送出${jobKindLabel(job.kind)}`)
+    toast.success(t("sessionSubmitted", { kind: jobKindLabel(job.kind) }))
   }
 
   const check = useMutation({
     mutationFn: () => requestSessionCheck(platform, "live"),
     onSuccess: onAccepted,
-    onError: (e) => toast.error(errorMessage(e)),
+    onError: (e) => toast.error(apiErrorMessage(e)),
   })
 
   const autoLogin = useMutation({
     mutationFn: () => requestLogin(platform, { mode: "auto", profile: "live" }),
     onSuccess: onAccepted,
-    onError: (e) => toast.error(errorMessage(e)),
+    onError: (e) => toast.error(apiErrorMessage(e)),
   })
 
   const manualLogin = useMutation({
     mutationFn: () =>
       requestLogin(platform, { mode: "manual", profile: "live" }),
     onSuccess: onAccepted,
-    onError: (e) => toast.error(errorMessage(e)),
+    onError: (e) => toast.error(apiErrorMessage(e)),
   })
 
   // 每秒輪詢直到 DONE / FAILED / CANCELLED。
@@ -126,11 +126,17 @@ export function SessionJobWatcher({ platform }: { platform: string }) {
     if (notifiedRef.current === job.job_id) return
     notifiedRef.current = job.job_id
     const label = jobKindLabel(job.kind)
-    if (job.state === "DONE") toast.success(`${label}成功`)
+    if (job.state === "DONE")
+      toast.success(t("sessionSucceeded", { kind: label }))
     else if (job.state === "FAILED")
-      toast.error(`${label}失敗：${explainJobError(job.error ?? "").title}`)
-    else toast.message(`${label}已取消`)
-  }, [job])
+      toast.error(
+        t("sessionFailed", {
+          kind: label,
+          reason: explainJobError(job.error ?? "").title,
+        })
+      )
+    else toast.message(t("sessionCancelled", { kind: label }))
+  }, [job, t])
 
   const pending =
     check.isPending || autoLogin.isPending || manualLogin.isPending
@@ -144,7 +150,7 @@ export function SessionJobWatcher({ platform }: { platform: string }) {
   const elapsed = startedAt === null ? null : formatElapsed(now - startedAt)
 
   return (
-    <Panel title="Session 與登入">
+    <Panel title={t("sessionHeading")}>
       <div className="flex min-w-0 flex-col gap-3">
         <div className="flex flex-wrap items-center gap-2">
           <Button
@@ -153,15 +159,15 @@ export function SessionJobWatcher({ platform }: { platform: string }) {
             disabled={busy}
             onClick={() => check.mutate()}
           >
-            Session Check
+            {t("sessionCheck")}
           </Button>
           <Button
-            variant="accent"
+            variant="default"
             size="sm"
             disabled={busy}
             onClick={() => autoLogin.mutate()}
           >
-            Auto Login
+            {t("autoLogin")}
           </Button>
           <Button
             variant="outline"
@@ -169,29 +175,23 @@ export function SessionJobWatcher({ platform }: { platform: string }) {
             disabled={busy}
             onClick={() => manualLogin.mutate()}
           >
-            Manual Login
+            {t("manualLogin")}
           </Button>
         </div>
 
-        <p className="text-[10px] text-[var(--oc-muted)]">
-          三項操作都在 Worker 端開瀏覽器執行，需先完成 `pnpm run setup`（含
-          `playwright install chromium`）並啟動 Worker。 Manual Login 另需以
-          --no-headless 啟動 Worker 才看得到視窗。
-        </p>
+        <p className="text-xs text-muted-foreground">{t("sessionHint")}</p>
 
         {jobId === null ? (
-          <p className="text-[11px] text-[var(--oc-muted)]">
-            尚未送出任何工作。
-          </p>
+          <p className="text-xs text-muted-foreground">{t("sessionEmpty")}</p>
         ) : (
-          <div className="flex min-w-0 flex-col gap-2 border-t border-[var(--oc-border)] pt-2">
+          <div className="flex min-w-0 flex-col gap-2 border-t border-border pt-2">
             <div className="flex flex-wrap items-center justify-between gap-2">
-              <span className="text-[12px] font-bold">
-                {job ? jobKindLabel(job.kind) : "工作"}
+              <span className="text-xs font-semibold">
+                {job ? jobKindLabel(job.kind) : t("job")}
               </span>
               <div className="flex items-center gap-2">
                 {elapsed !== null && (
-                  <span className="tabular text-[11px] text-[var(--oc-muted)]">
+                  <span className="tabular text-xs text-muted-foreground">
                     {elapsed}
                   </span>
                 )}
@@ -199,12 +199,12 @@ export function SessionJobWatcher({ platform }: { platform: string }) {
                   <StateBadge
                     value={state}
                     tone={jobStateTone(state)}
-                    label={`${state} ${jobStateLabel(state)}`}
+                    label={jobStateLabel(state)}
                     announce
                   />
                 ) : (
-                  <span className="text-[11px] text-[var(--oc-muted)]">
-                    輪詢中…
+                  <span className="text-xs text-muted-foreground">
+                    {t("sessionPolling")}
                   </span>
                 )}
               </div>
@@ -212,32 +212,32 @@ export function SessionJobWatcher({ platform }: { platform: string }) {
 
             <ProgressTrack state={state} />
 
-            <p className="text-[11px] text-[var(--oc-muted)]">
-              {state === null ? "正在讀取工作狀態…" : jobStateHint(state)}
+            <p className="text-xs text-muted-foreground">
+              {state === null ? t("sessionLoading") : jobStateHint(state)}
             </p>
 
             {failure && (
               <div
                 className={cn(
-                  "flex flex-col gap-1 rounded-[4px] border px-2 py-1.5",
+                  "flex flex-col gap-1 rounded-md border px-2.5 py-2",
                   TONE_BORDER_CLASS[jobOutcomeTone(job?.state ?? "FAILED")]
                 )}
               >
                 <p
                   className={cn(
-                    "text-[11px] font-bold",
+                    "text-xs font-semibold",
                     TONE_TEXT_CLASS[jobOutcomeTone(job?.state ?? "FAILED")]
                   )}
                 >
                   {failure.title}
                 </p>
                 {failure.hint && (
-                  <p className="text-[11px] break-words text-[var(--oc-muted)]">
+                  <p className="text-xs break-words text-muted-foreground">
                     {failure.hint}
                   </p>
                 )}
                 {job?.error && job.error !== failure.title && (
-                  <p className="text-[10px] break-all text-[var(--oc-muted)]">
+                  <p className="text-xs break-all text-muted-foreground">
                     {job.error}
                   </p>
                 )}
@@ -245,7 +245,7 @@ export function SessionJobWatcher({ platform }: { platform: string }) {
             )}
 
             {resultRows.length > 0 && (
-              <div className="flex flex-col rounded-[4px] border border-[var(--oc-border)] px-2 py-1">
+              <div className="flex flex-col rounded-md border border-border px-2 py-1">
                 {resultRows.map((row) => (
                   <KvRow
                     key={row.label}
@@ -257,12 +257,11 @@ export function SessionJobWatcher({ platform }: { platform: string }) {
               </div>
             )}
 
-            <KvRow label="job_id" value={jobId} />
+            <KvRow label={t("jobId")} value={jobId} />
 
             {isError && (
-              <p className="text-[11px] text-[var(--oc-danger)]">
-                無法讀取工作狀態：
-                {error instanceof Error ? error.message : "未知錯誤"}
+              <p className="text-xs text-destructive">
+                {t("sessionLoadFailed")}：{error ? apiErrorMessage(error) : ""}
               </p>
             )}
           </div>

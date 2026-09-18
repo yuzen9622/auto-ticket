@@ -1,6 +1,7 @@
 "use client"
 
 import * as React from "react"
+import { useTranslations } from "next-intl"
 
 import {
   AlertDialog,
@@ -25,33 +26,33 @@ export function EmergencyDialog({
   disabled?: boolean
   onConfirm: () => void
 }) {
+  const t = useTranslations("taskConsole")
+  const common = useTranslations("common")
   const [open, setOpen] = React.useState(false)
 
   return (
     <AlertDialog open={open} onOpenChange={setOpen}>
       <AlertDialogTrigger asChild>
         <Button variant="destructive" size="sm" disabled={disabled}>
-          緊急停止
+          {t("emergencyStop")}
         </Button>
       </AlertDialogTrigger>
       <AlertDialogContent>
         <AlertDialogHeader>
-          <AlertDialogTitle className="text-[var(--oc-danger)]">
-            確認緊急停止？
+          <AlertDialogTitle className="text-destructive">
+            {t("emergencyHeading")}
           </AlertDialogTitle>
-          <AlertDialogDescription>
-            將立刻中止此任務的自動購票流程，已保留的票券可能因此釋出。此操作無法復原。
-          </AlertDialogDescription>
+          <AlertDialogDescription>{t("emergencyBody")}</AlertDialogDescription>
         </AlertDialogHeader>
         <AlertDialogFooter>
-          <AlertDialogCancel>取消</AlertDialogCancel>
+          <AlertDialogCancel>{common("cancel")}</AlertDialogCancel>
           <AlertDialogAction
             onClick={() => {
               onConfirm()
               setOpen(false)
             }}
           >
-            確認緊急停止
+            {t("emergencyConfirm")}
           </AlertDialogAction>
         </AlertDialogFooter>
       </AlertDialogContent>

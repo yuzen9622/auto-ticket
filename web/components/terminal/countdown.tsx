@@ -5,41 +5,33 @@ import * as React from "react"
 import { formatCountdown } from "@/lib/format"
 import { cn } from "@/lib/utils"
 
-/** T-60s 內轉橘色警示。 */
+/** 進入最後一分鐘就轉為警示色。 */
 const WARNING_WINDOW_MS = 60_000
 
-/**
- * 開賣倒數。數字用 tabular-nums 固定字寬，逐位只在數值變動時淡入，
- * 避免整行重繪造成閃爍；prefers-reduced-motion 下動效自動停用。
- */
 export function Countdown({
-  timeToSaleMs,
+  remainingMs,
   className,
 }: {
-  timeToSaleMs: number | null
+  remainingMs: number | null
   className?: string
 }) {
-  const text = formatCountdown(timeToSaleMs)
-  const isWarning =
-    timeToSaleMs !== null &&
-    timeToSaleMs > 0 &&
-    timeToSaleMs <= WARNING_WINDOW_MS
-  const isPast = timeToSaleMs !== null && timeToSaleMs <= 0
+  const warning =
+    remainingMs !== null && remainingMs > 0 && remainingMs <= WARNING_WINDOW_MS
+  const text = formatCountdown(remainingMs)
 
   return (
-    <div
+    <span
       className={cn(
-        "tabular flex items-baseline gap-px text-[22px] leading-none font-bold",
-        isWarning && "text-[var(--oc-warning)]",
-        isPast && "text-[var(--oc-success)]",
+        "tabular block text-2xl font-bold tracking-tight",
+        remainingMs === 0
+          ? "text-muted-foreground"
+          : warning
+            ? "text-amber-500"
+            : "text-foreground",
         className
       )}
     >
-      {text.split("").map((ch, i) => (
-        <span key={`${i}-${ch}`} className="oc-enter inline-block">
-          {ch}
-        </span>
-      ))}
-    </div>
+      {text}
+    </span>
   )
 }
