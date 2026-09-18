@@ -5,7 +5,7 @@ import contextlib
 import uuid
 from typing import Any
 
-from adapters.payment.mock import MockPaymentProvider
+from adapters.payment import select_payment_provider
 from adapters.ticketing.kktix.adapter import KKTIXAdapter
 from adapters.verification.manual import ManualVerificationProvider
 from adapters.verification.rule_based import RuleBasedVerificationProvider
@@ -89,9 +89,27 @@ async def execute_purchase(
             prompt_for_answer, telemetry=telemetry
         )
 
+    # adapter 由後端允許清單依執行模式決定；spec 內的欄位不是 adapter 名稱。
+    payment = select_payment_provider(
+        spec.execution_mode,
+        telemetry=telemetry,
+        payment_profile=spec.payment_profile,
+    )
+    outbox.publish(
+        task_id=task_id,
+        experiment_id=experiment_id,
+        type=ServerMessageType.TASK_LOG.value,
+        payload={
+            "phase": "execution_mode",
+            "execution_mode": spec.execution_mode.value,
+            "payment_provider": payment.name,
+        },
+        ephemeral=False,
+    )
+
     adapter = KKTIXAdapter(
         telemetry=telemetry,
-        payment=MockPaymentProvider(),
+        payment=payment,
         verification=verification,
         attendees=spec.attendees,
     )
@@ -133,6 +151,7 @@ async def execute_purchase(
         experiment_id=experiment_id,
         scheduler=scheduler,
         hz=settings.clock_tick_hz,
+        timeout_seconds=spec.timeout_seconds,
     )
     ticker_task = asyncio.create_task(ticker.run())
 

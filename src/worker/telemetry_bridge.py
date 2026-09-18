@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from typing import Any
 
 from api.schemas.ws import ServerMessage, ServerMessageType
 from broker.outbox import OutboxWriter
+from telemetry.clock import build_clock_payload, ticketing_deadline
 from telemetry.timeline import (
     TimelineEvent,
     TimelineEventType,
@@ -111,7 +112,12 @@ class StreamingTimelineRecorder(TimelineRecorder):
 
 
 class ClockTicker:
-    """定期在開賣前產生 CLOCK_TICK 訊息發給 Outbox。"""
+    """週期性發出 CLOCK_TICK：開賣前數到開賣，開賣後數到本次搶票逾時。
+
+    開賣時間一到**不能**停——那正是搶票倒數該接手的時候。真正的終點是任務結束，
+    由 `stop()` 補上一則 `finished` tick，且刻意非 ephemeral，讓重連的前端
+    在回放時就能知道倒數已經結束。
+    """
 
     def __init__(
         self,
@@ -122,55 +128,54 @@ class ClockTicker:
         experiment_id: str | None = None,
         scheduler: Any = None,
         hz: float = 1.0,
+        timeout_seconds: int | float | None = None,
     ) -> None:
         self._outbox = outbox
         self._task_id = task_id
         self._sale_start_at = sale_start_at
         self._experiment_id = experiment_id
         self._scheduler = scheduler
+        self._deadline = ticketing_deadline(sale_start_at, timeout_seconds)
         try:
             val_hz = float(hz)
         except Exception:
             val_hz = 1.0
         self._interval_s = max(0.05, 1.0 / max(0.1, val_hz))
         self._running = False
+        self._finished_published = False
+
+    def _clock_offset_ms(self) -> float:
+        if self._scheduler is None or not hasattr(self._scheduler, "time_reference"):
+            return 0.0
+        ref = self._scheduler.time_reference
+        if ref is None:
+            return 0.0
+        try:
+            return float(getattr(ref, "offset_ms", 0.0))
+        except Exception:
+            return 0.0
+
+    def _publish(self, payload: dict[str, Any], *, ephemeral: bool) -> None:
+        self._outbox.publish(
+            task_id=self._task_id,
+            experiment_id=self._experiment_id,
+            type=ServerMessageType.CLOCK_TICK.value,
+            payload=payload,
+            ephemeral=ephemeral,
+        )
 
     async def run(self) -> None:
         self._running = True
         while self._running:
-            now_utc = datetime.now(timezone.utc)
-            offset_ms = 0.0
-            if self._scheduler is not None and hasattr(
-                self._scheduler, "time_reference"
-            ):
-                ref = self._scheduler.time_reference
-                if ref is not None:
-                    try:
-                        offset_ms = float(getattr(ref, "offset_ms", 0.0))
-                    except Exception:
-                        offset_ms = 0.0
-
-            adjusted_now = now_utc + timedelta(milliseconds=offset_ms)
-            time_to_sale_ms = (
-                self._sale_start_at - adjusted_now
-            ).total_seconds() * 1000.0
-
-            if time_to_sale_ms <= 0:
-                # 已過開賣時間，停止 ticker
-                break
-
-            self._outbox.publish(
-                task_id=self._task_id,
-                experiment_id=self._experiment_id,
-                type=ServerMessageType.CLOCK_TICK.value,
-                payload={
-                    "server_time": now_utc.isoformat(),
-                    "time_to_sale_ms": time_to_sale_ms,
-                    "clock_offset_ms": offset_ms,
-                },
+            self._publish(
+                build_clock_payload(
+                    now=datetime.now(timezone.utc),
+                    sale_start_at=self._sale_start_at,
+                    deadline=self._deadline,
+                    clock_offset_ms=self._clock_offset_ms(),
+                ),
                 ephemeral=True,
             )
-
             try:
                 await asyncio.sleep(self._interval_s)
             except asyncio.CancelledError:
@@ -178,3 +183,16 @@ class ClockTicker:
 
     def stop(self) -> None:
         self._running = False
+        if self._finished_published:
+            return
+        self._finished_published = True
+        self._publish(
+            build_clock_payload(
+                now=datetime.now(timezone.utc),
+                sale_start_at=self._sale_start_at,
+                deadline=self._deadline,
+                clock_offset_ms=self._clock_offset_ms(),
+                finished=True,
+            ),
+            ephemeral=False,
+        )
