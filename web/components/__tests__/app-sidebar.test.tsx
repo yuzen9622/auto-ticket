@@ -1,6 +1,6 @@
 import * as React from "react"
 import { describe, expect, it, vi } from "vitest"
-import { screen, within } from "@testing-library/react"
+import { screen, waitFor, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 
 import { renderWithProviders } from "./helpers/render"
@@ -151,7 +151,9 @@ describe("行動版側邊欄", () => {
     expect(within(drawer).getByRole("link", { name: "新增任務" })).toBeVisible()
 
     await user.keyboard("{Escape}")
-    expect(screen.queryByRole("dialog")).toBeNull()
+    await waitFor(() => {
+      expect(screen.queryByRole("dialog")).toBeNull()
+    })
     expect(screen.getByText("內容")).toBeVisible()
 
     Object.defineProperty(window, "innerWidth", {

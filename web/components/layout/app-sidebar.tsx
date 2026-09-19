@@ -15,8 +15,7 @@ import {
   SidebarMenuItem,
   SidebarRail,
   SidebarTrigger,
-} from "@/components/ui/sidebar"
-import { cn } from "@/lib/utils"
+} from "@/components/animate-ui/components/radix/sidebar"
 
 type NavKey = "newTask" | "tasks" | "history" | "settings"
 
@@ -78,14 +77,9 @@ export function AppSidebar() {
               <SidebarMenuItem key={item.href}>
                 <SidebarMenuButton
                   asChild
-
                   isActive={active}
                   tooltip={label}
-                  className={cn(
-                    "flex h-10 w-full items-center gap-3 rounded-lg px-3 text-sm font-medium transition-colors",
-                    "hover:bg-accent hover:text-accent-foreground",
-                    "data-[active=true]:bg-accent data-[active=true]:font-medium data-[active=true]:text-accent-foreground"
-                  )}
+                  className="h-10 px-3 text-sm font-medium"
                 >
                   <Link
                     href={item.href}

@@ -4,7 +4,7 @@ import * as React from "react"
 
 import { AppSidebar } from "@/components/layout/app-sidebar"
 import { Toaster } from "@/components/ui/sonner"
-import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar"
+import { SidebarInset, SidebarProvider } from "@/components/animate-ui/components/radix/sidebar"
 
 export function AppShell({ children }: { children: React.ReactNode }) {
   return (
