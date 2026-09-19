@@ -18,7 +18,6 @@ from storage.repositories.task_repository import TaskRepository
 from .. import queries
 from ..deps import get_accounts, get_broker, get_db
 from ..errors import (
-    ConflictError,
     InvalidRequestError,
     NotFoundError,
     UnsupportedError,
@@ -80,7 +79,7 @@ async def create_task(
             details={"reason": "account_not_configured", "platform": LIVE_PLATFORM},
         )
 
-    task_id = f"task_{uuid.uuid4().hex[:16]}"
+    task_id = uuid.uuid4().hex[:16]
     now = datetime.now(UTC)
     start_timing, sale_start_at = _resolve_start_timing(req.sale_start_at, now)
     spec = PurchaseTaskSpec(
@@ -201,14 +200,14 @@ async def cancel_task(
 async def delete_task(
     task_id: str,
     db: Database = Depends(get_db),
+    broker: SqliteTaskBroker = Depends(get_broker),
 ) -> Response:
     task = await queries.get_task(db, task_id)
     if task is None:
         raise NotFoundError(f"Task {task_id} not found")
-    if task.status not in ("CREATED", "CANCELLED", "FAILED"):
-        raise ConflictError(
-            f"Cannot delete task in status {task.status}; only CREATED, CANCELLED, or FAILED tasks may be deleted"
-        )
+    if task.status not in ("COMPLETED", "FAILED", "CANCELLED"):
+        # 行程外直接刪列會留下開著的瀏覽器；中止一律交由 Worker 收斂。
+        await broker.cancel(task_id)
     async with db.session() as session:
         orm = await session.get(PurchaseTaskModel, task_id)
         if orm is not None:

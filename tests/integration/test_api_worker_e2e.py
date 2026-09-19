@@ -73,7 +73,7 @@ async def test_e2e_task_lifecycle_api_and_worker(e2e_env) -> None:
                 ephemeral=False,
             )
             # 存入實驗紀錄
-            exp_id = f"exp_{job.task_id}"
+            exp_id = job.task_id or ""
             report = PurchaseReport(
                 task_id=job.task_id or "",
                 final_state="COMPLETED",

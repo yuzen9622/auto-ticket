@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from datetime import UTC, datetime, timedelta
 
 import httpx
@@ -7,10 +8,13 @@ import pytest
 
 from accounts.models import AccountStatus
 from api.main import create_app
-from broker.broker import SqliteTaskBroker
+from broker.broker import EMERGENCY_STOP_ACTION, SqliteTaskBroker
+from broker.control import list_signals
 from broker.jobs import JobKind, JobState
 from broker.schema import create_broker_schema
+from domain.task import TaskStatus
 from storage.database import Database
+from storage.repositories.task_repository import TaskRepository
 from tests.netguard import netguard_autouse  # noqa: F401
 
 
@@ -64,8 +68,8 @@ async def test_create_task_success(app_instance, db: Database) -> None:
         assert resp.status_code == 201
         data = resp.json()
         task_id = data["id"]
-        assert task_id.startswith("task_")
-        assert data["status"] == "CREATED"
+        assert re.fullmatch(r"[0-9a-f]{16}", task_id)
+        assert data["status"] == "SCHEDULED"
 
         # 驗證 broker 有建立對應的 PURCHASE job
         jobs = await broker.list_jobs(task_id=task_id)
@@ -85,7 +89,7 @@ async def test_create_task_success(app_instance, db: Database) -> None:
         assert get_resp.status_code == 200
         detail = get_resp.json()
         assert detail["task"]["id"] == task_id
-        assert detail["task"]["status"] == "CREATED"
+        assert detail["task"]["status"] == "SCHEDULED"
         assert detail["task"]["spec"]["event_title"] == "Test Concert 2026"
 
         # 查詢任務列表
@@ -285,3 +289,65 @@ async def test_sale_time_without_a_timezone_is_rejected(app_instance) -> None:
             json=dict(VALID_TASK_PAYLOAD, sale_start_at="2026-10-01T12:00:00"),
         )
         assert resp.status_code == 400
+
+
+async def _create_task(client: httpx.AsyncClient) -> str:
+    resp = await client.post("/api/v1/tasks", json=VALID_TASK_PAYLOAD)
+    assert resp.status_code == 201
+    return resp.json()["id"]
+
+
+async def test_completed_task_can_be_deleted(app_instance, db: Database) -> None:
+    """已完成的任務也得能刪；刪除不再看狀態白名單。"""
+    app, _ = app_instance
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://test",
+    ) as client:
+        task_id = await _create_task(client)
+        async with db.session() as session:
+            await TaskRepository(session).update_status(task_id, TaskStatus.COMPLETED)
+
+        del_resp = await client.delete(f"/api/v1/tasks/{task_id}")
+        assert del_resp.status_code == 204
+
+        get_resp = await client.get(f"/api/v1/tasks/{task_id}")
+        assert get_resp.status_code == 404
+
+
+async def test_running_task_is_stopped_before_it_is_deleted(
+    app_instance, db: Database
+) -> None:
+    """非終態先交給 broker 收斂，不留下開著瀏覽器的孤兒 job。"""
+    app, broker = app_instance
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://test",
+    ) as client:
+        task_id = await _create_task(client)
+        async with db.session() as session:
+            await TaskRepository(session).update_status(task_id, TaskStatus.RUNNING)
+
+        del_resp = await client.delete(f"/api/v1/tasks/{task_id}")
+        assert del_resp.status_code == 204
+
+        jobs = await broker.list_jobs(task_id=task_id)
+        signals = await list_signals(db, task_id=task_id)
+        assert any(job.state is JobState.CANCELLED for job in jobs) or any(
+            signal.action == EMERGENCY_STOP_ACTION for signal in signals
+        )
+
+        get_resp = await client.get(f"/api/v1/tasks/{task_id}")
+        assert get_resp.status_code == 404
+
+
+async def test_delete_is_idempotent_only_once(app_instance) -> None:
+    """同一筆只能刪一次，第二次是 404 而不是靜默成功。"""
+    app, _ = app_instance
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://test",
+    ) as client:
+        task_id = await _create_task(client)
+        assert (await client.delete(f"/api/v1/tasks/{task_id}")).status_code == 204
+        assert (await client.delete(f"/api/v1/tasks/{task_id}")).status_code == 404

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+
 import httpx
 import pytest
 from cryptography.fernet import Fernet
@@ -63,7 +65,7 @@ async def test_accounts_status_and_credentials_vault(accounts_app) -> None:
         assert check_resp.status_code == 202
         check_data = check_resp.json()
         job_id = check_data["job_id"]
-        assert job_id.startswith("job_")
+        assert re.fullmatch(r"[0-9a-f]{16}", job_id)
 
         # 驗證 broker 中有 SESSION_CHECK 任務
         job = await broker.get(job_id)

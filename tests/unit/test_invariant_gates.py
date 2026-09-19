@@ -125,3 +125,85 @@ def test_the_real_project_has_no_credential_sinks() -> None:
         assert check_invariants.credential_leak_violations(
             check_invariants.parse(rel), rel
         ) == []
+
+
+# G33 的違規範例一律是純字串常數：寫成真的 f-string 會讓 G33 掃到本檔而自我紅燈。
+PREFIXED_FSTRINGS = [
+    'x = f"task_{tid}"',
+    'x = f"exp_{eid}"',
+    'x = f"job_{jid}"',
+    'x = f"ev_{evid}"',
+    'x = f"tt_{ttid}"',
+]
+
+PREFIXED_CONCATS = [
+    'x = "exp_" + tid',
+    'x = "a" + "tt_" + ttid',
+]
+
+PREFIXED_TEMPLATES = [
+    'x = "job_{}".format(jid)',
+    'x = "task_{0}".format(tid)',
+    'x = "ev_%s" % eid',
+    'x = "exp_%(tid)s" % d',
+]
+
+
+@pytest.mark.parametrize("source", PREFIXED_FSTRINGS)
+def test_g33_flags_prefixed_fstring_id(source: str) -> None:
+    assert check_invariants.scan_prefixed_id_generation(source, "t.py")
+
+
+@pytest.mark.parametrize("source", PREFIXED_CONCATS)
+def test_g33_flags_concat_and_nested_concat(source: str) -> None:
+    assert check_invariants.scan_prefixed_id_generation(source, "t.py")
+
+
+@pytest.mark.parametrize("source", PREFIXED_TEMPLATES)
+def test_g33_flags_format_and_percent(source: str) -> None:
+    assert check_invariants.scan_prefixed_id_generation(source, "t.py")
+
+
+def test_g33_reports_the_offending_line() -> None:
+    source = 'y = 1\nz = 2\nw = 3\nx = f"task_{tid}"'
+    (message,) = check_invariants.scan_prefixed_id_generation(source, "t.py")
+    assert message.startswith("t.py:4 ")
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        'x = "task_cancelled"',
+        'x = "ev_test"',
+        'x = "TASK_LOG"',
+        'x = f"{experiment_id}_timeline.json"',
+        'x = "task_" + "cancelled"',
+    ],
+)
+def test_g33_does_not_flag_literals(source: str) -> None:
+    assert check_invariants.scan_prefixed_id_generation(source, "t.py") == []
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        'x = f"subtask_{n}"',
+        'x = f"current_job_{n}"',
+    ],
+)
+def test_g33_does_not_flag_left_bounded_prefixes(source: str) -> None:
+    assert check_invariants.scan_prefixed_id_generation(source, "t.py") == []
+
+
+def test_g33_is_registered() -> None:
+    assert check_invariants.g33_no_prefixed_id_generation in check_invariants.GATES
+
+
+def test_the_real_project_generates_no_prefixed_ids() -> None:
+    for rel in check_invariants.iter_repo_python_files():
+        assert (
+            check_invariants.scan_prefixed_id_generation(
+                check_invariants.read(rel), rel
+            )
+            == []
+        )

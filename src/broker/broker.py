@@ -31,7 +31,7 @@ def _utcnow() -> datetime:
 
 
 def new_job_id() -> str:
-    return f"job_{uuid.uuid4().hex[:16]}"
+    return uuid.uuid4().hex[:16]
 
 
 class SqliteTaskBroker:
@@ -43,7 +43,10 @@ class SqliteTaskBroker:
         clock: Callable[[], datetime] = _utcnow,
     ) -> None:
         self._db = db
-        self._lease_ttl_s = float(lease_ttl_s)
+        try:
+            self._lease_ttl_s = float(lease_ttl_s)
+        except (ValueError, TypeError):
+            self._lease_ttl_s = 30.0
         self._clock = clock
 
     @property
@@ -62,6 +65,10 @@ class SqliteTaskBroker:
     ) -> str:
         now = self._clock()
         job_id = new_job_id()
+        try:
+            parsed_attempts = max(1, int(max_attempts))
+        except (ValueError, TypeError):
+            parsed_attempts = 1
         orm = BrokerJobModel(
             id=job_id,
             kind=JobKind(kind).value,
@@ -71,7 +78,7 @@ class SqliteTaskBroker:
             state=JobState.PENDING.value,
             available_at=available_at or now,
             attempt=0,
-            max_attempts=max(1, int(max_attempts)),
+            max_attempts=parsed_attempts,
             created_at=now,
             updated_at=now,
         )

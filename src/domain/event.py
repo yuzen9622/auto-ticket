@@ -44,7 +44,7 @@ class TicketType(DomainBaseModel):
         digest = hashlib.sha1(
             f"{event_id}:{key}".encode(), usedforsecurity=False
         ).hexdigest()[:16]
-        return f"tt_{digest}"
+        return digest
 
 
 class Event(DomainBaseModel):
@@ -68,7 +68,7 @@ class Event(DomainBaseModel):
         digest = hashlib.sha1(
             f"{platform.value}:{organizer}:{event_slug}".encode(), usedforsecurity=False
         ).hexdigest()[:16]
-        return f"ev_{digest}"
+        return digest
 
 
 class EventCandidate(DomainBaseModel):

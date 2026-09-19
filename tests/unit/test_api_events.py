@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+
 import httpx
 import pytest
 
@@ -109,7 +111,7 @@ async def test_search_events_resolves_scope_on_the_backend(
         assert "atarayo" in top["title"].lower()
         assert top["description"]
         assert top["organizer"] == "Atarayo Live"
-        assert top["id"].startswith("ev_")
+        assert re.fullmatch(r"[0-9a-f]{16}", top["id"])
         providers = top["ticketing_providers"]
         assert isinstance(providers, list) and len(providers) >= 1
         assert providers[0]["id"] == "kktix"

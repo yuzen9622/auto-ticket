@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -164,7 +165,7 @@ def test_event_make_id_is_deterministic() -> None:
     other = Event.make_id(PlatformEnum.KKTIX, "atarayo", "atarayo-taipei-2027")
     assert first == second
     assert first != other
-    assert first.startswith("ev_")
+    assert re.fullmatch(r"[0-9a-f]{16}", first)
 
 
 def test_ticket_type_make_id_is_deterministic() -> None:
@@ -174,7 +175,7 @@ def test_ticket_type_make_id_is_deterministic() -> None:
     other = TicketType.make_id(event_id, "搖滾區站席")
     assert first == second
     assert first != other
-    assert first.startswith("tt_")
+    assert re.fullmatch(r"[0-9a-f]{16}", first)
 
 
 @pytest.mark.parametrize("score", [-0.1, 1.1])

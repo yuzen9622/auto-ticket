@@ -19,6 +19,7 @@ import socket
 import subprocess
 import sys
 from collections.abc import Iterator
+from itertools import pairwise
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -383,7 +384,7 @@ def g8_netguard_mounted() -> None:
                 isinstance(d, ast.Call)
                 and ast.unparse(d.func) == "pytest.fixture"
                 and any(
-                    k.arg == "autouse" and getattr(k.value, "value", False) is True
+                    k.arg == "autouse" and bool(getattr(k.value, "value", False))
                     for k in d.keywords
                 )
                 for d in node.decorator_list
@@ -1153,6 +1154,83 @@ def g32_api_server_zero_browser_deps() -> None:
                     )
 
 
+# --------------------------------------------------------------- G33
+ID_PREFIXES = ("task_", "exp_", "job_", "ev_", "tt_")
+
+# 左界斷言讓 `subtask_` / `current_job_` 這類黏著識別字元的字串不會被誤判為 ID 前綴。
+PREFIX_TAIL_RE = re.compile(r"(?<![0-9A-Za-z_])(?:task_|exp_|job_|ev_|tt_)$")
+FORMAT_BRACE_RE = re.compile(r"(?<![0-9A-Za-z_])(?:task_|exp_|job_|ev_|tt_)\{(?!\{)")
+PERCENT_FMT_RE = re.compile(
+    r"(?<![0-9A-Za-z_])(?:task_|exp_|job_|ev_|tt_)"
+    r"%(?:\([^)]*\))?[-#0 +]*[0-9*]*(?:\.[0-9*]+)?[hlL]?[a-zA-Z]"
+)
+
+
+def iter_repo_python_files() -> Iterator[str]:
+    """G33 專用：ID 生成可能出現在任何一層，含測試與腳本。"""
+    for directory in ("src", "scripts", "tests"):
+        for p in sorted((REPO_ROOT / directory).rglob("*.py")):
+            yield str(p.relative_to(REPO_ROOT))
+
+
+def _flatten_add(node: ast.AST) -> list[ast.AST]:
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+        return _flatten_add(node.left) + _flatten_add(node.right)
+    return [node]
+
+
+def _str_constant(node: ast.AST) -> str | None:
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    return None
+
+
+def scan_prefixed_id_generation(source: str, rel: str) -> list[str]:
+    """找出「ID 前綴 + 插值」形態的識別碼生成；純字面值不算。"""
+    hits: set[tuple[int, str]] = set()
+    for node in ast.walk(ast.parse(source, filename=rel)):
+        if isinstance(node, ast.JoinedStr):
+            for part, following in pairwise(node.values):
+                text = _str_constant(part)
+                if text is None or not isinstance(following, ast.FormattedValue):
+                    continue
+                matched = PREFIX_TAIL_RE.search(text)
+                if matched is not None:
+                    hits.add((node.lineno, matched.group(0)))
+        elif isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+            operands = _flatten_add(node)
+            for left, right in pairwise(operands):
+                text = _str_constant(left)
+                if text is None or _str_constant(right) is not None:
+                    continue
+                matched = PREFIX_TAIL_RE.search(text)
+                if matched is not None:
+                    hits.add((node.lineno, matched.group(0)))
+        elif (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "format"
+        ):
+            text = _str_constant(node.func.value)
+            if text is not None:
+                for matched in FORMAT_BRACE_RE.finditer(text):
+                    hits.add((node.lineno, matched.group(0)[:-1]))
+        elif isinstance(node, ast.BinOp) and isinstance(node.op, ast.Mod):
+            text = _str_constant(node.left)
+            if text is not None:
+                for matched in PERCENT_FMT_RE.finditer(text):
+                    hits.add((node.lineno, matched.group(0)))
+    return [
+        f"{rel}:{lineno} 以前綴拼接產生 ID: {prefix}" for lineno, prefix in sorted(hits)
+    ]
+
+
+def g33_no_prefixed_id_generation() -> None:
+    for rel in iter_repo_python_files():
+        for msg in scan_prefixed_id_generation(read(rel), rel):
+            fail("G33", msg)
+
+
 GATES = (
     g1_frozen_paths_untouched,
     g2_no_real_hosts_in_tests,
@@ -1185,6 +1263,7 @@ GATES = (
     g30_ws_protocol_matches_sdd,
     g31_card_secrets_isolated_from_api_and_broker,
     g32_api_server_zero_browser_deps,
+    g33_no_prefixed_id_generation,
 )
 
 

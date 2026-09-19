@@ -47,7 +47,7 @@ async def execute_purchase(
 ) -> None:
     spec = rehydrate_spec(job.payload["spec"])
     task_id = spec.task_id
-    experiment_id = f"exp_{uuid.uuid4().hex[:12]}"
+    experiment_id = uuid.uuid4().hex[:12]
 
     await broker.mark_running(job.id, worker_id=worker_id)
 
