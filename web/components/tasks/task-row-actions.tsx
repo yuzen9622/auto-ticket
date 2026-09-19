@@ -2,9 +2,16 @@
 
 import * as React from "react"
 import { useTranslations } from "next-intl"
-import Link from "next/link"
+import { useRouter } from "next/navigation"
 import { useMutation, useQueryClient } from "@tanstack/react-query"
-import { CircuitBoard, Copy, MoreHorizontal } from "lucide-react"
+import {
+  CircuitBoard,
+  Copy,
+  MoreHorizontal,
+  Play,
+  Square,
+  Trash2,
+} from "lucide-react"
 import { toast } from "sonner"
 
 import {
@@ -45,6 +52,7 @@ export function TaskRowActions({ task }: { task: TaskResponse }) {
   const apiErrorMessage = useApiErrorMessage()
   const taskStatusLabel = useTaskStatusLabel()
   const [showDeleteDialog, setShowDeleteDialog] = React.useState(false)
+  const router = useRouter()
 
   const onError = (error: unknown) =>
     toast.error(
@@ -95,7 +103,7 @@ export function TaskRowActions({ task }: { task: TaskResponse }) {
             <MoreHorizontal className="h-4 w-4" />
           </Button>
         </DropdownMenuTrigger>
-        <DropdownMenuContent align="end">
+        <DropdownMenuContent align="start">
           <DropdownMenuLabel>{common("actions")}</DropdownMenuLabel>
           <DropdownMenuItem
             onClick={() => {
@@ -106,15 +114,17 @@ export function TaskRowActions({ task }: { task: TaskResponse }) {
             <Copy />
             {common("copy")}
           </DropdownMenuItem>
-          <DropdownMenuSeparator />
-          <DropdownMenuItem inset>
-            <Link href={`/tasks/${task.id}`}>{t("openConsole")}</Link>
+
+          <DropdownMenuItem onSelect={() => router.push(`/tasks/${task.id}`)}>
+            <CircuitBoard />
+            {t("openConsole")}
           </DropdownMenuItem>
           {isStartable(task.status) && (
             <DropdownMenuItem
               disabled={start.isPending}
               onClick={() => start.mutate()}
             >
+              <Play />
               {t("start")}
             </DropdownMenuItem>
           )}
@@ -123,6 +133,7 @@ export function TaskRowActions({ task }: { task: TaskResponse }) {
               disabled={cancel.isPending}
               onClick={() => cancel.mutate()}
             >
+              <Square />
               {t("cancelTask")}
             </DropdownMenuItem>
           )}
@@ -134,6 +145,7 @@ export function TaskRowActions({ task }: { task: TaskResponse }) {
               if (canDelete) setShowDeleteDialog(true)
             }}
           >
+            <Trash2 />
             {t("deleteTask")}
           </DropdownMenuItem>
           {!canDelete && (

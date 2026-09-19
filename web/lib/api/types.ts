@@ -157,6 +157,8 @@ export interface EventSearchResult {
   sale_start_at: string | null
   event_start_at: string | null
   status: string
+  /** true 代表票種與開賣時間已由活動頁補齊。 */
+  detail_loaded: boolean
 }
 
 export interface EventSearchResponse {

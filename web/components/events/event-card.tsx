@@ -18,6 +18,10 @@ import type { EventSearchResult } from "@/lib/api/types"
 export function EventCard({ event }: { event: EventSearchResult }) {
   const t = useTranslations("event")
   const eventStatusLabel = useEventStatusLabel()
+  const statusLabel =
+    event.status === "UNKNOWN" && !event.detail_loaded
+      ? t("statusPendingLoad")
+      : eventStatusLabel(event.status)
 
   const providers = event.ticketing_providers
   const saleStart = event.sale_start_at
@@ -77,7 +81,7 @@ export function EventCard({ event }: { event: EventSearchResult }) {
 
         <div className="flex min-w-0 gap-2">
           <dt className="shrink-0 text-muted-foreground">{t("status")}</dt>
-          <dd className="min-w-0">{eventStatusLabel(event.status)}</dd>
+          <dd className="min-w-0">{statusLabel}</dd>
         </div>
       </dl>
 

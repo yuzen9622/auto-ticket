@@ -1,6 +1,6 @@
 import * as React from "react"
 import { beforeEach, describe, expect, it, vi } from "vitest"
-import { screen, waitFor } from "@testing-library/react"
+import { fireEvent, screen, waitFor } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 
 import { renderWithProviders } from "./helpers/render"
@@ -19,16 +19,16 @@ const api = vi.hoisted(() => ({
 }))
 
 vi.mock("@/lib/api/tasks", async () => {
-  const actual = await vi.importActual<typeof import("@/lib/api/tasks")>(
-    "@/lib/api/tasks"
-  )
+  const actual =
+    await vi.importActual<typeof import("@/lib/api/tasks")>("@/lib/api/tasks")
   return { ...actual, ...api }
 })
 
 import { TaskTable } from "@/components/tasks/task-table"
 import { TaskRowActions } from "@/components/tasks/task-row-actions"
+import type { TaskResponse } from "@/lib/api/types"
 
-function task(overrides: Record<string, unknown> = {}) {
+function task(overrides: Record<string, unknown> = {}): TaskResponse {
   return {
     id: "task_abc123",
     event_id: "ev_mayday01",
@@ -41,7 +41,7 @@ function task(overrides: Record<string, unknown> = {}) {
     error_message: null,
     created_at: "2026-09-18T10:00:00Z",
     ...overrides,
-  }
+  } as TaskResponse
 }
 
 beforeEach(() => {
@@ -86,9 +86,9 @@ describe("任務管理表格", () => {
     await screen.findByText("已建立")
 
     await user.click(screen.getByLabelText("依狀態篩選"))
-    const option = await screen.findByRole("option", { name: "等待中" }).catch(
-      () => null
-    )
+    const option = await screen
+      .findByRole("option", { name: "等待中" })
+      .catch(() => null)
     expect(option).toBeNull() // 任務狀態沒有「等待中」，確認選單不是 job 狀態
 
     await user.click(await screen.findByRole("option", { name: "執行中" }))
@@ -111,7 +111,14 @@ describe("任務管理表格", () => {
   it("欄位標題都是自然語言", async () => {
     renderWithProviders(<TaskTable />)
     await screen.findByText("已建立")
-    for (const header of ["任務編號", "活動", "狀態", "執行模式", "排程時間", "建立時間"]) {
+    for (const header of [
+      "任務編號",
+      "活動",
+      "狀態",
+      "執行模式",
+      "排程時間",
+      "建立時間",
+    ]) {
       expect(screen.getByText(header)).toBeInTheDocument()
     }
     for (const forbidden of ["scheduled_at", "created_at", "event_title"]) {
@@ -129,12 +136,11 @@ describe("任務管理表格", () => {
   })
 
   it("不可刪除的任務用自然語言說明原因，不出現原始 enum", async () => {
-    const user = userEvent.setup()
     const runningTask = task({ status: "RUNNING" })
     renderWithProviders(<TaskRowActions task={runningTask} />)
 
     const trigger = screen.getByRole("button", { name: "Open menu" })
-    await user.click(trigger)
+    fireEvent.pointerDown(trigger, { button: 0, ctrlKey: false })
     const tip = await screen.findAllByText(
       "目前狀態無法刪除；只有已建立、已取消或失敗的任務可以刪除。"
     )

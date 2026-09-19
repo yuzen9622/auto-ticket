@@ -84,9 +84,11 @@ export function TaskTable() {
       key: "title",
       header: t("columnEvent"),
       cell: (task) => (
-        <span className="max-w-[28ch] truncate">{eventTitle(task)}</span>
+        <span className="block max-w-[28ch] truncate" title={eventTitle(task)}>
+          {eventTitle(task)}
+        </span>
       ),
-      className: "max-w-[28ch]",
+      className: "max-w-[28ch] overflow-hidden",
     },
     {
       key: "status",

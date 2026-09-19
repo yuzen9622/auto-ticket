@@ -2,6 +2,7 @@
 
 import * as React from "react"
 import Link from "next/link"
+import { useRouter } from "next/navigation"
 import { useQuery } from "@tanstack/react-query"
 import { useTranslations } from "next-intl"
 
@@ -16,13 +17,13 @@ import {
   DropdownMenuLabel,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu"
+} from "@/components/animate-ui/components/radix/dropdown-menu"
 import { Input } from "@/components/ui/input"
 import { useDebounce } from "@/hooks/use-debounce"
 import { listExperiments } from "@/lib/api/experiments"
 import type { ExperimentOut } from "@/lib/api/types"
 import { formatDateTime, formatMs, shortId } from "@/lib/format"
-import { MoreHorizontal } from "lucide-react"
+import { CircuitBoard, Copy, History, MoreHorizontal } from "lucide-react"
 import { toast } from "sonner"
 
 const PAGE_SIZE = 50
@@ -33,6 +34,7 @@ export function ExperimentTable({ taskId }: { taskId?: string }) {
   const [filter, setFilter] = React.useState(taskId ?? "")
   const debouncedFilter = useDebounce(filter, 300)
   const [offset, setOffset] = React.useState(0)
+  const router = useRouter()
 
   const [prevFilter, setPrevFilter] = React.useState(debouncedFilter)
   if (prevFilter !== debouncedFilter) {
@@ -142,17 +144,21 @@ export function ExperimentTable({ taskId }: { taskId?: string }) {
                 toast.success(tc("copied"))
               }}
             >
+              <Copy />
               {tc("copy")} ID
             </DropdownMenuItem>
-            <DropdownMenuSeparator />
-            <DropdownMenuItem asChild>
-              <Link href={`/experiments/${e.id}`}>
-                {t("timeline")}
-              </Link>
+            <DropdownMenuItem
+              onSelect={() => router.push(`/experiments/${e.id}`)}
+            >
+              <History />
+              {t("timeline")}
             </DropdownMenuItem>
             {e.task_id && (
-              <DropdownMenuItem asChild>
-                <Link href={`/tasks/${e.task_id}`}>{t("columnTask")}</Link>
+              <DropdownMenuItem
+                onSelect={() => router.push(`/tasks/${e.task_id}`)}
+              >
+                <CircuitBoard />
+                {t("columnTask")}
               </DropdownMenuItem>
             )}
           </DropdownMenuContent>

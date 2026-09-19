@@ -7,12 +7,13 @@ import { renderWithProviders } from "./helpers/render"
 
 const nav = vi.hoisted(() => ({
   push: vi.fn(),
+  replace: vi.fn(),
   params: new URLSearchParams(),
 }))
 
 vi.mock("next/navigation", () => ({
   usePathname: () => "/",
-  useRouter: () => ({ push: nav.push, replace: vi.fn() }),
+  useRouter: () => ({ push: nav.push, replace: nav.replace }),
   useSearchParams: () => nav.params,
 }))
 
@@ -39,12 +40,14 @@ function result(overrides: Record<string, unknown> = {}) {
     sale_start_at: "2026-10-01T04:00:00Z",
     event_start_at: "2026-12-24T11:00:00Z",
     status: "ANNOUNCED",
+    detail_loaded: true,
     ...overrides,
   }
 }
 
 beforeEach(() => {
   nav.push.mockClear()
+  nav.replace.mockClear()
   nav.params = new URLSearchParams()
   api.searchEvents.mockReset()
 })
@@ -76,8 +79,12 @@ describe("活動搜尋", () => {
   it("空白搜尋不得呼叫 API", async () => {
     const user = userEvent.setup()
     renderWithProviders(<EventSearch />)
+
     await user.type(screen.getByLabelText("活動名稱、關鍵字或活動網址"), "   ")
-    expect(screen.getByRole("button", { name: "搜尋" })).toBeDisabled()
+    await user.click(screen.getByRole("button", { name: "搜尋" }))
+
+    // 等過 debounce 視窗，確認全程都沒有打出去。
+    await new Promise((resolve) => setTimeout(resolve, 500))
     expect(api.searchEvents).not.toHaveBeenCalled()
   })
 
@@ -96,15 +103,19 @@ describe("活動搜尋", () => {
     expect(await screen.findByText("五月天 2026 諾亞方舟")).toBeInTheDocument()
   })
 
-  it("清除搜尋會把 q 從網址移除", async () => {
+  it("清空搜尋文字會把 q 從網址移除", async () => {
     const user = userEvent.setup()
     nav.params = new URLSearchParams("q=五月天")
     api.searchEvents.mockResolvedValue({ query: "五月天", results: [result()] })
 
     renderWithProviders(<EventSearch />)
-    await user.click(await screen.findByRole("button", { name: "清除搜尋" }))
+    const input = screen.getByLabelText("活動名稱、關鍵字或活動網址")
+    await user.clear(input)
 
-    expect(nav.push).toHaveBeenCalledWith("/")
+    // 打字中的同步走 replace，不在瀏覽歷史留下每一個中間字串。
+    await waitFor(() => expect(nav.replace).toHaveBeenCalledWith("/"), {
+      timeout: 1500,
+    })
   })
 
   it("搜尋頁沒有任何主辦代號輸入框", () => {
@@ -137,6 +148,20 @@ describe("活動搜尋", () => {
     expect(screen.queryByText(/raw_metadata/)).toBeNull()
     expect(screen.queryByText("ANNOUNCED")).toBeNull()
     expect(screen.queryByText(result().canonical_url)).toBeNull()
+  })
+
+  it("淺資料尚未確認票況時說明會在選擇後確認", async () => {
+    nav.params = new URLSearchParams("q=五月天")
+    api.searchEvents.mockResolvedValue({
+      query: "五月天",
+      results: [result({ status: "UNKNOWN", detail_loaded: false })],
+    })
+
+    renderWithProviders(<EventSearch />)
+    expect(
+      await screen.findByText("票況將於選擇活動後確認")
+    ).toBeInTheDocument()
+    expect(screen.queryByText("狀態未確認")).toBeNull()
   })
 
   it("同一場活動有多個票券商時全部顯示", async () => {

@@ -118,20 +118,16 @@ export function EventSearch() {
           <h1 className="text-xl font-bold tracking-tight sm:text-2xl">
             {t("heading")}
           </h1>
-          <p className="text-xs text-muted-foreground sm:text-sm">
-            {t("subheading")}
-          </p>
         </div>
 
         <form className="flex flex-col gap-1.5" onSubmit={onSubmit}>
-          <Label
-            htmlFor="event-query"
-            className="text-xs font-medium text-muted-foreground"
-          >
-            {t("inputLabel")}
-          </Label>
           <div className="flex flex-col gap-2 sm:flex-row">
             <div className="relative flex-1">
+              {/* 視覺上靠 placeholder 與圖示即可，但輔助技術需要真正的 Label；
+                  placeholder 不是 Label，讀螢幕的人會完全不知道這個欄位是什麼。 */}
+              <Label htmlFor="event-query" className="sr-only">
+                {t("inputLabel")}
+              </Label>
               <SearchIcon
                 className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground"
                 aria-hidden
@@ -147,6 +143,11 @@ export function EventSearch() {
                 autoComplete="off"
               />
             </div>
+            {/* 打字會自動搜尋，但表單仍要有可被觸發的送出控制項：
+                鍵盤與輔助技術使用者不該只能靠 Enter 的隱含送出。 */}
+            <button type="submit" className="sr-only">
+              {t("submit")}
+            </button>
           </div>
         </form>
       </div>

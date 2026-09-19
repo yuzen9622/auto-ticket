@@ -3,7 +3,6 @@
 import * as React from "react"
 
 import { AppSidebar } from "@/components/layout/app-sidebar"
-import { StatusBar } from "@/components/layout/status-bar"
 import { Toaster } from "@/components/ui/sonner"
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar"
 
@@ -12,7 +11,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     <SidebarProvider className="min-h-0">
       <AppSidebar />
       <SidebarInset className="flex h-dvh min-h-0 flex-col overflow-hidden bg-background">
-        <StatusBar />
         <main className="min-h-0 min-w-0 flex-1 overflow-auto p-4">
           {children}
         </main>
