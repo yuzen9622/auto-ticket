@@ -132,11 +132,11 @@ export function SessionJobWatcher({ platform }: { platform: string }) {
       toast.error(
         t("sessionFailed", {
           kind: label,
-          reason: explainJobError(job.error ?? "").title,
+          reason: explainJobError(job.error ?? "", platform).title,
         })
       )
     else toast.message(t("sessionCancelled", { kind: label }))
-  }, [job, t])
+  }, [job, t, platform])
 
   const pending =
     check.isPending || autoLogin.isPending || manualLogin.isPending
@@ -144,10 +144,24 @@ export function SessionJobWatcher({ platform }: { platform: string }) {
 
   const failure =
     job && (job.state === "FAILED" || job.state === "CANCELLED")
-      ? explainJobError(job.error ?? job.state)
+      ? explainJobError(job.error ?? job.state, platform)
       : null
-  const resultRows = summarizeJobResult(job?.result ?? null)
+  const resultRows = summarizeJobResult(job?.result ?? null, platform)
   const elapsed = startedAt === null ? null : formatElapsed(now - startedAt)
+
+  const isTixcraft = platform === "tixcraft"
+  const isIbon = platform === "ibon"
+
+  const handleAutoLogin = () => {
+    if (isTixcraft) {
+      toast.info(t("autoLoginUnsupported_tixcraft"))
+      return
+    }
+    if (isIbon) {
+      toast.info(t("autoLoginNotice_ibon"))
+    }
+    autoLogin.mutate()
+  }
 
   return (
     <Panel title={t("sessionHeading")}>
@@ -162,15 +176,15 @@ export function SessionJobWatcher({ platform }: { platform: string }) {
             {t("sessionCheck")}
           </Button>
           <Button
-            variant="default"
+            variant={isTixcraft || isIbon ? "outline" : "default"}
             size="sm"
             disabled={busy}
-            onClick={() => autoLogin.mutate()}
+            onClick={handleAutoLogin}
           >
             {t("autoLogin")}
           </Button>
           <Button
-            variant="outline"
+            variant={isTixcraft || isIbon ? "default" : "outline"}
             size="sm"
             disabled={busy}
             onClick={() => manualLogin.mutate()}

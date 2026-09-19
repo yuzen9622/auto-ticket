@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import time
+from collections.abc import Sequence
 from enum import Enum
 from typing import Any
 
@@ -25,6 +26,30 @@ from telemetry.timeline import TimelineRecorder
 
 from ..control import ControlPoller, ControlState
 from ..settings import WorkerSettings
+
+PLATFORM_SESSION_CONFIG = {
+    "kktix": {
+        "login_url": "https://kktix.com/users/sign_in",
+        "check_url": "https://kktix.com/users/sign_in",
+        "redirect_url": "https://kktix.com/",
+        "host_fragment": "kktix",
+        "login_path_fragment": "users/sign_in",
+    },
+    "tixcraft": {
+        "login_url": "https://tixcraft.com/login",
+        "check_url": "https://tixcraft.com/user/changePassword",
+        "redirect_url": "https://tixcraft.com/",
+        "host_fragment": "tixcraft",
+        "login_path_fragment": "login",
+    },
+    "ibon": {
+        "login_url": "https://ticket.ibon.com.tw/Account/Login",
+        "check_url": "https://ticket.ibon.com.tw/Account/Login",
+        "redirect_url": "https://ticket.ibon.com.tw/",
+        "host_fragment": "ibon",
+        "login_path_fragment": "account/login",
+    },
+}
 
 
 def summarize_cookies(
@@ -77,14 +102,13 @@ async def _login_needs_human_verification(page: Any) -> bool:
     except Exception:
         return False
     lowered = str(text).lower()
-    return any(
-        marker.lower() in lowered
-        for marker in LOGIN_HUMAN_VERIFICATION_TEXTS
-    )
+    return any(marker.lower() in lowered for marker in LOGIN_HUMAN_VERIFICATION_TEXTS)
 
 
 async def _ensure_browser_endpoint(
-    settings: WorkerSettings, initial_url: str
+    settings: WorkerSettings,
+    initial_url: str,
+    fallback_urls: Sequence[str] | None = None,
 ) -> str | None:
     """拿到可 attach 的真 Chrome 端點；拿不到就回 None，由呼叫端自行降級。"""
     if settings.cdp_endpoint is not None:
@@ -93,7 +117,9 @@ async def _ensure_browser_endpoint(
         return None
     try:
         chrome = await ensure_system_chrome(
-            port=settings.browser_debug_port, initial_url=initial_url
+            port=settings.browser_debug_port,
+            initial_url=initial_url,
+            fallback_urls=fallback_urls,
         )
     except SystemChromeError:
         return None
@@ -110,17 +136,26 @@ async def execute_session_check(
     settings: WorkerSettings,
 ) -> None:
     await broker.mark_running(job.id, worker_id=worker_id)
+    platform = str(job.payload.get("platform", "kktix")).lower()
+    cfg = PLATFORM_SESSION_CONFIG.get(platform, PLATFORM_SESSION_CONFIG["kktix"])
+    target_url = cfg["check_url"]
+    redirect_url = cfg.get("redirect_url")
+    fallback_urls = [redirect_url] if redirect_url else None
+    host_fragment = cfg["host_fragment"]
+
     telemetry = TimelineRecorder()
     # 登入檢查一定要用使用者本機那顆真 Chrome：Playwright 自帶的會被人機驗證擋在
     # 門外，於是永遠只能回報 CHALLENGE，檢查等於沒做。
-    target_url = "https://kktix.com/users/sign_in"
-    cdp_endpoint = await _ensure_browser_endpoint(settings, target_url)
+    cdp_endpoint = await _ensure_browser_endpoint(
+        settings, target_url, fallback_urls=fallback_urls
+    )
     browser = PlaywrightManager(
         BrowserProfile(name=job.profile, headless=settings.headless),
         telemetry,
         screenshot_dir=settings.screenshot_dir,
         cdp_endpoint=cdp_endpoint,
         cdp_page_url=target_url if cdp_endpoint else None,
+        cdp_page_fallback_urls=fallback_urls if cdp_endpoint else None,
     )
     await browser.start()
     try:
@@ -128,14 +163,31 @@ async def execute_session_check(
         with contextlib.suppress(Exception):
             await page.goto(target_url, wait_until="domcontentloaded", timeout=15000)
 
-        adapter = KKTIXAdapter(telemetry=telemetry, payment=MockPaymentProvider())
-        probe = await adapter.probe_page(page, page.url)
-        login_state = await probe_login_state(adapter, page)
         cookies = await page.context.cookies()
-        cookie_count, has_session = summarize_cookies(cookies)
+        cookie_count, has_session = summarize_cookies(
+            cookies, host_fragment=host_fragment
+        )
+
+        if platform == "kktix":
+            adapter = KKTIXAdapter(telemetry=telemetry, payment=MockPaymentProvider())
+            probe = await adapter.probe_page(page, page.url)
+            login_state = await probe_login_state(adapter, page)
+            page_kind = probe.name
+        else:
+            is_login_page = cfg["login_path_fragment"] in str(page.url).lower()
+            if has_session and not is_login_page:
+                login_state = LoginState.LOGGED_IN
+                page_kind = "NORMAL"
+            elif is_login_page:
+                login_state = LoginState.LOGGED_OUT
+                page_kind = "LOGIN"
+            else:
+                login_state = LoginState.UNKNOWN
+                page_kind = "UNKNOWN"
 
         result = {
-            "page_kind": probe.name,
+            "platform": platform,
+            "page_kind": page_kind,
             "cookie_count": cookie_count,
             "has_session": has_session,
             "login_state": login_state.value,
@@ -159,6 +211,24 @@ async def execute_auto_login(
     await broker.mark_running(job.id, worker_id=worker_id)
     platform = str(job.payload.get("platform", "kktix")).lower()
 
+    if platform == "tixcraft":
+        await broker.fail(
+            job.id,
+            worker_id=worker_id,
+            error="tixcraft_requires_manual_login",
+            retry=False,
+        )
+        return
+
+    if platform == "ibon":
+        await broker.fail(
+            job.id,
+            worker_id=worker_id,
+            error="ibon_requires_manual_login",
+            retry=False,
+        )
+        return
+
     vault = EncryptedFileVault.from_env(settings.vault_root)
     pair = None
     if vault is not None and vault.available(platform):
@@ -180,14 +250,21 @@ async def execute_auto_login(
     telemetry = TimelineRecorder()
     # 登入表單在 Cloudflare 後面。用 Playwright 自帶的瀏覽器連登入頁都看不到，
     # 於是 login() 必然回 False，再被回報成「帳號或密碼可能有誤」——那是誤導。
-    login_url = "https://kktix.com/users/sign_in"
-    cdp_endpoint = await _ensure_browser_endpoint(settings, login_url)
+    cfg = PLATFORM_SESSION_CONFIG.get(platform, PLATFORM_SESSION_CONFIG["kktix"])
+    login_url = cfg["login_url"]
+    redirect_url = cfg.get("redirect_url")
+    fallback_urls = [redirect_url] if redirect_url else None
+
+    cdp_endpoint = await _ensure_browser_endpoint(
+        settings, login_url, fallback_urls=fallback_urls
+    )
     browser = PlaywrightManager(
         BrowserProfile(name=job.profile, headless=settings.headless),
         telemetry,
         screenshot_dir=settings.screenshot_dir,
         cdp_endpoint=cdp_endpoint,
         cdp_page_url=login_url if cdp_endpoint else None,
+        cdp_page_fallback_urls=fallback_urls if cdp_endpoint else None,
     )
     await browser.start()
     try:
@@ -203,6 +280,21 @@ async def execute_auto_login(
                 error="blocked_by_bot_check",
                 retry=False,
             )
+            return
+
+        # 若已是登入狀態（例如訪問 login_url 後因已登入被 302 轉址回首頁），不需重複填表
+        login_state_before = await probe_login_state(adapter, page)
+        if login_state_before is LoginState.LOGGED_IN:
+            cookies = await page.context.cookies()
+            cookie_count, has_session = summarize_cookies(cookies)
+            result = {
+                "success": True,
+                "page_kind": probe_before.name,
+                "cookie_count": cookie_count,
+                "has_session": has_session,
+                "login_state": login_state_before.value,
+            }
+            await broker.complete(job.id, worker_id=worker_id, result=result)
             return
 
         await adapter.login(page, account, access_key)
@@ -232,9 +324,7 @@ async def execute_auto_login(
                 reason = "login_requires_human_verification"
             else:
                 reason = "auto_login_failed"
-            await broker.fail(
-                job.id, worker_id=worker_id, error=reason, retry=False
-            )
+            await broker.fail(job.id, worker_id=worker_id, error=reason, retry=False)
     except Exception as exc:
         await broker.fail(job.id, worker_id=worker_id, error=str(exc), retry=False)
     finally:
@@ -253,17 +343,26 @@ async def execute_manual_login(
     await broker.mark_running(job.id, worker_id=worker_id)
     task_id = job.task_id or job.id
 
+    platform = str(job.payload.get("platform", "kktix")).lower()
+    cfg = PLATFORM_SESSION_CONFIG.get(platform, PLATFORM_SESSION_CONFIG["kktix"])
+    login_url = cfg["login_url"]
+    redirect_url = cfg.get("redirect_url")
+    fallback_urls = [redirect_url] if redirect_url else None
+    host_fragment = cfg["host_fragment"]
+
     telemetry = TimelineRecorder()
     # 手動登入是「把畫面交給人」，所以更要用那顆過得了人機驗證的真 Chrome；
     # Playwright 自帶的開了視窗也只會停在驗證頁，人一樣登不進去。
-    login_url = "https://kktix.com/users/sign_in"
-    cdp_endpoint = await _ensure_browser_endpoint(settings, login_url)
+    cdp_endpoint = await _ensure_browser_endpoint(
+        settings, login_url, fallback_urls=fallback_urls
+    )
     browser = PlaywrightManager(
         BrowserProfile(name=job.profile, headless=False),
         telemetry,
         screenshot_dir=settings.screenshot_dir,
         cdp_endpoint=cdp_endpoint,
         cdp_page_url=login_url if cdp_endpoint else None,
+        cdp_page_fallback_urls=fallback_urls if cdp_endpoint else None,
     )
     await browser.start()
 
@@ -279,11 +378,14 @@ async def execute_manual_login(
 
     try:
         page = await browser.new_page()
-        target_url = "https://kktix.com/users/sign_in"
         with contextlib.suppress(Exception):
-            await page.goto(target_url, wait_until="domcontentloaded", timeout=15000)
+            await page.goto(login_url, wait_until="domcontentloaded", timeout=15000)
 
-        adapter = KKTIXAdapter(telemetry=telemetry, payment=MockPaymentProvider())
+        adapter = (
+            KKTIXAdapter(telemetry=telemetry, payment=MockPaymentProvider())
+            if platform == "kktix"
+            else None
+        )
         start_time = time.monotonic()
         last_notice = 0.0
 
@@ -317,18 +419,32 @@ async def execute_manual_login(
                 last_notice = elapsed
 
             cookies = await page.context.cookies()
-            _, has_session = summarize_cookies(cookies)
-            probe = await adapter.probe_page(page, page.url)
+            cookie_count, has_session = summarize_cookies(
+                cookies, host_fragment=host_fragment
+            )
 
-            if has_session:
-                cookie_count, _ = summarize_cookies(cookies)
-                result = {
-                    "page_kind": probe.name,
-                    "cookie_count": cookie_count,
-                    "has_session": True,
-                }
-                await broker.complete(job.id, worker_id=worker_id, result=result)
-                return
+            if platform == "kktix" and adapter is not None:
+                probe = await adapter.probe_page(page, page.url)
+                if has_session:
+                    result = {
+                        "platform": platform,
+                        "page_kind": probe.name,
+                        "cookie_count": cookie_count,
+                        "has_session": True,
+                    }
+                    await broker.complete(job.id, worker_id=worker_id, result=result)
+                    return
+            else:
+                is_login_page = cfg["login_path_fragment"] in str(page.url).lower()
+                if has_session and not is_login_page:
+                    result = {
+                        "platform": platform,
+                        "page_kind": "NORMAL",
+                        "cookie_count": cookie_count,
+                        "has_session": True,
+                    }
+                    await broker.complete(job.id, worker_id=worker_id, result=result)
+                    return
 
             await asyncio.sleep(1.0)
 

@@ -21,16 +21,9 @@ import {
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select"
 import { eraseCredentials, storeCredentials } from "@/lib/api/accounts"
 import { ApiError } from "@/lib/api/client"
-import { PLATFORM, PLATFORM_NAMES, type Platform } from "@/lib/contract"
+import { PLATFORM_NAMES, type Platform } from "@/lib/contract"
 
 export interface CredentialFormProps {
   platform?: Platform
@@ -43,31 +36,28 @@ export interface CredentialFormProps {
  */
 export function CredentialForm({
   platform: platformProp,
-  onPlatformChange,
+  onPlatformChange: _onPlatformChange,
 }: CredentialFormProps) {
   const t = useTranslations("settings")
   const tc = useTranslations("common")
   const qc = useQueryClient()
+  const currentPlatform = platformProp ?? "kktix"
   const [account, setAccount] = React.useState("")
   const [password, setPassword] = React.useState("")
   const [revealed, setRevealed] = React.useState(false)
 
-  const [internalPlatform, setInternalPlatform] =
-    React.useState<Platform>("kktix")
-  const currentPlatform = platformProp ?? internalPlatform
-
-  const clear = () => {
+  const [prevPlatform, setPrevPlatform] = React.useState(currentPlatform)
+  if (prevPlatform !== currentPlatform) {
+    setPrevPlatform(currentPlatform)
     setAccount("")
     setPassword("")
     setRevealed(false)
   }
 
-  const handlePlatformChange = (next: Platform) => {
-    clear()
-    if (platformProp === undefined) {
-      setInternalPlatform(next)
-    }
-    onPlatformChange?.(next)
+  const clear = () => {
+    setAccount("")
+    setPassword("")
+    setRevealed(false)
   }
 
   const messageFor = (err: unknown): string => {
@@ -103,10 +93,28 @@ export function CredentialForm({
     onError: (e) => toast.error(messageFor(e)),
   })
 
-  const canSubmit = account.trim() !== "" && password !== "" && !store.isPending
+  // 拓元主要採用社群登入，密碼可為選填；KKTIX 與 ibon 則帳號與密碼均為必填。
+  const canSubmit =
+    account.trim() !== "" &&
+    (currentPlatform === "tixcraft" || password !== "") &&
+    !store.isPending
 
   const vaultLocked =
     store.error instanceof ApiError && store.error.code === "vault_locked"
+
+  const accountLabel = t.has(`accountField_${currentPlatform}`)
+    ? t(`accountField_${currentPlatform}`)
+    : t("accountField")
+  const accountPlaceholder = t.has(`accountPlaceholder_${currentPlatform}`)
+    ? t(`accountPlaceholder_${currentPlatform}`)
+    : t("accountPlaceholder", { platform: PLATFORM_NAMES[currentPlatform] })
+
+  const passwordLabel = t.has(`passwordField_${currentPlatform}`)
+    ? t(`passwordField_${currentPlatform}`)
+    : t("passwordField")
+  const passwordPlaceholder = t.has(`passwordPlaceholder_${currentPlatform}`)
+    ? t(`passwordPlaceholder_${currentPlatform}`)
+    : t("passwordPlaceholder", { platform: PLATFORM_NAMES[currentPlatform] })
 
   return (
     <Panel title={t("credentialHeading")}>
@@ -117,44 +125,44 @@ export function CredentialForm({
           if (canSubmit) store.mutate()
         }}
       >
-        <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
-
+        <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
           <div className="flex flex-col gap-1">
-            <Label htmlFor="cred-account">{t("accountField")}</Label>
+            <Label htmlFor="cred-account">{accountLabel}</Label>
             <Input
               id="cred-account"
               value={account}
               onChange={(e) => setAccount(e.target.value)}
-              placeholder={t("accountPlaceholder", {
-                platform: PLATFORM_NAMES[currentPlatform],
-              })}
+              placeholder={accountPlaceholder}
               className="h-7"
               autoComplete="off"
             />
           </div>
 
           <div className="flex flex-col gap-1">
-            <Label htmlFor="cred-key">{t("passwordField")}</Label>
-            <div className="flex min-w-0 gap-1">
+            <Label htmlFor="cred-key">{passwordLabel}</Label>
+            <div className="relative flex w-full items-center">
               <Input
                 id="cred-key"
                 type={revealed ? "text" : "password"}
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
-                placeholder={t("passwordPlaceholder", {
-                  platform: PLATFORM_NAMES[currentPlatform],
-                })}
-                className="h-7 min-w-0"
+                placeholder={passwordPlaceholder}
+                className="h-7 w-full pr-8"
                 autoComplete="off"
               />
               <Button
                 type="button"
-                size="icon-sm"
+                size="icon-xs"
                 variant="ghost"
+                className="absolute right-1 text-muted-foreground hover:text-foreground"
                 aria-label={revealed ? t("hidePassword") : t("showPassword")}
                 onClick={() => setRevealed((v) => !v)}
               >
-                {revealed ? <EyeOff /> : <Eye />}
+                {revealed ? (
+                  <EyeOff className="size-3.5" />
+                ) : (
+                  <Eye className="size-3.5" />
+                )}
               </Button>
             </div>
           </div>

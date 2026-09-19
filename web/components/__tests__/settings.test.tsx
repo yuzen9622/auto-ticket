@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { screen, waitFor } from "@testing-library/react"
+import { fireEvent, screen, waitFor } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 
 import { renderWithProviders } from "./helpers/render"
@@ -45,6 +45,39 @@ describe("Settings Components", () => {
       expect(
         screen.queryByText(/三項操作都會在執行程式端開啟瀏覽器/)
       ).not.toBeInTheDocument()
+    })
+
+    it("renders platform-specific button priorities and behaviors", async () => {
+      // KKTIX 模式
+      const { unmount: unmountKktix } = renderWithProviders(
+        <SessionJobWatcher platform="kktix" />
+      )
+      const kktixAutoLogin = screen.getByRole("button", { name: "自動登入" })
+      expect(kktixAutoLogin).toHaveAttribute("data-variant", "default")
+      unmountKktix()
+
+      // 拓元模式
+      const { unmount: unmountTix } = renderWithProviders(
+        <SessionJobWatcher platform="tixcraft" />
+      )
+      const tixManualLogin = screen.getByRole("button", { name: "手動登入" })
+      expect(tixManualLogin).toHaveAttribute("data-variant", "default")
+      const tixAutoLogin = screen.getByRole("button", { name: "自動登入" })
+      expect(tixAutoLogin).toHaveAttribute("data-variant", "outline")
+
+      // 點擊拓元自動登入時，不會呼叫 requestLogin
+      const { requestLogin } = await import("@/lib/api/accounts")
+      fireEvent.click(tixAutoLogin)
+      expect(requestLogin).not.toHaveBeenCalled()
+      unmountTix()
+
+      // ibon 模式
+      const { unmount: unmountIbon } = renderWithProviders(
+        <SessionJobWatcher platform="ibon" />
+      )
+      const ibonManualLogin = screen.getByRole("button", { name: "手動登入" })
+      expect(ibonManualLogin).toHaveAttribute("data-variant", "default")
+      unmountIbon()
     })
   })
 
@@ -100,24 +133,71 @@ describe("Settings Components", () => {
       ).not.toBeInTheDocument()
     })
 
+    it("renders dynamic labels and placeholders based on platform", () => {
+      // KKTIX
+      const { unmount } = renderWithProviders(<CredentialForm platform="kktix" />)
+      expect(screen.getByText("帳號（Email / 使用者名稱）")).toBeInTheDocument()
+      expect(
+        screen.getByPlaceholderText("請輸入 KKTIX 會員帳號或 Email")
+      ).toBeInTheDocument()
+      expect(
+        screen.getByPlaceholderText("請輸入 KKTIX 會員密碼")
+      ).toBeInTheDocument()
+      unmount()
+
+      // 拓元售票
+      const { unmount: unmountTix } = renderWithProviders(
+        <CredentialForm platform="tixcraft" />
+      )
+      expect(
+        screen.getByText("社群登入帳號（Email / 手機號碼）")
+      ).toBeInTheDocument()
+      expect(
+        screen.getByPlaceholderText("請輸入 Facebook 或 Google 帳號 Email")
+      ).toBeInTheDocument()
+      expect(screen.getByText("密碼（選填）")).toBeInTheDocument()
+      unmountTix()
+
+      // ibon 售票
+      renderWithProviders(<CredentialForm platform="ibon" />)
+      expect(screen.getByText("手機號碼 / 身分證字號")).toBeInTheDocument()
+      expect(
+        screen.getByPlaceholderText("請輸入手機號碼（09xxxxxxxx）或身分證字號")
+      ).toBeInTheDocument()
+      expect(screen.getByText("會員密碼")).toBeInTheDocument()
+    })
+
+    it("toggles password visibility with integrated reveal button", async () => {
+      const user = userEvent.setup()
+      renderWithProviders(<CredentialForm platform="kktix" />)
+
+      const passwordInput = screen.getByPlaceholderText("請輸入 KKTIX 會員密碼")
+      expect(passwordInput).toHaveAttribute("type", "password")
+
+      const toggleButton = screen.getByRole("button", { name: "顯示密碼" })
+      await user.click(toggleButton)
+
+      expect(passwordInput).toHaveAttribute("type", "text")
+
+      const hideButton = screen.getByRole("button", { name: "隱藏密碼" })
+      await user.click(hideButton)
+
+      expect(passwordInput).toHaveAttribute("type", "password")
+    })
+
     it("submits credentials for specified platform", async () => {
       const user = userEvent.setup()
       api.storeCredentials.mockResolvedValue(undefined)
 
       renderWithProviders(<CredentialForm platform="tixcraft" />)
 
-      // placeholder 包含 拓元售票
-      expect(
-        screen.getByPlaceholderText("請輸入 拓元售票 會員帳號")
-      ).toBeInTheDocument()
-
       // 輸入帳號密碼並送出
       await user.type(
-        screen.getByPlaceholderText("請輸入 拓元售票 會員帳號"),
+        screen.getByPlaceholderText("請輸入 Facebook 或 Google 帳號 Email"),
         "test@example.com"
       )
       await user.type(
-        screen.getByPlaceholderText("請輸入 拓元售票 會員密碼"),
+        screen.getByPlaceholderText("請輸入社群帳號密碼（選填）"),
         "password123"
       )
 

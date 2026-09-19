@@ -1,3 +1,4 @@
+import { PLATFORM_NAMES, type Platform } from "@/lib/contract"
 import type { SemanticTone } from "@/lib/fsm"
 
 /** 非終態的工作會依序走完這三段；終態另以 badge 呈現。 */
@@ -66,7 +67,10 @@ export interface JobErrorExplanation {
  * Worker 端的失敗字串多半是機器碼或 Playwright 原文；這裡翻成可行動的句子。
  * 瀏覽器二進位缺失是最常見的開箱即用地雷，必須直接給出安裝指令。
  */
-export function explainJobError(error: string): JobErrorExplanation {
+export function explainJobError(
+  error: string,
+  platform?: string
+): JobErrorExplanation {
   const raw = error.trim()
   if (/playwright install|executable doesn't exist/i.test(raw)) {
     return {
@@ -74,16 +78,34 @@ export function explainJobError(error: string): JobErrorExplanation {
       hint: "請在專案根目錄執行 `pnpm run setup:browsers`（等同 `uv run playwright install chromium`），完成後重啟 Worker。",
     }
   }
+  const platformName = platform
+    ? PLATFORM_NAMES[platform as Platform] ?? platform
+    : ""
+
   switch (raw) {
+    case "tixcraft_requires_manual_login":
+      return {
+        title: "拓元售票不支援純帳密自動登入",
+        hint: "拓元售票僅提供 Facebook 與 Google 第三方社群登入，請點擊「手動登入」，在開啟的瀏覽器視窗中完成授權並保留 Session。",
+      }
+    case "ibon_requires_manual_login":
+      return {
+        title: "ibon 售票需手動登入",
+        hint: "ibon 售票登入具備圖形驗證碼，請點擊「手動登入」，在瀏覽器視窗中完成登入與驗證。",
+      }
     case "no_credentials_configured":
       return {
         title: "尚未設定帳號與密碼",
-        hint: "請先在「帳號與密碼」面板填入 KKTIX 帳號與密碼並儲存，再重試自動登入。",
+        hint: platformName
+          ? `請先在「帳號與密碼」面板填入 ${platformName} 帳號與密碼並儲存，再重試自動登入。`
+          : "請先在「帳號與密碼」面板填入帳號與密碼並儲存，再重試自動登入。",
       }
     case "auto_login_failed":
       return {
         title: "自動登入失敗",
-        hint: "帳號或密碼可能有誤，或 KKTIX 這次要求人工驗證；可改用 Manual Login 手動完成一次。",
+        hint: platformName
+          ? `帳號或密碼可能有誤，或 ${platformName} 這次要求人工驗證；可改用手動登入（Manual Login）完成一次。`
+          : "帳號或密碼可能有誤，或該平台本次要求人工驗證；可改用手動登入（Manual Login）完成一次。",
       }
     case "manual_login_timeout":
       return {
@@ -109,7 +131,8 @@ function asBoolean(v: unknown): boolean | null {
 
 /** 把 Worker 回傳的 result 攤成人看得懂的列；未知欄位一律忽略。 */
 export function summarizeJobResult(
-  result: Record<string, unknown> | null
+  result: Record<string, unknown> | null,
+  platform: string = "kktix"
 ): JobResultRow[] {
   if (result === null) return []
   const rows: JobResultRow[] = []
@@ -133,8 +156,13 @@ export function summarizeJobResult(
   }
 
   if (typeof result.cookie_count === "number") {
+    const rawPlat =
+      typeof result.platform === "string" ? result.platform : platform
+    const platformName = rawPlat
+      ? PLATFORM_NAMES[rawPlat as Platform] ?? rawPlat
+      : "KKTIX"
     rows.push({
-      label: "KKTIX cookie",
+      label: `${platformName} cookie`,
       value: `${result.cookie_count} 個`,
       tone: "muted",
     })
