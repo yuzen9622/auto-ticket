@@ -96,6 +96,10 @@ class EventSearchResultOut(BaseModel):
     sale_start_at: datetime | None = None
     event_start_at: datetime | None = None
     status: str
+    detail_loaded: bool = Field(
+        default=False,
+        description="票種與開賣時間是否已由活動頁補齊。",
+    )
 
 
 class EventSearchResponse(BaseModel):

@@ -492,6 +492,7 @@ class KKTIXEventResolver(EventResolver):
             status_text = (
                 _select_first_text(row, KKTIXSelectors.EVENT_TICKET_ROW_STATUS) or ""
             )
+            raw_id = row.get("id")
             tickets.append(
                 TicketType(
                     id=TicketType.make_id(event_id, name),
@@ -500,7 +501,7 @@ class KKTIXEventResolver(EventResolver):
                     price=_parse_price(price_text),
                     status=_parse_status(status_text),
                     inventory_estimate=None,
-                    raw_id=row.get("id") if isinstance(row.get("id"), str) else None,
+                    raw_id=raw_id if isinstance(raw_id, str) else None,
                 )
             )
         if not tickets and any(
@@ -519,6 +520,8 @@ class KKTIXEventResolver(EventResolver):
             return EventStatus.SOLD_OUT
         if TicketTypeStatus.AVAILABLE in statuses:
             return EventStatus.ON_SALE
-        if statuses == {TicketTypeStatus.COMING_SOON}:
+        # 已售罄的早鳥票與尚未開賣的一般票可同時存在；只要仍有
+        # 尚未開賣的票種，整場活動仍應視為尚未開賣，而非狀態未知。
+        if TicketTypeStatus.COMING_SOON in statuses:
             return EventStatus.ANNOUNCED
         return EventStatus.UNKNOWN

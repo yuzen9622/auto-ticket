@@ -16,7 +16,7 @@ from adapters.ticketing.kktix.resolver import (
     validate_org_slugs,
 )
 from adapters.ticketing.kktix.selectors import KKTIXSelectors, css_only
-from domain.event import EventStatus, PlatformEnum, TicketTypeStatus
+from domain.event import EventStatus, PlatformEnum, TicketType, TicketTypeStatus
 from tests.conftest import EXPECTED_EVENT_START_UTC, EXPECTED_SALE_START_UTC
 
 EVENT_URL = "https://atarayo.kktix.cc/events/atarayo-taipei-2026"
@@ -208,6 +208,30 @@ async def test_fetch_event_metadata_ticket_types(
     assert event.status is EventStatus.ON_SALE
     assert all(ticket.event_id == event.id for ticket in event.ticket_types)
     assert all(ticket.inventory_estimate is None for ticket in event.ticket_types)
+
+
+def test_derive_status_marks_mixed_sold_out_and_coming_soon_as_announced(
+    kktix_client: httpx.AsyncClient,
+) -> None:
+    event_id = "ev_test"
+    tickets = [
+        TicketType(
+            id="tt_sold_out",
+            event_id=event_id,
+            name="早鳥票",
+            price=1000,
+            status=TicketTypeStatus.SOLD_OUT,
+        ),
+        TicketType(
+            id="tt_coming_soon",
+            event_id=event_id,
+            name="一般票",
+            price=1200,
+            status=TicketTypeStatus.COMING_SOON,
+        ),
+    ]
+
+    assert make_resolver(kktix_client)._derive_status(tickets) is EventStatus.ANNOUNCED
 
 
 async def test_fetch_event_metadata_fallback_chain(

@@ -145,6 +145,7 @@ def _event_to_search_result(ev: Event) -> EventSearchResultOut:
         sale_start_at=ev.sale_start_at,
         event_start_at=ev.event_start_at,
         status=ev.status.value if hasattr(ev.status, "value") else str(ev.status),
+        detail_loaded=_is_detail_loaded(ev),
     )
 
 

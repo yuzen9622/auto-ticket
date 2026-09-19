@@ -115,6 +115,7 @@ async def test_search_events_resolves_scope_on_the_backend(
         assert providers[0]["id"] == "kktix"
         assert providers[0]["name"] == "KKTIX"
         assert providers[0]["event_url"] == top["canonical_url"]
+        assert top["detail_loaded"] is False
 
 
 async def test_search_events_accepts_event_url(app_with_backend_scope) -> None:
@@ -127,6 +128,7 @@ async def test_search_events_accepts_event_url(app_with_backend_scope) -> None:
         results = resp.json()["results"]
         assert len(results) == 1
         assert results[0]["canonical_url"] == ATARAYO_URL
+        assert results[0]["detail_loaded"] is True
 
 
 async def test_search_result_id_is_fetchable(app_with_backend_scope) -> None:
