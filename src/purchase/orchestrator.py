@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timezone
 import os
 import sys
 from collections.abc import Awaitable, Callable, Mapping
@@ -125,6 +126,11 @@ class _Runtime:
     qualification_handled: bool = False
     form_submitted: bool = False
     payment_attempted: bool = False
+    #: 最後一次票種決策。報告一律用這份，不靠 adapter 的副作用——
+    #: adapter 只在「選到並套用」時才記，於是判定售罄時 trace 永遠是空的。
+    last_ticket_decision: Any = None
+    #: 訂單是否已送出；送出後不得再倒退回組訂單階段。
+    order_submitted: bool = False
 
 
 class PurchaseOrchestrator:
@@ -148,6 +154,7 @@ class PurchaseOrchestrator:
         attended: bool = True,
         can_clear_bot_check: bool = True,
         unattended_gate_grace_s: float = 20.0,
+        gate_must_finish_before_sale_s: float = 60.0,
         race_loop_timeout_s: float = 120.0,
         queue_poll_s: float = 0.5,
         micro_wait_s: float = 0.05,
@@ -184,6 +191,9 @@ class PurchaseOrchestrator:
         self.attended = attended
         self.can_clear_bot_check = can_clear_bot_check
         self.unattended_gate_grace_s = unattended_gate_grace_s
+        # 就緒閘門必須在開賣前收工。等人等過頭等於帶著「還在確認」的狀態撞進開賣，
+        # 而開賣瞬間的每一毫秒都用來搶票，不是用來檢查頁面。
+        self.gate_must_finish_before_sale_s = gate_must_finish_before_sale_s
         # 反應式迴圈的全局預算與各種微等待。預算是唯一的止損點：
         # 沒它的話，一個永遠判不出來的頁面會讓迴圈轉到天荒地老。
         self.race_loop_timeout_s = race_loop_timeout_s
@@ -272,7 +282,11 @@ class PurchaseOrchestrator:
                 await self.adapter.navigate_to_login_from_guest_modal(page)
             ok = bool(await self.adapter.login(page, username, secret_token))
             if ok:
-                await self.adapter.navigate_to_event(page, self.spec.event_url)
+                await self.adapter.navigate_to_event(
+                page,
+                self.spec.event_url,
+                session_preference=self.spec.session_preference,
+            )
         finally:
             self._rt.screenshot_hook = saved_hook
         self.telemetry.record(TimelineEventType.MARK, "auto_login_result", ok=ok)
@@ -329,6 +343,10 @@ class PurchaseOrchestrator:
             if solvable
             else min(self.session_gate_timeout_s, self.unattended_gate_grace_s)
         )
+        # 再怎麼等，都不能等過開賣前的收工線——後面還有導航與最後確認要做。
+        cap = self._gate_budget_cap()
+        if cap is not None:
+            budget = min(budget, cap)
         blocked_reason: str | None = None
         deadline = self._loop_time() + budget
         kind = await self.adapter.probe_page(page, self.spec.event_url)
@@ -350,6 +368,21 @@ class PurchaseOrchestrator:
                 kind = await self.adapter.probe_page(page)
                 attempt += 1
                 continue
+
+            # 多場次活動：母活動的登記頁沒有票種，要先選進場次自己的登記頁。
+            # 這件事一定要在開賣前做完——開賣後才去找場次就來不及了。
+            # 被人機驗證或登入頁擋住時不要導航——那會把人剛處理好的現場狀態敲掉。
+            # 其餘「不是可下單登記頁」的情況都可能是多場次活動的母頁，值得試著選進場次。
+            if kind in (KKTIXPageKind.EVENT, KKTIXPageKind.UNKNOWN):
+                await self.adapter.navigate_to_event(
+                    page,
+                    self.spec.event_url,
+                    session_preference=self.spec.session_preference,
+                )
+                kind = await self.adapter.probe_page(page)
+                if kind is KKTIXPageKind.REGISTRATION:
+                    attempt += 1
+                    continue
             blocked_reason = self._gate_blocker(kind)
             if self._loop_time() >= deadline:
                 kind_value = str(getattr(kind, "value", kind))
@@ -365,6 +398,20 @@ class PurchaseOrchestrator:
             # 只重新判讀目前這一頁，不再導航——反覆輪詢對方站台既沒必要也不禮貌。
             kind = await self.adapter.probe_page(page)
             attempt += 1
+
+    def _gate_budget_cap(self) -> float | None:
+        """就緒閘門最多還能花多少秒，None 代表不受開賣時間限制。
+
+        這個上限的用途是保護開賣瞬間：等人不能等過收工線，否則會帶著「還在確認」
+        的狀態撞進開賣。開賣時間若已經過去就沒有東西要保護了，此時不設限——
+        那是補跑情境，該讓呼叫端自己的預算決定。
+        """
+        remaining_to_sale = (
+            self.spec.sale_start_at - datetime.now(timezone.utc)
+        ).total_seconds()
+        if remaining_to_sale <= 0:
+            return None
+        return max(0.0, remaining_to_sale - self.gate_must_finish_before_sale_s)
 
     def _gate_blocker(self, kind: Any) -> str | None:
         """這個閘門在目前的瀏覽器條件下有沒有可能被通過；不可能就回傳該說的話。"""
@@ -405,7 +452,11 @@ class PurchaseOrchestrator:
                 TimelineEventType.MARK, "navigation_skipped", url=current_url
             )
             return
-        if not await self.adapter.navigate_to_event(page, self.spec.event_url):
+        if not await self.adapter.navigate_to_event(
+                page,
+                self.spec.event_url,
+                session_preference=self.spec.session_preference,
+            ):
             raise PurchaseStepError("navigate_to_event", "navigation refused")
 
     async def _enter_ready(self, ctx: WarmupContext) -> None:
@@ -476,13 +527,32 @@ class PurchaseOrchestrator:
                 case _:
                     await asyncio.sleep(self.micro_wait_s)
 
+    #: 訂單送出之後就不該再回到這些「還在組訂單」的狀態。
+    _PRE_ORDER_STATES = frozenset(
+        {"TICKET_SELECTION", "SEAT_SELECTION", "FORM_FILLING"}
+    )
+
     def _sync_page_state(self, state: PageState) -> bool:
-        """把 FSM 對齊到頁面狀態；已在目標狀態就不重複記錄。"""
+        """把 FSM 對齊到頁面狀態；已在目標狀態就不重複記錄。
+
+        一旦走到等待付款（訂單已經成立），就不再接受倒退回選票／劃位／填表。
+        付款頁是漸進渲染的，偵測若搶在渲染完成前跑，會被訂單倒數提示命中而判成
+        填表中；沒有這道閘，FSM 會在 PAYMENT_REQUIRED 與 FORM_FILLING 之間來回
+        跳動，直到預算耗盡——但訂單其實早就建立好了。
+        """
         fsm = self.fsm
         if fsm is None:
             raise PurchaseStepError("fsm", "workflow not initialised")
         target, event_name = PAGE_STATE_FSM_SYNC[state]
         if fsm.current_state_id == target:
+            return True
+        if self._rt.order_submitted and target in self._PRE_ORDER_STATES:
+            self.telemetry.record(
+                TimelineEventType.MARK,
+                "page_state_regression_ignored",
+                current=fsm.current_state_id,
+                rejected=target,
+            )
             return True
         return self._sync_fsm(target, event_name)
 
@@ -501,6 +571,8 @@ class PurchaseOrchestrator:
         return await self._apply_decision(page, decision)
 
     async def _apply_decision(self, page: Any, decision: Any) -> bool:
+        # 不論選到與否都先留底：售罄時的比對過程才是真正需要被看到的東西。
+        self._rt.last_ticket_decision = decision
         """套用**已作出**的決策；售罄即收斂終態，套用失敗一律安全歸零後中止。"""
         if decision.status != "SELECTED" or decision.option is None:
             self._sync_fsm("SOLD_OUT", EVENT_ALL_TICKETS_UNAVAILABLE)
@@ -549,6 +621,7 @@ class PurchaseOrchestrator:
             self.spec.ticket_preference,
             excluded_names=self._rt.excluded_ticket_names,
         )
+        self._rt.last_ticket_decision = decision
         if decision.status != "SELECTED" or decision.option is None:
             self._sync_fsm("SOLD_OUT", EVENT_ALL_TICKETS_UNAVAILABLE)
             return False
@@ -591,6 +664,8 @@ class PurchaseOrchestrator:
             await self._resolve_verification(page)
         if not await self.adapter.submit_order(page):
             raise PurchaseStepError("submit_order", "confirm button unavailable")
+        # 訂單已成立：之後任何「看起來還在填表」的判讀都是漸進渲染造成的假象。
+        self._rt.order_submitted = True
         self._rt.form_submitted = True
 
     async def _recover_from_verification_error(self, page: Any) -> None:
@@ -626,6 +701,8 @@ class PurchaseOrchestrator:
         self._send(EVENT_VERIFICATION_PASSED)
         if not await self.adapter.submit_order(page):
             raise PurchaseStepError("submit_order", "confirm button unavailable")
+        # 訂單已成立：之後任何「看起來還在填表」的判讀都是漸進渲染造成的假象。
+        self._rt.order_submitted = True
         self._rt.form_submitted = True
 
     async def _handle_standalone_verification(self, page: Any) -> None:
@@ -747,7 +824,9 @@ class PurchaseOrchestrator:
     def _build_report(self, plan: Any) -> PurchaseReport:
         fsm = self.fsm
         trigger = plan.outcome_of(WarmupStage.TRIGGER_PURCHASE)
-        decision = getattr(self.adapter, "last_ticket_decision", None)
+        decision = self._rt.last_ticket_decision or getattr(
+            self.adapter, "last_ticket_decision", None
+        )
         errors = [
             o for o in plan.outcomes if o.status == "FAILED" and o.error is not None
         ]

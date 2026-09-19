@@ -178,7 +178,7 @@ class StubAdapter:
             self.probe_kinds.pop(0) if self.probe_kinds else KKTIXPageKind.REGISTRATION
         )
 
-    async def navigate_to_event(self, page: Any, url: str) -> bool:
+    async def navigate_to_event(self, page: Any, url: str, session_preference: str | None = None) -> bool:
         self.calls.append("navigate")
         return True
 
@@ -678,6 +678,45 @@ async def test_session_gate_fails_closed_when_never_ready(tmp_path: Path) -> Non
     assert report.final_state == "FAILED"
     assert "page not ready before sale: LOGIN" in str(report.error)
     assert "read_registration_tickets" not in adapter.calls
+
+
+async def test_gate_never_waits_past_the_sale_moment(tmp_path: Path) -> None:
+    """等人不能等過開賣：開賣瞬間要用來搶票，不是用來確認頁面狀態。"""
+    from datetime import datetime, timedelta, timezone
+
+    adapter = StubAdapter(probe_kinds=[KKTIXPageKind.CHALLENGE] * 50)
+    orchestrator, _, _, _ = build(tmp_path, adapter)
+    orchestrator.session_gate_poll_s = 0.0
+    orchestrator.attended = True
+    orchestrator.can_clear_bot_check = True
+    # 人願意等 10 分鐘，但開賣只剩 70 秒、收工線設在開賣前 60 秒 → 實際只能等 10 秒。
+    orchestrator.session_gate_timeout_s = 600.0
+    orchestrator.gate_must_finish_before_sale_s = 60.0
+    orchestrator.spec = orchestrator.spec.model_copy(
+        update={
+            "sale_start_at": datetime.now(timezone.utc) + timedelta(seconds=70)
+        }
+    )
+
+    cap = orchestrator._gate_budget_cap()
+    assert cap is not None
+    assert 0 < cap <= 11, cap
+
+
+async def test_gate_budget_is_unclamped_once_the_sale_has_started(
+    tmp_path: Path,
+) -> None:
+    """補跑情境：開賣已過就沒有開賣瞬間要保護，改由呼叫端的預算決定。"""
+    from datetime import datetime, timedelta, timezone
+
+    adapter = StubAdapter()
+    orchestrator, _, _, _ = build(tmp_path, adapter)
+    orchestrator.spec = orchestrator.spec.model_copy(
+        update={
+            "sale_start_at": datetime.now(timezone.utc) - timedelta(seconds=5)
+        }
+    )
+    assert orchestrator._gate_budget_cap() is None
 
 
 async def test_bot_check_fails_fast_even_with_a_visible_window(

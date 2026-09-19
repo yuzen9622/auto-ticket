@@ -343,11 +343,13 @@ async def test_flow_auto_login_screenshot_barrier(
     flow.page.on_click("btn-login", load_page_html("kktix_registration_new.html"))
     orig_nav = orch.adapter.navigate_to_event
 
-    async def nav_stub(page: Any, url: str) -> bool:
+    async def nav_stub(
+        page: Any, url: str, session_preference: str | None = None
+    ) -> bool:
         from bs4 import BeautifulSoup
 
         flow.page.soup = BeautifulSoup(load_page_html("kktix_registration_new.html"), "html.parser")
-        return bool(await orig_nav(page, url))
+        return bool(await orig_nav(page, url, session_preference=session_preference))
 
     orch.adapter.navigate_to_event = nav_stub
     report = await orch.run()
