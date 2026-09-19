@@ -42,6 +42,10 @@ from browser.cdp_attach import (  # noqa: E402
 )
 from browser.context_factory import DEFAULT_SCREENSHOT_DIR, BrowserProfile  # noqa: E402
 from browser.manager import PlaywrightManager  # noqa: E402
+from browser.system_chrome import (  # noqa: E402
+    SystemChromeError,
+    ensure_system_chrome,
+)
 from domain.task import CreditCardProfile, PurchaseTaskSpec  # noqa: E402
 from purchase.orchestrator import PurchaseOrchestrator  # noqa: E402
 from scheduler.scheduler import WarmupScheduler  # noqa: E402
@@ -123,6 +127,18 @@ def build_parser() -> argparse.ArgumentParser:
         "給了就只走借用模式，連不上直接中止",
     )
     parser.add_argument(
+        "--auto-launch-browser",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="沒給 --cdp-endpoint 時自動啟動本機 Chrome 並接上（預設啟用）",
+    )
+    parser.add_argument(
+        "--browser-debug-port",
+        type=int,
+        default=9222,
+        help="自動啟動時使用的遠端偵錯埠（預設 9222）",
+    )
+    parser.add_argument(
         "--cdp-page-url",
         default=None,
         help="借用模式要挑的頁籤絕對網址（預設 = 任務的 event_url）。"
@@ -182,6 +198,26 @@ async def run(args: argparse.Namespace) -> int:
 
     cdp_endpoint = None
     cdp_target = None
+    # 沒指定端點就自己把使用者本機的 Chrome 開起來：人機驗證只有它過得了，
+    # 而「請你自己開一個帶偵錯埠的瀏覽器」不該是使用者要做的事。
+    auto_launched = False
+    if args.cdp_endpoint is None and args.auto_launch_browser:
+        try:
+            chrome = await ensure_system_chrome(
+                port=args.browser_debug_port, initial_url=spec.event_url
+            )
+        except SystemChromeError as exc:
+            log.error("browser_launch_failed", error=str(exc))
+            return 2
+        args.cdp_endpoint = chrome.endpoint
+        auto_launched = True
+        log.info(
+            "browser_ready",
+            endpoint=chrome.endpoint,
+            binary=str(chrome.binary),
+            launched_by_us=chrome.launched_by_us,
+        )
+
     if args.cdp_endpoint is not None:
         try:
             cdp_endpoint = parse_cdp_endpoint(args.cdp_endpoint)
@@ -189,7 +225,8 @@ async def run(args: argparse.Namespace) -> int:
         except CdpEndpointError as exc:
             log.error("invalid_cdp_option", error=str(exc))
             return 2
-        if args.headless or args.profile:
+        # 自動啟動時使用者根本沒指定啟動參數，對他喊「你的參數被忽略了」只是雜訊。
+        if not auto_launched and (args.headless or args.profile):
             log.warning(
                 "cdp_mode_ignores_launch_options",
                 hint="借用模式不套用 --headless / --profile 的 user_data_dir；"

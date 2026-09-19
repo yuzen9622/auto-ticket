@@ -177,7 +177,9 @@ async def test_browser_stops_even_when_scheduler_shutdown_fails(
     monkeypatch.setattr(run_purchase, "PurchaseOrchestrator", FakeOrchestrator)
     monkeypatch.setattr(run_purchase, "KKTIXAdapter", lambda **kwargs: object())
 
-    args = run_purchase.build_parser().parse_args(["--task", str(_task_file(tmp_path))])
+    args = run_purchase.build_parser().parse_args(
+        ["--task", str(_task_file(tmp_path)), "--no-auto-launch-browser"]
+    )
     with pytest.raises(RuntimeError, match="scheduler cleanup failed"):
         await run_purchase.run(args)
     assert stopped == 1
@@ -237,7 +239,9 @@ async def test_verification_rules_wires_rule_based_provider(
     monkeypatch.setattr(run_purchase, "PurchaseOrchestrator", FakeOrchestrator)
     monkeypatch.setattr(run_purchase, "KKTIXAdapter", fake_adapter)
 
-    args = run_purchase.build_parser().parse_args(["--task", str(task_path)])
+    args = run_purchase.build_parser().parse_args(
+        ["--task", str(task_path), "--no-auto-launch-browser"]
+    )
     code = await run_purchase.run(args)
     assert code == 0
 

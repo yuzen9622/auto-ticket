@@ -17,14 +17,16 @@
         uv run python scripts/login.py --profile live --auto-login
 """
 
+# pyright: reportMissingImports=false
 from __future__ import annotations
 
 import argparse
 import asyncio
 import os
 import sys
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from pathlib import Path
+from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "src"))
@@ -74,7 +76,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def summarize_cookies(
-    cookies: list[dict], host_fragment: str = "kktix"
+    cookies: Sequence[Any], host_fragment: str = "kktix"
 ) -> tuple[int, bool]:
     """只回報數量與「是否看起來有 session」——**絕不印出 cookie 內容**。"""
     relevant = [c for c in cookies if host_fragment in str(c.get("domain", ""))]
@@ -86,7 +88,7 @@ def summarize_cookies(
     return len(relevant), has_session
 
 
-async def attempt_auto_login(page: object) -> bool:
+async def attempt_auto_login(page: Any) -> bool:
     """自動填入環境變數憑證。失敗只回報狀態，交由使用者接手手動登入。"""
     pair = credentials_from_env()
     if pair is None:

@@ -171,6 +171,11 @@ class PlaywrightManager:
             if self._attached_page.is_closed():
                 raise CdpAttachError("已選定的 CDP 頁籤已被關閉")
             return self._attached_page
+        if self._cdp is not None:
+            # 借用模式：分頁是使用者的，而且會跨任務累積。隨手拿 pages[0] 等於
+            # 劫持一個不相干的頁面——實測過會對著完全另一場活動跑完整個流程。
+            # 自己開一頁，任務之間也不會互相污染。
+            return await self._context.new_page()
         pages = self._context.pages
         if pages:
             return pages[0]

@@ -45,6 +45,10 @@ class WorkerSettings:
     # 借用使用者自己的 Chrome（`http://127.0.0.1:9222`）。KKTIX 的 Cloudflare 擋
     # Playwright 自帶的瀏覽器，開視窗也沒用，只有借用模式過得去。
     cdp_endpoint: str | None = None
+    # 沒給 cdp_endpoint 時，自己去把使用者本機的 Chrome 開起來並接上——
+    # 不該要求使用者手動下 --remote-debugging-port 再把端點貼回來。
+    auto_launch_browser: bool = True
+    browser_debug_port: int = 9222
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "db_path", Path(self.db_path))

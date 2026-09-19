@@ -14,6 +14,7 @@ from broker.broker import SqliteTaskBroker
 from broker.jobs import JobRecord
 from broker.outbox import OutboxWriter
 from browser.context_factory import BrowserProfile
+from browser.system_chrome import SystemChromeError, ensure_system_chrome
 from domain.task import TaskStatus
 from purchase.orchestrator import PurchaseOrchestrator
 from storage.database import Database
@@ -56,8 +57,27 @@ async def execute_purchase(
 
     telemetry = StreamingTimelineRecorder(outbox, task_id, experiment_id=experiment_id)
 
-    # 借用模式下視窗是使用者自己開的 Chrome：看得到，而且過得了人機驗證。
-    borrowed = settings.cdp_endpoint is not None
+    # 人機驗證只有使用者本機那顆真 Chrome 過得了，所以這裡自己把它開起來，
+    # 而不是要使用者先手動開一個帶偵錯埠的瀏覽器再把端點貼進設定。
+    cdp_endpoint = settings.cdp_endpoint
+    if cdp_endpoint is None and settings.auto_launch_browser:
+        try:
+            chrome = await ensure_system_chrome(
+                port=settings.browser_debug_port, initial_url=spec.event_url
+            )
+            cdp_endpoint = chrome.endpoint
+        except SystemChromeError as exc:
+            outbox.publish(
+                task_id=task_id,
+                experiment_id=experiment_id,
+                type=ServerMessageType.TASK_LOG.value,
+                payload={
+                    "phase": "browser_launch_failed",
+                    "reason": str(exc),
+                },
+                ephemeral=False,
+            )
+    borrowed = cdp_endpoint is not None
     browser = StreamingPlaywrightManager(
         BrowserProfile(name=job.profile, headless=settings.headless),
         telemetry,
@@ -65,7 +85,7 @@ async def execute_purchase(
         task_id=task_id,
         experiment_id=experiment_id,
         screenshot_dir=settings.screenshot_dir,
-        cdp_endpoint=settings.cdp_endpoint,
+        cdp_endpoint=cdp_endpoint,
         cdp_page_url=spec.event_url if borrowed else None,
     )
 
