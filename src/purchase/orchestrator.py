@@ -23,7 +23,7 @@ from adapters.ticketing.kktix.selectors import KKTIXSelectors
 from adapters.verification.base import VerificationProvider
 from browser.context_factory import sanitize_path_component
 from browser.manager import PlaywrightManager
-from domain.task import PurchaseTaskSpec
+from domain.task import PurchaseTaskSpec, StartTiming
 from fsm.machine import PurchaseWorkflow
 from purchase.handlers import (
     EVENT_ALL_TICKETS_UNAVAILABLE,
@@ -150,6 +150,7 @@ class PurchaseOrchestrator:
         screenshot_drain_timeout: float = 30.0,
         session_gate_timeout_s: float = 240.0,
         session_gate_poll_s: float = 5.0,
+        session_render_poll_s: float = 0.25,
         session_gate: Callable[[str, int], Awaitable[None]] | None = None,
         attended: bool = True,
         can_clear_bot_check: bool = True,
@@ -182,6 +183,9 @@ class PurchaseOrchestrator:
         # 開賣前的「等人就緒」閘門：登入與人機驗證都必須由人自己在瀏覽器裡完成。
         self.session_gate_timeout_s = session_gate_timeout_s
         self.session_gate_poll_s = session_gate_poll_s
+        # 頁面只是還沒渲染完時的重讀間隔。這一步不連對方站台，只重讀本地 DOM，
+        # 用「等人」的 5 秒去等 Angular 編譯完，等於白白站在門口五秒。
+        self.session_render_poll_s = session_render_poll_s
         self.session_gate = session_gate
         # 兩種閘門的條件不一樣，不能混為一談：
         # `attended`＝有視窗、人看得到（登入、點進登記頁這類靠它就夠）；
@@ -349,6 +353,11 @@ class PurchaseOrchestrator:
             budget = min(budget, cap)
         blocked_reason: str | None = None
         deadline = self._loop_time() + budget
+        # 下一次可以對外喊「需要人處理」的時刻。開頭先安靜一輪：頁面剛導完還在編譯
+        # 是常態，這時候喊人只會讓使用者跑去看一張自己就會好的頁。
+        # 真的需要人（登入、人機驗證）時下面會把它拉到現在，不受安靜期拘束。
+        announce_at = self._loop_time() + self.session_gate_poll_s
+        announced = False
         kind = await self.adapter.probe_page(page, self.spec.event_url)
         attempt = 1
         while True:
@@ -392,12 +401,31 @@ class PurchaseOrchestrator:
                     "check_session",
                     f"page not ready before sale: {kind_value}",
                 )
-            if self.session_gate is not None:
-                await self.session_gate(str(getattr(kind, "value", kind)), attempt)
-            await asyncio.sleep(self.session_gate_poll_s)
             # 只重新判讀目前這一頁，不再導航——反覆輪詢對方站台既沒必要也不禮貌。
+            # 但「再讀一次已經載好的 DOM」不會碰到對方站台，所以間隔要看**在等什麼**：
+            # 等人去點東西就隔久一點，等 Angular 把登記頁編譯完就該馬上再看一次。
+            needs_human = self._needs_a_human(kind)
+            if needs_human and not announced:
+                # 真的要等人動手，立刻喊，不用等安靜期過完。
+                announce_at = self._loop_time()
+            if self.session_gate is not None and self._loop_time() >= announce_at:
+                await self.session_gate(str(getattr(kind, "value", kind)), attempt)
+                announced = True
+                announce_at = self._loop_time() + self.session_gate_poll_s
+            await asyncio.sleep(
+                self.session_gate_poll_s if needs_human else self.session_render_poll_s
+            )
             kind = await self.adapter.probe_page(page)
             attempt += 1
+
+    @staticmethod
+    def _needs_a_human(kind: Any) -> bool:
+        """這一頁是在等人動手，還是只是還沒渲染完？
+
+        登入與人機驗證非人不可，隔久一點再看才合理；其餘情況（含判不出來的
+        `UNKNOWN`）多半是頁面還在編譯，重讀一次本地 DOM 既免費又立刻有答案。
+        """
+        return kind in (KKTIXPageKind.LOGIN, KKTIXPageKind.CHALLENGE)
 
     def _gate_budget_cap(self) -> float | None:
         """就緒閘門最多還能花多少秒，None 代表不受開賣時間限制。
@@ -405,7 +433,12 @@ class PurchaseOrchestrator:
         這個上限的用途是保護開賣瞬間：等人不能等過收工線，否則會帶著「還在確認」
         的狀態撞進開賣。開賣時間若已經過去就沒有東西要保護了，此時不設限——
         那是補跑情境，該讓呼叫端自己的預算決定。
+
+        立即執行的任務同樣不設限：票已經在賣，`sale_start_at` 記的是任務建立時刻，
+        拿它當收工線只會把「登入、過人機驗證、進登記頁」的時間砍成零。
         """
+        if self.spec.start_timing is StartTiming.IMMEDIATE:
+            return None
         remaining_to_sale = (
             self.spec.sale_start_at - datetime.now(timezone.utc)
         ).total_seconds()

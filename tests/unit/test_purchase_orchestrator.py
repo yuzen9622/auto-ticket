@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from unittest.mock import patch
 
 import pytest
 
@@ -22,7 +23,7 @@ from adapters.ticketing.kktix.adapter import (
     PageState,
 )
 from domain.preference import SeatPreference, TicketPreference, TicketPriority
-from domain.task import PurchaseTaskSpec, UserContactProfile
+from domain.task import PurchaseTaskSpec, StartTiming, UserContactProfile
 from purchase.handlers import (
     FATAL_TICKET_REASONS,
     TICKET_REASON_EVENTS,
@@ -315,6 +316,36 @@ def build(
         timeline_path=timeline_path,
     )
     return orchestrator, scheduler, browser, telemetry
+
+
+def _ctx(stage: WarmupStage = WarmupStage.CHECK_SESSION) -> WarmupContext:
+    """直接呼叫單一階段 handler 時用的最小 context。"""
+    return WarmupContext(
+        task_id="t",
+        stage=stage,
+        planned_local_at=BASE_WALL,
+        fired_local_at=BASE_WALL,
+        drift_us=0,
+        time_reference=TimeReference(offset_ms=0.0),
+    )
+
+
+def _fake_clock(orchestrator: PurchaseOrchestrator) -> tuple[Any, list[float]]:
+    """讓假的 sleep 真的推進假時鐘，並回傳 (sleep, 每次睡了多久)。
+
+    只把 `asyncio.sleep` 換成 no-op 的話時間永遠停在 0，「要跨過幾秒才會發生」
+    這類行為（安靜期、逾時、節流）就一條都測不到——測試會因為錯的理由通過。
+    """
+    now = 0.0
+    slept: list[float] = []
+
+    async def sleep(seconds: float) -> None:
+        nonlocal now
+        slept.append(seconds)
+        now += seconds
+
+    orchestrator._loop_time = lambda: now  # type: ignore[method-assign]
+    return sleep, slept
 
 
 # ------------------------------------------------------------------ 對應表
@@ -717,6 +748,120 @@ async def test_gate_budget_is_unclamped_once_the_sale_has_started(
         }
     )
     assert orchestrator._gate_budget_cap() is None
+
+
+async def test_still_rendering_page_is_reread_without_the_human_wait(
+    tmp_path: Path,
+) -> None:
+    """頁面只是還沒編譯完時，不得套用「等人」的輪詢間隔。
+
+    這條守的是實測到的 5 秒空轉：導完登記頁後 Angular 還沒編譯，第一次重探判成
+    UNKNOWN，於是整個流程停在 `asyncio.sleep(5)` 上——而那一步只是重讀本地 DOM，
+    根本沒有碰對方站台，等 5 秒純屬白等。
+    """
+    adapter = StubAdapter(
+        probe_kinds=[
+            KKTIXPageKind.UNKNOWN,  # 進入閘門時的第一次判讀
+            KKTIXPageKind.UNKNOWN,  # 導航後立刻重探：Angular 還沒編譯完
+            KKTIXPageKind.REGISTRATION,  # 短暫重讀後就好了
+        ]
+    )
+    orchestrator, _, browser, _ = build(tmp_path, adapter)
+    orchestrator._rt.page = browser.page
+    orchestrator.session_gate_poll_s = 5.0
+    orchestrator.session_render_poll_s = 0.25
+    sleep, slept = _fake_clock(orchestrator)
+
+    with patch("asyncio.sleep", sleep):
+        await orchestrator._check_session(_ctx())
+
+    assert slept == [0.25], slept
+
+
+async def test_a_page_that_needs_a_human_keeps_the_long_interval(
+    tmp_path: Path,
+) -> None:
+    """登入頁非人不可：那裡每 250 毫秒重讀一次沒有意義，維持原本的間隔。"""
+    announced: list[tuple[str, int]] = []
+
+    async def gate(kind: str, attempt: int) -> None:
+        announced.append((kind, attempt))
+
+    adapter = StubAdapter(
+        probe_kinds=[KKTIXPageKind.LOGIN, KKTIXPageKind.REGISTRATION]
+    )
+    orchestrator, _, browser, _ = build(tmp_path, adapter)
+    orchestrator._rt.page = browser.page
+    orchestrator.session_gate_poll_s = 5.0
+    orchestrator.session_render_poll_s = 0.25
+    orchestrator.session_gate = gate
+    sleep, slept = _fake_clock(orchestrator)
+
+    with patch("asyncio.sleep", sleep):
+        await orchestrator._check_session(_ctx())
+
+    assert slept == [5.0], slept
+    # 要等人就要立刻說，不能讓使用者對著一張需要他登入的頁乾等。
+    assert announced == [("LOGIN", 1)]
+
+
+async def test_a_page_that_renders_in_time_never_cries_for_a_human(
+    tmp_path: Path,
+) -> None:
+    """頁面自己在安靜期內好了，就不該有人被叫去看它。"""
+    announced: list[tuple[str, int]] = []
+
+    async def gate(kind: str, attempt: int) -> None:
+        announced.append((kind, attempt))
+
+    adapter = StubAdapter(
+        probe_kinds=[
+            KKTIXPageKind.UNKNOWN,
+            KKTIXPageKind.UNKNOWN,
+            KKTIXPageKind.REGISTRATION,
+        ]
+    )
+    orchestrator, _, browser, _ = build(tmp_path, adapter)
+    orchestrator._rt.page = browser.page
+    orchestrator.session_gate_poll_s = 5.0
+    orchestrator.session_render_poll_s = 0.25
+    orchestrator.session_gate = gate
+    sleep, _ = _fake_clock(orchestrator)
+
+    with patch("asyncio.sleep", sleep):
+        await orchestrator._check_session(_ctx())
+
+    assert announced == []
+
+
+async def test_fast_reprobing_does_not_multiply_the_notifications(
+    tmp_path: Path,
+) -> None:
+    """判不出來的頁面拖久了還是要喊人，但喊的頻率跟重讀頻率是兩回事。
+
+    重讀間隔縮成 1/20 之後，若通知跟著每一輪發，使用者會被同一件事洗版 20 倍。
+    這條把兩者釘開：16 秒內重讀 64 次，通知只准按 `session_gate_poll_s` 發 3 次。
+    """
+    announced: list[tuple[str, int]] = []
+
+    async def gate(kind: str, attempt: int) -> None:
+        announced.append((kind, attempt))
+
+    adapter = StubAdapter(probe_kinds=[KKTIXPageKind.UNKNOWN] * 200)
+    orchestrator, _, browser, _ = build(tmp_path, adapter)
+    orchestrator._rt.page = browser.page
+    orchestrator.session_gate_timeout_s = 16.0
+    orchestrator.session_gate_poll_s = 5.0
+    orchestrator.session_render_poll_s = 0.25
+    orchestrator.session_gate = gate
+    sleep, slept = _fake_clock(orchestrator)
+
+    with patch("asyncio.sleep", sleep):
+        with pytest.raises(PurchaseStepError):
+            await orchestrator._check_session(_ctx())
+
+    assert slept == [0.25] * 64, len(slept)
+    assert [kind for kind, _ in announced] == ["UNKNOWN"] * 3, announced
 
 
 async def test_bot_check_fails_fast_even_with_a_visible_window(

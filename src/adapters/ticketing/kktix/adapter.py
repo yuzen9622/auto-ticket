@@ -640,28 +640,36 @@ class KKTIXAdapter(TicketingAdapter):
             return list(await locator.all())
         return []
 
-    async def _is_rendered_registration(self, page: Page) -> bool:
+    async def _is_rendered_registration(
+        self, page: Page, html: str | None = None
+    ) -> bool:
         """真的是「可以下單的登記頁」嗎。
 
         光看容器存在不夠：Angular 還沒編譯完時原始 mustache 仍在 HTML 裡，
         多場次活動的母頁更是連容器都沒有卻仍可能被誤判。把「還沒渲染完」
         當成就緒，會讓開賣前的閘門直接放行，然後停在一張買不了票的頁上。
+
+        呼叫端已經抓過同一份 HTML 時請用 `html` 傳進來：整頁序列化要跑在瀏覽器
+        主執行緒上，同一輪判讀抓兩次等於平白多付一次。
         """
         if not await self._has(page, KKTIXSelectors.REGISTRATION_APP):
             return False
-        try:
-            html = str(await page.content())
-        except Exception:
-            # 讀不到內容時不要擅自升級判定；交給下一輪重探。
-            return False
+        if html is None:
+            try:
+                html = str(await page.content())
+            except Exception:
+                # 讀不到內容時不要擅自升級判定；交給下一輪重探。
+                return False
         return not any(
             marker in html
             for marker in REGISTRATION_UNRENDERED_MARKERS
         )
 
-    async def detect_page_kind(self, page: Page) -> KKTIXPageKind:
+    async def detect_page_kind(
+        self, page: Page, html: str | None = None
+    ) -> KKTIXPageKind:
         """判斷目前頁面種類。順序不可調換：登記頁同樣有活動標題。"""
-        if await self._is_rendered_registration(page):
+        if await self._is_rendered_registration(page, html):
             return KKTIXPageKind.REGISTRATION
         if await self._has(page, KKTIXSelectors.LOGIN_KEY_FIELD) or await self._has(
             page, KKTIXSelectors.LOGIN_FORM
@@ -804,13 +812,16 @@ class KKTIXAdapter(TicketingAdapter):
                 wait_until=NAVIGATION_WAIT_UNTIL,
                 timeout=self.navigation_timeout_ms,
             )
-        marker = contains_cloudflare_challenge(await page_text(page))
+        # 整頁 HTML 只抓一次：人機驗證字串與「登記頁編譯完了沒」看的是同一份內容，
+        # 抓兩次就是在瀏覽器主執行緒上多跑一次整頁序列化。
+        html = await page_text(page)
+        marker = contains_cloudflare_challenge(html)
         if marker is not None:
             self.telemetry.record(
                 TimelineEventType.MARK, CLOUDFLARE_MARK, marker=marker, stage="probe"
             )
             return KKTIXPageKind.CHALLENGE
-        return await self.detect_page_kind(page)
+        return await self.detect_page_kind(page, html)
 
     async def read_ticket_options(self, page: Page) -> list[TicketOption]:
         """把目前頁面的票種讀成不可變快照，依頁面種類選用對應的選擇器。"""

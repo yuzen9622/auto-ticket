@@ -394,6 +394,10 @@ class KKTIXEventResolver(EventResolver):
         event_id = Event.make_id(PlatformEnum.KKTIX, org, slug)
         ticket_types = self._parse_ticket_types(soup, event_id)
 
+        sessions = self._parse_sessions(soup, jsonld)
+        if sessions:
+            raw_metadata["sessions"] = sessions
+
         return Event(
             id=event_id,
             platform=PlatformEnum.KKTIX,
@@ -639,6 +643,58 @@ class KKTIXEventResolver(EventResolver):
                     except KKTIXParseError:
                         pass
         return None, None, periods
+
+    def _parse_sessions(
+        self, soup: BeautifulSoup, jsonld: dict[str, Any] | None
+    ) -> list[dict[str, Any]]:
+        sessions: list[dict[str, Any]] = []
+
+        # 1. 從 jsonld 的 subEvent 解析
+        if jsonld:
+            sub_events = jsonld.get("subEvent")
+            if isinstance(sub_events, list):
+                for sub in sub_events:
+                    if isinstance(sub, dict):
+                        name = sub.get("name") or ""
+                        start = sub.get("startDate") or ""
+                        url = sub.get("url") or ""
+                        if name or start:
+                            sessions.append({
+                                "name": name.strip() if isinstance(name, str) else "",
+                                "start_at": start.strip() if isinstance(start, str) else None,
+                                "url": url.strip() if isinstance(url, str) else None,
+                            })
+
+        # 2. 從 HTML 的場次清單解析 (div.event-list ul.clearfix > li)
+        items = soup.select("div.event-list ul.clearfix > li")
+        if items:
+            for li in items:
+                a = li.select_one("div.content > a.btn-point, a[href*='registrations/new']")
+                text = li.get_text(strip=True)
+                raw_url = a.get("href") if a else None
+                url = str(raw_url).strip() if isinstance(raw_url, str) else None
+                if text:
+                    sessions.append({
+                        "name": text,
+                        "url": url,
+                    })
+
+        # 3. 如果沒有多場次結構，檢查 registrations/new 連結
+        if not sessions:
+            links = soup.select("a[href*='registrations/new']")
+            unique_links: list[dict[str, str]] = []
+            seen_urls: set[str] = set()
+            for a in links:
+                raw_href = a.get("href")
+                href = str(raw_href).strip() if isinstance(raw_href, str) else ""
+                text = a.get_text(strip=True)
+                if href and href not in seen_urls:
+                    seen_urls.add(href)
+                    unique_links.append({"url": href, "name": text})
+            if len(unique_links) > 1:
+                sessions.extend(unique_links)
+
+        return sessions
 
     def _parse_ticket_types(
         self, soup: BeautifulSoup, event_id: str
