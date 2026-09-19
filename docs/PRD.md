@@ -3,7 +3,7 @@
 ## Product Requirements Document（PRD）
 
 **版本：** v0.1  
-**專案類型：** 個人研究／實驗性系統  
+**專案類型：** 教育  
 **主要語言：** Python  
 **首要研究平台：** KKTIX  
 **系統定位：** Ticket Purchase Automation Research System
@@ -26,18 +26,6 @@
 - 網路延遲
 - 頁面狀態變化
 - 系統排隊或流量控制
-
-本研究希望建立一套以 Python 為核心的自動化票券流程研究平台，用於探討：
-
-1. 自然語言活動需求如何轉換為結構化購票任務。
-2. 售票網站事件資訊如何被自動探索與解析。
-3. 自動化瀏覽器如何建立可靠的購票流程狀態機。
-4. 排程精度與網路延遲對購票流程的影響。
-5. 不同票種與座位選擇策略的效率差異。
-6. 驗證辨識對自動化流程的影響。
-7. 網頁結構改變時，自動化系統的容錯與恢復能力。
-
-本系統定位為封閉式研究原型，不作為商業服務、不開放外部使用者，亦不進行票券轉售。
 
 ---
 
@@ -101,137 +89,6 @@ Event Resolver
         ↓
 任務完成
 ```
-
----
-
-# 3. 研究問題
-
-本系統主要可支援以下研究問題。
-
-### RQ1：時間同步
-
-不同時間同步方式是否影響自動化系統於售票開始後進入購票流程的時間誤差？
-
-比較：
-
-- Local System Clock
-- NTP synchronized clock
-- Server response time estimation
-- Client-side countdown estimation
-
-主要指標：
-
-```
-sale_time_error_ms
-```
-
----
-
-### RQ2：Event Discovery
-
-只提供活動名稱時，系統是否能準確找到對應售票活動？
-
-例如：
-
-```
-輸入：
-
-Atarayo ASIA TOUR 2026 in TAIPEI
-```
-
-解析為：
-
-```
-Platform
-KKTIX
-
-Organizer
-binliveco
-
-Event Slug
-kbrte
-
-Canonical URL
-https://binliveco.kktix.cc/events/kbrte
-```
-
----
-
-### RQ3：票種選擇策略
-
-不同票種選擇策略對流程速度與成功率有何影響？
-
-例如：
-
-```
-Strategy A
-指定票價
-
-Strategy B
-依票價 Priority
-
-Strategy C
-Best Available
-
-Strategy D
-任意可用票種
-```
-
----
-
-### RQ4：座位策略
-
-研究不同座位配置策略：
-
-- 最佳可用座位
-- 同區域優先
-- 連號優先
-- 指定區域優先
-- 最低搜尋時間
-
----
-
-### RQ5：網頁狀態恢復
-
-當發生：
-
-- 頁面重新整理
-- 網路 Timeout
-- DOM 改變
-- 元素尚未載入
-- Session 過期
-- 座位被其他 Session 取得
-
-系統是否可以恢復流程，而不必從頭重新開始。
-
----
-
-### RQ6：驗證機制
-
-研究圖形文字驗證對自動化流程造成的額外時間成本。
-
-研究環境可建立：
-
-```
-Synthetic CAPTCHA
-        ↓
-Image preprocessing
-        ↓
-OCR model
-        ↓
-Confidence estimation
-        ↓
-Verification
-```
-
-OCR 模型可作為研究模組，例如：
-
-- ddddocr
-- PaddleOCR
-- Tesseract
-- 自建 OCR Model
-
-正式研究應以自行生成、授權或離線驗證資料集作為 CAPTCHA Benchmark，避免將第三方正式網站的驗證機制視為研究資料來源。
 
 ---
 
@@ -1505,7 +1362,7 @@ Sale Time
 Ticket Information
 ```
 
-研究者設定：
+使用者設定：
 
 ```
 2 tickets
@@ -1724,4 +1581,4 @@ Ticket Automation Research Platform
 - 狀態恢復能力
 - Automation robustness
 
-最終讓 KKTIX 成為第一個 Experimental Adapter，而不是讓整個研究架構與單一售票平台綁死。
+最終讓 KKTIX 成為第一個 Experimental Adapter，而不是讓整個架構與單一售票平台綁死。
