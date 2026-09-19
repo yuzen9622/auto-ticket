@@ -253,6 +253,10 @@ async def run(args: argparse.Namespace) -> int:
         timeline_path=args.timeline,
         session_gate_timeout_s=args.session_gate_timeout,
         session_gate=announce_gate,
+        # 借用既有瀏覽器（CDP）時視窗是使用者自己開的，一定看得到。
+        attended=(cdp_endpoint is not None) or not args.headless,
+        # Playwright 自帶的瀏覽器過不了 Cloudflare，開視窗也一樣。
+        can_clear_bot_check=cdp_endpoint is not None,
     )
     start_fields: dict[str, Any] = {
         "task_id": spec.task_id,

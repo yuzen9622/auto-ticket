@@ -284,12 +284,38 @@ async def test_navigate_to_event_still_goes_when_only_on_the_event_page(
 async def test_navigate_to_event_goes_when_the_event_differs(
     telemetry: TimelineRecorder,
 ) -> None:
-    target = "https://reg.test/events/other"
     page = FakePage.from_fixture(
         "kktix_registration_new.html", url="https://reg.test/events/demo"
     )
-    await make_adapter(telemetry).navigate_to_event(page, target)
-    assert page.goto_urls == [target]
+    await make_adapter(telemetry).navigate_to_event(
+        page, "https://reg.test/events/other"
+    )
+    assert page.goto_urls == ["https://kktix.com/events/other/registrations/new"]
+
+
+async def test_navigate_to_event_upgrades_an_event_page_url_to_the_registration_page(
+    telemetry: TimelineRecorder,
+) -> None:
+    """活動主頁網址下不了單；不轉成登記頁就會停在永遠不會就緒的一頁上。"""
+    page = FakePage.from_fixture("kktix_event_page.html", url="about:blank")
+    await make_adapter(telemetry).navigate_to_event(
+        page, "https://atc-twn.kktix.cc/events/d8a6cdd1"
+    )
+    assert page.goto_urls == ["https://kktix.com/events/d8a6cdd1/registrations/new"]
+
+
+async def test_probe_page_upgrades_an_event_page_url_to_the_registration_page(
+    telemetry: TimelineRecorder,
+) -> None:
+    """就緒閘門只認登記頁；停在主頁上必須再走一步，不能当成「已在目標頁」。"""
+    page = FakePage.from_fixture(
+        "kktix_registration_new.html", url="https://atc-twn.kktix.cc/events/d8a6cdd1"
+    )
+    kind = await make_adapter(telemetry).probe_page(
+        page, "https://atc-twn.kktix.cc/events/d8a6cdd1"
+    )
+    assert page.goto_urls == ["https://kktix.com/events/d8a6cdd1/registrations/new"]
+    assert kind is KKTIXPageKind.REGISTRATION
 
 
 async def test_probe_page_skips_navigation_when_already_on_target(

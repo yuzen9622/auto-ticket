@@ -145,6 +145,9 @@ class PurchaseOrchestrator:
         session_gate_timeout_s: float = 240.0,
         session_gate_poll_s: float = 5.0,
         session_gate: Callable[[str, int], Awaitable[None]] | None = None,
+        attended: bool = True,
+        can_clear_bot_check: bool = True,
+        unattended_gate_grace_s: float = 20.0,
         race_loop_timeout_s: float = 120.0,
         queue_poll_s: float = 0.5,
         micro_wait_s: float = 0.05,
@@ -173,6 +176,14 @@ class PurchaseOrchestrator:
         self.session_gate_timeout_s = session_gate_timeout_s
         self.session_gate_poll_s = session_gate_poll_s
         self.session_gate = session_gate
+        # 兩種閘門的條件不一樣，不能混為一談：
+        # `attended`＝有視窗、人看得到（登入、點進登記頁這類靠它就夠）；
+        # `can_clear_bot_check`＝這個瀏覽器有機會通過人機驗證。Playwright 自帶的
+        # Chrome for Testing 即使開著視窗也過不了 Cloudflare（指紋就被擋），
+        # 只有借用使用者自己的 Chrome（CDP）才為真。
+        self.attended = attended
+        self.can_clear_bot_check = can_clear_bot_check
+        self.unattended_gate_grace_s = unattended_gate_grace_s
         # 反應式迴圈的全局預算與各種微等待。預算是唯一的止損點：
         # 沒它的話，一個永遠判不出來的頁面會讓迴圈轉到天荒地老。
         self.race_loop_timeout_s = race_loop_timeout_s
@@ -309,7 +320,17 @@ class PurchaseOrchestrator:
         登入與人機驗證一律由人自己在瀏覽器裡完成；本方法只負責判讀與等待。
         """
         page = self._require_page()
-        deadline = self._loop_time() + self.session_gate_timeout_s
+        # Cloudflare 的過場有時自己會過，所以無人模式仍留一小段寬限；
+        # 但不會用掉整個「等人」預算——沒人看得到的視窗等再久也不會有人去點。
+        # 只有「人真的有機會把它處理掉」時才值得等滿整個預算。
+        solvable = self.attended and self.can_clear_bot_check
+        budget = (
+            self.session_gate_timeout_s
+            if solvable
+            else min(self.session_gate_timeout_s, self.unattended_gate_grace_s)
+        )
+        blocked_reason: str | None = None
+        deadline = self._loop_time() + budget
         kind = await self.adapter.probe_page(page, self.spec.event_url)
         attempt = 1
         while True:
@@ -329,10 +350,14 @@ class PurchaseOrchestrator:
                 kind = await self.adapter.probe_page(page)
                 attempt += 1
                 continue
+            blocked_reason = self._gate_blocker(kind)
             if self._loop_time() >= deadline:
+                kind_value = str(getattr(kind, "value", kind))
+                if blocked_reason is not None:
+                    raise PurchaseStepError("check_session", blocked_reason)
                 raise PurchaseStepError(
                     "check_session",
-                    f"page not ready before sale: {getattr(kind, 'value', kind)}",
+                    f"page not ready before sale: {kind_value}",
                 )
             if self.session_gate is not None:
                 await self.session_gate(str(getattr(kind, "value", kind)), attempt)
@@ -340,6 +365,24 @@ class PurchaseOrchestrator:
             # 只重新判讀目前這一頁，不再導航——反覆輪詢對方站台既沒必要也不禮貌。
             kind = await self.adapter.probe_page(page)
             attempt += 1
+
+    def _gate_blocker(self, kind: Any) -> str | None:
+        """這個閘門在目前的瀏覽器條件下有沒有可能被通過；不可能就回傳該說的話。"""
+        kind_value = str(getattr(kind, "value", kind))
+        if kind_value == "CHALLENGE" and not self.can_clear_bot_check:
+            return (
+                f"bot check cannot be cleared by this browser: {kind_value}; "
+                "Playwright 自帶的瀏覽器過不了人機驗證（開著視窗也一樣）。"
+                "請改用借用模式：以 --remote-debugging-port=9222 啟動你自己的 Chrome，"
+                "再用 --cdp-endpoint http://127.0.0.1:9222 接上去"
+            )
+        if not self.attended:
+            return (
+                f"page needs a human but the browser has no visible window: {kind_value}; "
+                "以顯示視窗的方式啟動（--no-headless），或改用 --cdp-endpoint "
+                "借用你自己的 Chrome，才能自行處理"
+            )
+        return None
 
     @staticmethod
     def _loop_time() -> float:

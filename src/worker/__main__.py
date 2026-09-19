@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import asyncio
 from pathlib import Path
 
@@ -52,6 +53,16 @@ def parse_args(args: list[str] | None = None) -> argparse.Namespace:
         default="data/screenshots",
         help="Directory to store screenshots (default: data/screenshots)",
     )
+    parser.add_argument(
+        "--cdp-endpoint",
+        default=os.environ.get("AUTO_TICKET_CDP_ENDPOINT") or None,
+        help=(
+            "借用你自己的 Chrome（http://127.0.0.1:9222，僅 loopback）。"
+            "KKTIX 的人機驗證擋 Playwright 自帶的瀏覽器，開視窗也過不了，"
+            "要碰報名頁就必須用這個模式："
+            "先以 --remote-debugging-port=9222 啟動你的 Chrome，再把端點給這裡"
+        ),
+    )
     return parser.parse_args(args)
 
 
@@ -64,6 +75,7 @@ async def amain(args: argparse.Namespace) -> None:
         poll_ms=args.poll_ms,
         clock_tick_hz=args.clock_tick_hz,
         screenshot_dir=Path(args.screenshot_dir),
+        cdp_endpoint=args.cdp_endpoint,
     )
     settings.screenshot_dir.mkdir(parents=True, exist_ok=True)
     settings.db_path.parent.mkdir(parents=True, exist_ok=True)

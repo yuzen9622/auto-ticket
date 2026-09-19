@@ -680,6 +680,100 @@ async def test_session_gate_fails_closed_when_never_ready(tmp_path: Path) -> Non
     assert "read_registration_tickets" not in adapter.calls
 
 
+async def test_bot_check_fails_fast_even_with_a_visible_window(
+    tmp_path: Path,
+) -> None:
+    """有視窗不等於過得了人機驗證：Playwright 自帶的瀏覽器開著視窗也一樣被擋。"""
+    adapter = StubAdapter(probe_kinds=[KKTIXPageKind.CHALLENGE] * 20)
+    orchestrator, _, _, _ = build(tmp_path, adapter)
+    orchestrator.session_gate_poll_s = 0.0
+    orchestrator.attended = True
+    orchestrator.can_clear_bot_check = False
+    orchestrator.session_gate_timeout_s = 600.0
+    orchestrator.unattended_gate_grace_s = 0.0
+
+    report = await orchestrator.run()
+
+    assert report.final_state == "FAILED"
+    error = str(report.error)
+    # 必須把人導向借用模式，而不是叫他再開一次視窗。
+    assert "--cdp-endpoint" in error
+    assert "read_registration_tickets" not in adapter.calls
+
+
+async def test_borrowed_browser_waits_for_the_human_through_the_bot_check(
+    tmp_path: Path,
+) -> None:
+    """借用使用者自己的 Chrome 時，人機驗證是有機會被通過的——就該等他。"""
+    adapter = StubAdapter(
+        probe_kinds=[KKTIXPageKind.CHALLENGE] * 4 + [KKTIXPageKind.REGISTRATION]
+    )
+    orchestrator, _, _, _ = build(tmp_path, adapter)
+    orchestrator.session_gate_poll_s = 0.0
+    orchestrator.attended = True
+    orchestrator.can_clear_bot_check = True
+    orchestrator.unattended_gate_grace_s = 0.0
+    orchestrator.session_gate_timeout_s = 600.0
+
+    report = await orchestrator.run()
+
+    assert report.final_state == "COMPLETED"
+
+
+async def test_headless_gate_fails_fast_with_an_actionable_message(
+    tmp_path: Path,
+) -> None:
+    """沒有可見視窗時，人機驗證不可能被通過——不要對著隱形視窗耗完整個等人預算。"""
+    adapter = StubAdapter(probe_kinds=[KKTIXPageKind.CHALLENGE] * 20)
+    orchestrator, _, _, _ = build(tmp_path, adapter)
+    orchestrator.session_gate_poll_s = 0.0
+    orchestrator.attended = False
+    orchestrator.session_gate_timeout_s = 600.0
+    orchestrator.unattended_gate_grace_s = 0.0
+
+    report = await orchestrator.run()
+
+    assert report.final_state == "FAILED"
+    error = str(report.error)
+    assert "headless" in error
+    # 訊息必須告訴人下一步怎麼做，而不是只說「沒就緒」。
+    assert "--no-headless" in error
+    assert "read_registration_tickets" not in adapter.calls
+
+
+async def test_headless_gate_still_allows_a_self_resolving_interstitial(
+    tmp_path: Path,
+) -> None:
+    """Cloudflare 的過場有時自己會過；寬限期內恢復就該繼續，不該提早判死。"""
+    adapter = StubAdapter(
+        probe_kinds=[KKTIXPageKind.CHALLENGE, KKTIXPageKind.REGISTRATION]
+    )
+    orchestrator, _, _, _ = build(tmp_path, adapter)
+    orchestrator.session_gate_poll_s = 0.0
+    orchestrator.attended = False
+    orchestrator.unattended_gate_grace_s = 60.0
+
+    report = await orchestrator.run()
+
+    assert report.final_state == "COMPLETED"
+
+
+async def test_attended_gate_keeps_the_full_waiting_budget(tmp_path: Path) -> None:
+    """有人看得到視窗時，等人的預算不得被無人模式的寬限期縮短。"""
+    adapter = StubAdapter(
+        probe_kinds=[KKTIXPageKind.CHALLENGE] * 5 + [KKTIXPageKind.REGISTRATION]
+    )
+    orchestrator, _, _, _ = build(tmp_path, adapter)
+    orchestrator.session_gate_poll_s = 0.0
+    orchestrator.attended = True
+    orchestrator.unattended_gate_grace_s = 0.0
+    orchestrator.session_gate_timeout_s = 600.0
+
+    report = await orchestrator.run()
+
+    assert report.final_state == "COMPLETED"
+
+
 async def test_seat_failure_fails_closed(tmp_path: Path) -> None:
     orchestrator, _, _, _ = build(tmp_path, StubAdapter(seat_ok=False))
     report = await orchestrator.run()

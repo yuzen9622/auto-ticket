@@ -92,9 +92,24 @@ DEFAULT_NAVIGATION_TIMEOUT_MS = 30000
 EVENT_PATH_RE = re.compile(
     r"\A/events/(?P<slug>[^/]+)(?P<registration>/registrations/new)?/?\Z"
 )
+# 登記頁只掛在 `kktix.com` 上：org 子網域的 `/registrations/new` 會被 301 打回
+# kktix.com 首頁（連 path 都不保留），活動主頁上的購票連結指的也是這個主機。
+REGISTRATION_ORIGIN = "https://kktix.com"
 SOLD_OUT_MARKERS = ("售完", "售罄", "完售", "sold out", "已結束", "已額滿")
 REMAINING_RE = re.compile(r"(?:剩餘|剩下|remaining)\D{0,4}(\d+)", re.IGNORECASE)
 DIGITS_RE = re.compile(r"\d+")
+
+
+def to_registration_url(event_url: str) -> str:
+    """把活動主頁網址換成同一場活動的登記頁網址；認不出來的網址原樣回傳。
+
+    活動主頁下不了單，而開賣前的就緒閘門只認登記頁。沒有這一步轉換，帶著主頁網址
+    的任務會因為「已經停在目標頁」而永遠不再導航，一路輪詢到閘門逾時。
+    """
+    match = EVENT_PATH_RE.match(urlsplit(event_url).path)
+    if match is None or match.group("registration") is not None:
+        return event_url
+    return f"{REGISTRATION_ORIGIN}/events/{match.group('slug')}/registrations/new"
 
 
 class KKTIXPageKind(str, Enum):
@@ -325,21 +340,24 @@ class KKTIXAdapter(TicketingAdapter):
         return slug == target_slug and (on_registration or not target_is_registration)
 
     async def navigate_to_event(self, page: Page, event_url: str) -> bool:
-        """進活動頁；已經停在該活動（或其登記頁）上就不重新導航。
+        """進登記頁；已經停在該活動的登記頁上就不重新導航。
+
+        帶進來的若是活動主頁網址，先轉成同一場活動的登記頁——主頁下不了單。
 
         沿用 CDP 借來的分頁時，再 goto 一次等於把人工通過的排隊、驗證與登入狀態
         敲掉重來——省這一次導航不是效能最佳化，是不可逆狀態的保全。
         """
-        reused = self._is_same_event_or_registration(self._current_url(page), event_url)
+        target = to_registration_url(event_url)
+        reused = self._is_same_event_or_registration(self._current_url(page), target)
         if not reused:
             await page.goto(
-                event_url,
+                target,
                 wait_until=NAVIGATION_WAIT_UNTIL,
                 timeout=self.navigation_timeout_ms,
             )
         await self._guard_cloudflare(page, "navigate")
         self.telemetry.record(
-            TimelineEventType.MARK, "navigated", url=event_url, reused=reused
+            TimelineEventType.MARK, "navigated", url=target, reused=reused
         )
         return True
 
@@ -601,11 +619,12 @@ class KKTIXAdapter(TicketingAdapter):
         避免反覆輪詢對方站台。給了 `url` 但已經停在那一頁上時也不導航：
         就地判讀與重整後判讀讀到的是同一件事，重整卻會敲掉現場狀態。
         """
-        if url is not None and not self._is_same_event_or_registration(
-            self._current_url(page), url
+        target = None if url is None else to_registration_url(url)
+        if target is not None and not self._is_same_event_or_registration(
+            self._current_url(page), target
         ):
             await page.goto(
-                url,
+                target,
                 wait_until=NAVIGATION_WAIT_UNTIL,
                 timeout=self.navigation_timeout_ms,
             )

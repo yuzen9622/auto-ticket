@@ -56,6 +56,8 @@ async def execute_purchase(
 
     telemetry = StreamingTimelineRecorder(outbox, task_id, experiment_id=experiment_id)
 
+    # 借用模式下視窗是使用者自己開的 Chrome：看得到，而且過得了人機驗證。
+    borrowed = settings.cdp_endpoint is not None
     browser = StreamingPlaywrightManager(
         BrowserProfile(name=job.profile, headless=settings.headless),
         telemetry,
@@ -63,6 +65,8 @@ async def execute_purchase(
         task_id=task_id,
         experiment_id=experiment_id,
         screenshot_dir=settings.screenshot_dir,
+        cdp_endpoint=settings.cdp_endpoint,
+        cdp_page_url=spec.event_url if borrowed else None,
     )
 
     if spec.verification_rules:
@@ -127,6 +131,11 @@ async def execute_purchase(
                 "page_kind": kind,
                 "attempt": attempt,
                 "hint": GATE_HINTS.get(kind, "請自行確認瀏覽器狀態"),
+                # 前端要能直接把人導到該處理的那一頁，而不是只叫他「去看瀏覽器」。
+                "event_url": spec.event_url,
+                # 沒有可見視窗時，這則通知是沒有人點得到的——前端要據此改口徑。
+                "attended": borrowed or not settings.headless,
+                "can_clear_bot_check": borrowed,
             },
             ephemeral=False,
         )
@@ -142,6 +151,10 @@ async def execute_purchase(
         telemetry=telemetry,
         timeline_path=timeline_path,
         session_gate=announce_gate,
+        session_gate_timeout_s=settings.session_gate_timeout_s,
+        attended=borrowed or not settings.headless,
+        # Playwright 自帶的瀏覽器過不了 Cloudflare，開視窗也一樣；只有借用模式可以。
+        can_clear_bot_check=borrowed,
     )
 
     ticker = ClockTicker(
