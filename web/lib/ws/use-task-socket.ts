@@ -12,7 +12,8 @@ import type {
   ScreenshotPayload,
   ServerMessage,
 } from "@/lib/ws/types"
-import { isSnapshot } from "@/lib/ws/types"
+import { isHumanGate, isSnapshot } from "@/lib/ws/types"
+import type { HumanGateLogPayload } from "@/lib/ws/types"
 
 /** 指數退避：500ms → 1s → 2s → 4s → 8s（上限）。 */
 const BACKOFF_MS = [500, 1000, 2000, 4000, 8000]
@@ -26,6 +27,8 @@ export interface TaskSocketState {
   currentState: string | null
   visitedStates: string[]
   snapshotStatus: { task_status: string; job_state: string } | null
+  /** Worker 正在等人處理；狀態一往前走就清掉。 */
+  humanGate: HumanGateLogPayload | null
   send: (cmd: Omit<ClientCommand, "task_id">) => boolean
   clearLogs: () => void
 }
@@ -44,6 +47,8 @@ export function useTaskSocket(
   const [screenshots, setScreenshots] = React.useState<ScreenshotPayload[]>([])
   const [currentState, setCurrentState] = React.useState<string | null>(null)
   const [visitedStates, setVisitedStates] = React.useState<string[]>([])
+  const [humanGate, setHumanGate] =
+    React.useState<HumanGateLogPayload | null>(null)
   const [snapshotStatus, setSnapshotStatus] = React.useState<{
     task_status: string
     job_state: string
@@ -71,6 +76,8 @@ export function useTaskSocket(
 
     if (msg.type === "STATE_CHANGED") {
       const { to_state } = msg.payload
+      // 狀態往前走＝閘門過了，等人的提示就該收掉。
+      setHumanGate(null)
       setCurrentState(to_state)
       setVisitedStates((prev) =>
         prev.includes(to_state) ? prev : [...prev, to_state]
@@ -84,6 +91,10 @@ export function useTaskSocket(
           ? prev
           : [...prev, shot]
       )
+    }
+
+    if (msg.type === "TASK_LOG" && isHumanGate(msg.payload)) {
+      setHumanGate(msg.payload)
     }
 
     if (msg.type === "TASK_LOG" && isSnapshot(msg.payload)) {
@@ -207,6 +218,7 @@ export function useTaskSocket(
     currentState,
     visitedStates,
     snapshotStatus,
+    humanGate,
     send,
     clearLogs,
   }

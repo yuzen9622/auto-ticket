@@ -76,8 +76,24 @@ export interface GeneralLogPayload {
   detail?: unknown
 }
 
+/** Worker 停下來等真人處理（人機驗證、登入、停在錯的頁面）。 */
+export interface HumanGateLogPayload {
+  phase: "waiting_for_human"
+  page_kind: string
+  attempt: number
+  hint: string
+  event_url?: string
+  /** false 代表 Worker 沒有可見視窗，沒有人點得到。 */
+  attended?: boolean
+  /** false 代表這個瀏覽器過不了人機驗證（只有借用自己的 Chrome 才過得了）。 */
+  can_clear_bot_check?: boolean
+}
+
 export type TaskLogPayload =
-  SnapshotLogPayload | AckLogPayload | GeneralLogPayload
+  | SnapshotLogPayload
+  | AckLogPayload
+  | HumanGateLogPayload
+  | GeneralLogPayload
 
 export type ServerMessage =
   | Envelope<"STATE_CHANGED", StateChangedPayload>
@@ -88,6 +104,10 @@ export type ServerMessage =
 
 export function isSnapshot(p: TaskLogPayload): p is SnapshotLogPayload {
   return (p as SnapshotLogPayload).phase === "snapshot"
+}
+
+export function isHumanGate(p: TaskLogPayload): p is HumanGateLogPayload {
+  return (p as HumanGateLogPayload).phase === "waiting_for_human"
 }
 
 export function isAck(p: TaskLogPayload): p is AckLogPayload {

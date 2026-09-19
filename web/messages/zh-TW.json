@@ -58,7 +58,7 @@
     "heading": "搜尋活動",
     "subheading": "輸入活動名稱、關鍵字或活動網址，選好活動後就能填寫搶票資訊。",
     "inputLabel": "活動名稱、關鍵字或活動網址",
-    "placeholder": "例如：五月天",
+    "placeholder": "輸入活動名稱、關鍵字或活動網址",
     "submit": "搜尋",
     "searching": "搜尋中…",
     "clear": "清除搜尋",
@@ -81,6 +81,7 @@
     "eventDate": "活動日期",
     "saleStart": "開賣時間",
     "status": "活動狀態",
+    "statusPendingLoad": "票況將於選擇活動後確認",
     "description": "活動描述",
     "noDescription": "此活動沒有提供描述。",
     "unknownOrganizer": "未提供主辦單位",
@@ -280,7 +281,13 @@
     "disconnected": "未連線，控制指令不可用",
     "commandSent": "已送出「{action}」",
     "commandNotSent": "尚未連線，指令沒有送出",
-    "connection": "連線狀態"
+    "connection": "連線狀態",
+    "gateWaitingTitle": "需要你在瀏覽器裡完成一個步驟",
+    "gateUnattendedTitle": "無法完成人機驗證：瀏覽器沒有視窗",
+    "gateUnattendedBody": "這個任務的瀏覽器在背景執行，沒有畫面可以讓你點選，因此人機驗證與登入都無法通過。請以顯示視窗的方式重新啟動執行程式後再跑一次。",
+    "gateOpenPage": "開啟該頁面",
+    "gateBotCheckTitle": "人機驗證擋住了：需要改用你自己的 Chrome",
+    "gateBotCheckBody": "票券平台的人機驗證會擋掉程式內建的瀏覽器，就算開著視窗也過不了。請先以遠端偵錯埠 9222 啟動你自己的 Chrome，再讓執行程式接上去，驗證就會由你的瀏覽器自己通過。"
   },
   "history": {
     "heading": "歷史紀錄",

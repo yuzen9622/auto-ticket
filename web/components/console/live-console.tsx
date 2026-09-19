@@ -4,8 +4,15 @@ import * as React from "react"
 import { useTranslations } from "next-intl"
 import { useQuery } from "@tanstack/react-query"
 
+import {
+  Accordion,
+  AccordionContent,
+  AccordionItem,
+  AccordionTrigger,
+} from "@/components/animate-ui/components/radix/accordion"
 import { ClockPanel } from "@/components/console/clock-panel"
 import { ConsoleHeader } from "@/components/console/console-header"
+import { HumanGateBanner } from "@/components/console/human-gate-banner"
 import { ControlBar } from "@/components/console/control-bar"
 import { LogStream } from "@/components/console/log-stream"
 import { ScreenshotStrip } from "@/components/console/screenshot-strip"
@@ -86,6 +93,8 @@ export function LiveConsole({ taskId }: { taskId: string }) {
         wsStatus={socket.status}
       />
 
+      <HumanGateBanner gate={socket.humanGate} />
+
       {/* xl 以上鎖死單列高（面板各自內捲）；窄幅改成網格自己捲動，
           兩者都不讓內容撐破 flex-1，底部 ControlBar 才不會被擠出畫面。 */}
       <div className="grid min-h-0 min-w-0 flex-1 grid-cols-1 gap-3 overflow-y-auto xl:grid-cols-[220px_minmax(0,1fr)_260px] xl:grid-rows-[minmax(0,1fr)] xl:overflow-hidden">
@@ -139,22 +148,26 @@ export function LiveConsole({ taskId }: { taskId: string }) {
               )}
 
               {/* 技術資訊預設收起：一般使用者不需要看到內部識別碼。 */}
-              <details className="pt-2">
-                <summary className="cursor-pointer text-xs text-muted-foreground">
-                  {t("technicalDetails")}
-                </summary>
-                <div className="pt-1">
-                  <KvRow label={t("taskId")} value={data.task.id} />
-                  <KvRow
-                    label={t("jobId")}
-                    value={data.job_id ?? common("none")}
-                  />
-                  <KvRow
-                    label={t("jobState")}
-                    value={jobState ? jobStateLabel(jobState) : common("none")}
-                  />
-                </div>
-              </details>
+              <Accordion type="single" collapsible className="pt-2">
+                <AccordionItem value="technical-details" className="border-0">
+                  <AccordionTrigger className="py-0 text-xs font-normal text-muted-foreground hover:no-underline">
+                    {t("technicalDetails")}
+                  </AccordionTrigger>
+                  <AccordionContent className="pt-1 pb-0">
+                    <KvRow label={t("taskId")} value={data.task.id} />
+                    <KvRow
+                      label={t("jobId")}
+                      value={data.job_id ?? common("none")}
+                    />
+                    <KvRow
+                      label={t("jobState")}
+                      value={
+                        jobState ? jobStateLabel(jobState) : common("none")
+                      }
+                    />
+                  </AccordionContent>
+                </AccordionItem>
+              </Accordion>
             </Panel>
           </div>
 

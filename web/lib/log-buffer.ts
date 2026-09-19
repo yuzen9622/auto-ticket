@@ -1,6 +1,6 @@
 import { formatTimeOfDay, parseServerDate } from "@/lib/format"
 import type { ServerMessage } from "@/lib/ws/types"
-import { isAck, isProtocolError, isSnapshot } from "@/lib/ws/types"
+import { isAck, isHumanGate, isProtocolError, isSnapshot } from "@/lib/ws/types"
 
 export type LogLevel = "error" | "state" | "shot" | "tick" | "info" | "snap"
 
@@ -35,7 +35,9 @@ export function deriveLevel(msg: ServerMessage): LogLevel {
     case "TASK_LOG": {
       const p = msg.payload
       if (isSnapshot(p)) return "snap"
-      if (!isAck(p) && p.event_type === "error") return "error"
+      // 等人處理是要被看見的事，歸在最顯眼的等級，不要沉進一般訊息裡。
+      if (isHumanGate(p)) return "error"
+      if (!isAck(p) && !isHumanGate(p) && p.event_type === "error") return "error"
       return "info"
     }
   }
@@ -76,6 +78,9 @@ export function summarize(msg: ServerMessage): string {
       }
       if (isAck(p)) {
         return `${p.action} accepted=${p.accepted} signal=${p.signal_id}`
+      }
+      if (isHumanGate(p)) {
+        return `${p.page_kind} ${p.hint}`
       }
       const detail =
         p.detail === undefined || p.detail === null
