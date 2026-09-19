@@ -179,8 +179,6 @@ export function SessionJobWatcher({ platform }: { platform: string }) {
           </Button>
         </div>
 
-        <p className="text-xs text-muted-foreground">{t("sessionHint")}</p>
-
         {jobId === null ? (
           <p className="text-xs text-muted-foreground">{t("sessionEmpty")}</p>
         ) : (

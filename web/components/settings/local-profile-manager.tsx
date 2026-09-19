@@ -46,10 +46,6 @@ export function LocalProfileManager() {
   return (
     <Panel title={t("localProfileHeading")}>
       <div className="flex flex-col gap-3">
-        <p className="rounded-md border border-border bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
-          {t("localProfileNotice")}
-        </p>
-
         <section className="flex flex-col gap-1">
           <h3 className="text-xs font-semibold tracking-wider text-muted-foreground uppercase">
             {t("contactsCount", { count: contacts.length })}

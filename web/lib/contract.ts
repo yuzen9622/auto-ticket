@@ -117,6 +117,12 @@ export const EMAIL_PATTERN = /^[^@\s]+@[^@\s]+\.[^@\s]+$/
 export const PLATFORM = ["kktix", "tixcraft", "ibon"] as const
 export type Platform = (typeof PLATFORM)[number]
 
+export const PLATFORM_NAMES = {
+  kktix: "KKTIX",
+  tixcraft: "拓元售票",
+  ibon: "ibon 售票",
+} as const satisfies Record<Platform, string>
+
 export const SEAT_STRATEGY = [
   "best_available",
   "same_zone",
