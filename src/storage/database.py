@@ -46,8 +46,17 @@ class Database:
     async def create_all(self) -> None:
         from storage import models  # noqa: F401
 
+        def _migrate(sync_conn: Any) -> None:
+            rows = sync_conn.exec_driver_sql("PRAGMA table_info(events)").fetchall()
+            cols = {row[1] for row in rows}
+            if cols and "sale_end_at" not in cols:
+                sync_conn.exec_driver_sql(
+                    "ALTER TABLE events ADD COLUMN sale_end_at DATETIME"
+                )
+
         async with self._engine.begin() as conn:
             await conn.run_sync(models.Base.metadata.create_all)
+            await conn.run_sync(_migrate)
 
     async def drop_all(self) -> None:
         from storage import models  # noqa: F401

@@ -1,16 +1,18 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import re
 import unicodedata
+import warnings
 from collections.abc import Sequence
 from datetime import datetime, timedelta, timezone
 from typing import Any
 from zoneinfo import ZoneInfo
 
 import httpx
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, XMLParsedAsHTMLWarning
 from bs4.element import Tag
 from rapidfuzz import fuzz
 
@@ -32,6 +34,7 @@ from domain.event import (
 
 MATCH_THRESHOLD = 0.85
 FEED_URL_TEMPLATE = "https://{org}.kktix.cc/events.json"
+GLOBAL_FEED_URL = "https://kktix.com/events.atom"
 TAIPEI_TZ = ZoneInfo("Asia/Taipei")
 HTML_PARSER = "html.parser"
 MAX_ORGS_PER_SEARCH = 20
@@ -163,21 +166,39 @@ def _parse_price(text: str) -> int:
     lowered = text.casefold()
     if "免費" in text or "free" in lowered:
         return 0
-    digits = re.sub(r"[^\d]", "", text)
-    if not digits:
+    # 幣別可能同時帶千分位與小數（HKD$1,612.00）。只能拿掉千分位逗號，小數點必須
+    # 保留再轉數值：把所有非數字刪光會讓 "1,612.00" 黏成 161200，與報名頁讀到的
+    # 1612 差兩個數量級。票價是完全相等比對，於是永遠配不到，整場被誤判成售罄。
+    match = re.search(r"\d[\d,]*(?:\.\d+)?", text)
+    if match is None:
         return 0
     try:
-        return int(digits)
+        return int(float(match.group(0).replace(",", "")))
     except (ValueError, TypeError):
         return 0
 
 
 def _parse_status(text: str) -> TicketTypeStatus:
     lowered = text.casefold()
-    if "售完" in text or "已售完" in text or "sold out" in lowered:
+    if any(kw in text for kw in ("售完", "已售完", "額滿", "已額滿")) or "sold out" in lowered:
         return TicketTypeStatus.SOLD_OUT
-    if "尚未開賣" in text or "即將" in text or "coming" in lowered:
+    if any(kw in text for kw in ("尚未開賣", "即將開賣", "即將")) or "coming" in lowered:
         return TicketTypeStatus.COMING_SOON
+    if any(
+        kw in text
+        for kw in (
+            "結束販售",
+            "已結束",
+            "結束",
+            "截止",
+            "報名截止",
+            "已截止",
+            "停止販售",
+            "停止報名",
+            "非販售期間",
+        )
+    ) or any(kw in lowered for kw in ("closed", "ended")):
+        return TicketTypeStatus.CLOSED
     return TicketTypeStatus.AVAILABLE
 
 
@@ -193,6 +214,50 @@ def _select_first_text(
     return None
 
 
+def _parse_atom_feed(xml_text: str, query: str) -> list[EventCandidate]:
+    try:
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", category=XMLParsedAsHTMLWarning)
+            soup = BeautifulSoup(xml_text, HTML_PARSER)
+    except Exception as exc:
+        raise KKTIXParseError(f"invalid atom feed: {exc}") from exc
+
+    candidates: list[EventCandidate] = []
+    for entry in soup.find_all("entry"):
+        title_node = entry.find("title")
+        title = title_node.get_text(strip=True) if title_node is not None else ""
+        link_node = entry.find("link")
+        href_val = link_node.get("href") if link_node is not None else None
+        url = href_val.strip() if isinstance(href_val, str) else ""
+        if not title or not url:
+            continue
+
+        author_node = entry.find("author")
+        if author_node is not None:
+            name_node = author_node.find("name")
+            author = (
+                name_node.get_text(strip=True)
+                if name_node is not None
+                else author_node.get_text(strip=True)
+            )
+        else:
+            author = ""
+        summary_node = entry.find("summary") or entry.find("content")
+        summary = summary_node.get_text(strip=True) if summary_node is not None else ""
+
+        score = match_score(query, title)
+        candidates.append(
+            EventCandidate(
+                title=title,
+                url=url,
+                organizer=author or None,
+                summary=summary or None,
+                score=score,
+            )
+        )
+    return candidates
+
+
 class KKTIXEventResolver(EventResolver):
     def __init__(
         self,
@@ -201,6 +266,7 @@ class KKTIXEventResolver(EventResolver):
         orgs: Sequence[str] | None = None,
         threshold: float = MATCH_THRESHOLD,
         feed_url_template: str = FEED_URL_TEMPLATE,
+        global_feed_url: str = GLOBAL_FEED_URL,
     ) -> None:
         if not 0.0 <= threshold <= 1.0:
             raise ValueError(f"threshold must be within [0.0, 1.0], got {threshold!r}")
@@ -208,6 +274,41 @@ class KKTIXEventResolver(EventResolver):
         self._orgs = validate_org_slugs(orgs) if orgs is not None else []
         self._threshold = threshold
         self._feed_url_template = feed_url_template
+        self._global_feed_url = global_feed_url
+
+    async def search_global(
+        self,
+        query: str,
+        *,
+        limit: int = 10,
+    ) -> list[EventCandidate]:
+        """向 KKTIX 全站 Atom Feed (https://kktix.com/events.atom?search=...) 檢索活動。"""
+        if limit < 1:
+            raise ValueError(f"limit must be >= 1, got {limit!r}")
+        q = query.strip()
+        if not q:
+            return []
+
+        try:
+            response = await self._client.get(
+                self._global_feed_url,
+                params={"search": q},
+                headers={
+                    "Accept": "application/atom+xml,application/xml,text/xml",
+                },
+            )
+        except httpx.HTTPError:
+            return []
+        if response.status_code // 100 != 2:
+            return []
+
+        try:
+            candidates = _parse_atom_feed(response.text, q)
+        except KKTIXParseError:
+            return []
+
+        candidates.sort(key=lambda c: (-c.score, c.title))
+        return candidates[:limit]
 
     async def search(
         self,
@@ -286,7 +387,7 @@ class KKTIXEventResolver(EventResolver):
             raw_metadata["jsonld"] = jsonld
 
         event_start_at = self._parse_event_start_at(soup, jsonld)
-        sale_start_at, sale_periods = self._parse_sale_start_at(soup)
+        sale_start_at, sale_end_at, sale_periods = self._parse_sale_start_at(soup)
         if sale_periods:
             raw_metadata["sale_periods"] = sale_periods
 
@@ -301,8 +402,14 @@ class KKTIXEventResolver(EventResolver):
             title=title,
             canonical_url=f"https://{org}.kktix.cc/events/{slug}",
             sale_start_at=sale_start_at,
+            sale_end_at=sale_end_at,
             event_start_at=event_start_at,
-            status=self._derive_status(ticket_types),
+            status=self._derive_status(
+                ticket_types,
+                sale_start_at=sale_start_at,
+                sale_end_at=sale_end_at,
+                soup=soup,
+            ),
             raw_metadata=raw_metadata,
             ticket_types=ticket_types,
         )
@@ -445,46 +552,99 @@ class KKTIXEventResolver(EventResolver):
 
     def _parse_sale_start_at(
         self, soup: BeautifulSoup
-    ) -> tuple[datetime | None, list[dict[str, str]]]:
+    ) -> tuple[datetime | None, datetime | None, list[dict[str, str]]]:
         starts: list[datetime] = []
+        ends: list[datetime] = []
         periods: list[dict[str, str]] = []
         for row in soup.select(KKTIXSelectors.EVENT_TICKET_TABLE_ROWS):
-            times = row.select(KKTIXSelectors.EVENT_TICKET_PERIOD_TIMES)
-            if not times:
+            td_period = row.select_one("td.period")
+            if not td_period:
                 continue
-            start_text = times[0].get_text(" ", strip=True)
-            try:
-                start = _parse_datetime(start_text)
-            except KKTIXParseError:
-                continue
-            starts.append(start)
-            period: dict[str, str] = {"start": start.isoformat()}
-            if len(times) > 1:
-                end_text = times[1].get_text(" ", strip=True)
-                try:
-                    period["end"] = _parse_datetime(end_text).isoformat()
-                except KKTIXParseError:
-                    period["end_raw"] = end_text
-            periods.append(period)
+            times = td_period.select(KKTIXSelectors.EVENT_TICKET_PERIOD_TIMES)
+            start: datetime | None = None
+            end: datetime | None = None
+            time_texts = [
+                t.get_text(" ", strip=True)
+                for t in times
+                if t.get_text(" ", strip=True)
+            ]
+            if len(time_texts) >= 2:
+                with contextlib.suppress(KKTIXParseError):
+                    start = _parse_datetime(time_texts[0])
+                with contextlib.suppress(KKTIXParseError):
+                    end = _parse_datetime(time_texts[1])
+            elif len(time_texts) == 1:
+                raw_text = td_period.get_text(" ", strip=True)
+                with contextlib.suppress(KKTIXParseError):
+                    parsed = _parse_datetime(time_texts[0])
+                    if raw_text.startswith("~"):
+                        end = parsed
+                    else:
+                        start = parsed
+            else:
+                raw_text = td_period.get_text(" ", strip=True)
+                found_dts = list(_DATETIME_SCAN_RE.finditer(raw_text))
+                if len(found_dts) >= 2:
+                    with contextlib.suppress(KKTIXParseError):
+                        start = _parse_datetime(found_dts[0].group(0))
+                    with contextlib.suppress(KKTIXParseError):
+                        end = _parse_datetime(found_dts[1].group(0))
+                elif len(found_dts) == 1:
+                    with contextlib.suppress(KKTIXParseError):
+                        parsed = _parse_datetime(found_dts[0].group(0))
+                        if raw_text.startswith("~"):
+                            end = parsed
+                        else:
+                            start = parsed
 
-        if starts:
-            return min(starts), periods
+            if start is not None:
+                starts.append(start)
+            if end is not None:
+                ends.append(end)
+
+            period_entry: dict[str, str] = {}
+            if start is not None:
+                period_entry["start"] = start.isoformat()
+            if end is not None:
+                period_entry["end"] = end.isoformat()
+            if period_entry:
+                periods.append(period_entry)
+
+        if starts or ends:
+            return (
+                min(starts) if starts else None,
+                max(ends) if ends else None,
+                periods,
+            )
 
         for selector in css_only(KKTIXSelectors.EVENT_SALE_TIME):
             for node in soup.select(selector):
                 text = node.get_text(" ", strip=True)
                 if not text:
                     continue
-                found = _extract_first_datetime(text)
-                if found is not None:
-                    return found, periods
-        return None, periods
+                found_dts = list(_DATETIME_SCAN_RE.finditer(text))
+                if len(found_dts) >= 2:
+                    try:
+                        start = _parse_datetime(found_dts[0].group(0))
+                        end = _parse_datetime(found_dts[1].group(0))
+                        return start, end, periods
+                    except KKTIXParseError:
+                        pass
+                elif len(found_dts) == 1:
+                    try:
+                        parsed = _parse_datetime(found_dts[0].group(0))
+                        if text.startswith("~"):
+                            return None, parsed, periods
+                        return parsed, None, periods
+                    except KKTIXParseError:
+                        pass
+        return None, None, periods
 
     def _parse_ticket_types(
         self, soup: BeautifulSoup, event_id: str
     ) -> list[TicketType]:
         tickets: list[TicketType] = []
-        for row in soup.select(KKTIXSelectors.EVENT_TICKET_TABLE_ROWS):
+        for idx, row in enumerate(soup.select(KKTIXSelectors.EVENT_TICKET_TABLE_ROWS)):
             name = _select_first_text(row, KKTIXSelectors.EVENT_TICKET_ROW_NAME)
             price_text = _select_first_text(row, KKTIXSelectors.EVENT_TICKET_ROW_PRICE)
             if not name or not price_text:
@@ -493,13 +653,21 @@ class KKTIXEventResolver(EventResolver):
                 _select_first_text(row, KKTIXSelectors.EVENT_TICKET_ROW_STATUS) or ""
             )
             raw_id = row.get("id")
+            price = _parse_price(price_text)
+
+            status = _parse_status(status_text)
+            if row.select_one("span.status.closed, .status-closed") is not None:
+                status = TicketTypeStatus.CLOSED
+
+            # 確保 key 具唯一性：同一活動可能有多列同名票種（不同票價或同票價不同配額）
+            key = f"{raw_id or idx}:{name}:{price}"
             tickets.append(
                 TicketType(
-                    id=TicketType.make_id(event_id, name),
+                    id=TicketType.make_id(event_id, key),
                     event_id=event_id,
                     name=name,
-                    price=_parse_price(price_text),
-                    status=_parse_status(status_text),
+                    price=price,
+                    status=status,
                     inventory_estimate=None,
                     raw_id=raw_id if isinstance(raw_id, str) else None,
                 )
@@ -512,16 +680,42 @@ class KKTIXEventResolver(EventResolver):
             )
         return tickets
 
-    def _derive_status(self, tickets: list[TicketType]) -> EventStatus:
+    def _derive_status(
+        self,
+        tickets: list[TicketType],
+        *,
+        sale_start_at: datetime | None = None,
+        sale_end_at: datetime | None = None,
+        soup: BeautifulSoup | None = None,
+    ) -> EventStatus:
         if not tickets:
+            if soup is not None:
+                order_btn = soup.select_one(".order-now-section, #order-now, a.btn-point")
+                if order_btn is not None:
+                    btn_text = order_btn.get_text(" ", strip=True)
+                    if any(kw in btn_text for kw in ("聯絡主辦單位", "結束", "截止")):
+                        return EventStatus.CLOSED
             return EventStatus.UNKNOWN
+
         statuses = {ticket.status for ticket in tickets}
+
+        # 1. 全數售罄
         if statuses == {TicketTypeStatus.SOLD_OUT}:
             return EventStatus.SOLD_OUT
+
+        # 2. 所有票種均已截止，或僅包含已截止與已售罄
+        if statuses.issubset({TicketTypeStatus.CLOSED, TicketTypeStatus.SOLD_OUT}):
+            if TicketTypeStatus.CLOSED in statuses:
+                return EventStatus.CLOSED
+            return EventStatus.SOLD_OUT
+
+        # 3. 仍有可購買票種
         if TicketTypeStatus.AVAILABLE in statuses:
             return EventStatus.ON_SALE
-        # 已售罄的早鳥票與尚未開賣的一般票可同時存在；只要仍有
+
+        # 4. 已售罄的早鳥票與尚未開賣的一般票可同時存在；只要仍有
         # 尚未開賣的票種，整場活動仍應視為尚未開賣，而非狀態未知。
         if TicketTypeStatus.COMING_SOON in statuses:
             return EventStatus.ANNOUNCED
+
         return EventStatus.UNKNOWN

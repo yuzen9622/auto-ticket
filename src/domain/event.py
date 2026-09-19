@@ -27,6 +27,7 @@ class TicketTypeStatus(str, Enum):
     AVAILABLE = "AVAILABLE"
     SOLD_OUT = "SOLD_OUT"
     COMING_SOON = "COMING_SOON"
+    CLOSED = "CLOSED"
 
 
 class TicketType(DomainBaseModel):
@@ -54,6 +55,7 @@ class Event(DomainBaseModel):
     title: str
     canonical_url: str
     sale_start_at: UtcDatetime | None = None
+    sale_end_at: UtcDatetime | None = None
     event_start_at: UtcDatetime | None = None
     status: EventStatus = EventStatus.UNKNOWN
     raw_metadata: dict[str, Any] = Field(default_factory=dict)

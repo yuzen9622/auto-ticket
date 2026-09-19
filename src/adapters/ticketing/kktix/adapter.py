@@ -1,3 +1,5 @@
+# pyright: reportMissingImports=false
+# ruff: noqa: S112, SIM105, S110
 """KKTIX 購票流程 adapter。
 
 契約：
@@ -95,6 +97,31 @@ EVENT_PATH_RE = re.compile(
 # 登記頁只掛在 `kktix.com` 上：org 子網域的 `/registrations/new` 會被 301 打回
 # kktix.com 首頁（連 path 都不保留），活動主頁上的購票連結指的也是這個主機。
 REGISTRATION_ORIGIN = "https://kktix.com"
+
+# 以下選擇器刻意放在這裡而不是 selectors.py：後者是凍結模組（check_invariants G1），
+# 任何改動都會讓守門員紅燈。
+
+#: Angular 還沒編譯模板時，原始 mustache 會留在 HTML 裡。只看容器存在會把
+#: 「還在轉圈的頁」與「母活動的空頁」都誤判成可下單的登記頁。
+REGISTRATION_UNRENDERED_MARKERS = ("{{'new.i_read_and_agree_to'", "{{'new.")
+
+#: 多場次活動：母活動頁列出各場次，每張卡片有自己的「下一步」連到該場次的登記頁。
+#: 母活動本身的 /registrations/new 是空的，不先選場次就永遠看不到票種。
+EVENT_SESSION_ITEMS = "div.event-list ul.clearfix > li"
+#: 沒有場次卡片結構時的退路；單場次活動會有多顆按鈕指向同一個網址，需去重。
+EVENT_SESSION_LINKS = "a[href*='registrations/new']"
+
+#: 主辦自訂的 radio 欄位（聯絡人與參加者兩種範圍）。KKTIX 用「單一選項的 radio
+#: 群組」表達必選的確認事項（例如「我同意系統配位、不得更改或退款」），沒選就送不出
+#: 訂單；既有程式只處理 checkbox，於是停在填表頁直到預算耗盡。
+DYNAMIC_RADIO = "input[type='radio'][name^='contact['], input[type='radio'][name^='attendees[']"
+
+#: 登入頁要求人工驗證時的字樣。出現它代表帳密沒被受理，**不是**帳密錯誤。
+LOGIN_HUMAN_VERIFICATION_TEXTS = (
+    "請完成驗證後再試一次",
+    "請完成驗證",
+    "complete the verification",
+)
 SOLD_OUT_MARKERS = ("售完", "售罄", "完售", "sold out", "已結束", "已額滿")
 REMAINING_RE = re.compile(r"(?:剩餘|剩下|remaining)\D{0,4}(\d+)", re.IGNORECASE)
 DIGITS_RE = re.compile(r"\d+")
@@ -339,7 +366,81 @@ class KKTIXAdapter(TicketingAdapter):
         target_slug, target_is_registration = target
         return slug == target_slug and (on_registration or not target_is_registration)
 
-    async def navigate_to_event(self, page: Page, event_url: str) -> bool:
+    async def list_sessions(self, page: Page) -> list[dict[str, str]]:
+        """讀出活動頁上的場次清單（標籤＋該場次的登記頁網址）。
+
+        優先認多場次活動的場次卡片結構；沒有那個結構時，退而掃描頁面上指向登記頁的
+        連結——單場次活動的「立即購票」「下一步」會有好幾顆按鈕指向**同一個**網址，
+        所以一律以網址去重，否則一場會被數成三場而挑不出唯一解。
+        """
+        sessions: list[dict[str, str]] = []
+        try:
+            sessions = await page.eval_on_selector_all(
+                EVENT_SESSION_ITEMS,
+                """els => els.map(li => {
+                     const a = li.querySelector(
+                       'div.content > a.btn-point, a[href*="registrations/new"]'
+                     );
+                     return a ? {url: a.href, label: li.innerText.trim()} : null;
+                   }).filter(Boolean)""",
+            )
+        except Exception:
+            sessions = []
+
+        if not sessions:
+            try:
+                sessions = await page.eval_on_selector_all(
+                    EVENT_SESSION_LINKS,
+                    """els => els.map(e => {
+                         const card = e.closest('div');
+                         return {
+                           url: e.href,
+                           label: (card ? card.innerText : e.innerText).trim(),
+                         };
+                       })""",
+                )
+            except Exception:
+                return []
+
+        return self._dedupe_sessions(sessions)
+
+    @staticmethod
+    def _dedupe_sessions(sessions: list[dict[str, str]]) -> list[dict[str, str]]:
+        """同一個登記頁網址只算一場；保留第一個（標籤通常最完整）。"""
+        seen: set[str] = set()
+        unique: list[dict[str, str]] = []
+        for session in sessions:
+            url = str(session.get("url", ""))
+            if not url or url in seen:
+                continue
+            seen.add(url)
+            unique.append(session)
+        return unique
+
+    @staticmethod
+    def pick_session(
+        sessions: list[dict[str, str]], preference: str | None
+    ) -> str | None:
+        """挑出要買的場次網址。
+
+        挑不出唯一一個就回 None，由呼叫端 fail-closed——**絕不**替使用者亂猜場次，
+        買錯場次跟買不到一樣糟，而且是不可逆的。
+        """
+        unique = KKTIXAdapter._dedupe_sessions(sessions)
+        if not unique:
+            return None
+        # 只有一個登記頁時偏好沒有意義——單場次活動本來就只有一場可買。
+        if len(unique) == 1:
+            return unique[0]["url"]
+        if preference:
+            wanted = preference.strip()
+            matched = [s for s in unique if wanted and wanted in s.get("label", "")]
+            return matched[0]["url"] if len(matched) == 1 else None
+        return None
+
+    async def navigate_to_event(
+        self, page: Page, event_url: str, session_preference: str | None = None
+    ) -> bool:
         """進登記頁；已經停在該活動的登記頁上就不重新導航。
 
         帶進來的若是活動主頁網址，先轉成同一場活動的登記頁——主頁下不了單。
@@ -356,10 +457,63 @@ class KKTIXAdapter(TicketingAdapter):
                 timeout=self.navigation_timeout_ms,
             )
         await self._guard_cloudflare(page, "navigate")
+
+        # 多場次活動：母活動的登記頁沒有票種表單，真正的入口在各場次底下。
+        # 這一步刻意留在預熱期做完——開賣瞬間才去找場次就來不及了。
+        if await self.detect_page_kind(page) is not KKTIXPageKind.REGISTRATION:
+            target = await self._enter_session_registration(
+                page, event_url, session_preference
+            ) or target
+
         self.telemetry.record(
             TimelineEventType.MARK, "navigated", url=target, reused=reused
         )
         return True
+
+    async def _enter_session_registration(
+        self, page: Page, event_url: str, session_preference: str | None
+    ) -> str | None:
+        """從母活動頁選出場次並進入它的登記頁；進不去回 None。"""
+        await page.goto(
+            event_url,
+            wait_until=NAVIGATION_WAIT_UNTIL,
+            timeout=self.navigation_timeout_ms,
+        )
+        # 場次清單是 Angular 後渲染的：`domcontentloaded` 當下 DOM 裡還沒有這些連結，
+        # 不等就會把多場次活動誤判成單場次，然後停在買不了票的母活動頁上。
+        try:
+            await page.wait_for_selector(
+                EVENT_SESSION_LINKS,
+                timeout=self.navigation_timeout_ms,
+                state="attached",
+            )
+        except Exception:
+            pass
+
+        sessions = await self.list_sessions(page)
+        if not sessions:
+            return None
+
+        chosen = self.pick_session(sessions, session_preference)
+        if chosen is None:
+            self.telemetry.record(
+                TimelineEventType.MARK,
+                "session_choice_ambiguous",
+                count=len(sessions),
+                preference=session_preference or "",
+            )
+            return None
+
+        await page.goto(
+            chosen,
+            wait_until=NAVIGATION_WAIT_UNTIL,
+            timeout=self.navigation_timeout_ms,
+        )
+        await self._guard_cloudflare(page, "session")
+        self.telemetry.record(
+            TimelineEventType.MARK, "session_selected", url=chosen
+        )
+        return chosen
 
     # ------------------------------------------------------------- 1b. 登入
 
@@ -486,9 +640,28 @@ class KKTIXAdapter(TicketingAdapter):
             return list(await locator.all())
         return []
 
+    async def _is_rendered_registration(self, page: Page) -> bool:
+        """真的是「可以下單的登記頁」嗎。
+
+        光看容器存在不夠：Angular 還沒編譯完時原始 mustache 仍在 HTML 裡，
+        多場次活動的母頁更是連容器都沒有卻仍可能被誤判。把「還沒渲染完」
+        當成就緒，會讓開賣前的閘門直接放行，然後停在一張買不了票的頁上。
+        """
+        if not await self._has(page, KKTIXSelectors.REGISTRATION_APP):
+            return False
+        try:
+            html = str(await page.content())
+        except Exception:
+            # 讀不到內容時不要擅自升級判定；交給下一輪重探。
+            return False
+        return not any(
+            marker in html
+            for marker in REGISTRATION_UNRENDERED_MARKERS
+        )
+
     async def detect_page_kind(self, page: Page) -> KKTIXPageKind:
         """判斷目前頁面種類。順序不可調換：登記頁同樣有活動標題。"""
-        if await self._has(page, KKTIXSelectors.REGISTRATION_APP):
+        if await self._is_rendered_registration(page):
             return KKTIXPageKind.REGISTRATION
         if await self._has(page, KKTIXSelectors.LOGIN_KEY_FIELD) or await self._has(
             page, KKTIXSelectors.LOGIN_FORM
@@ -521,7 +694,10 @@ class KKTIXAdapter(TicketingAdapter):
                 continue
             raw = (await read_input_value(quantity_input)).strip()
             if raw.isdigit():
-                total += int(raw)
+                try:
+                    total += int(raw)
+                except ValueError:
+                    pass
         return total
 
     async def detect_page_state(self, page: Page) -> PageState:
@@ -660,15 +836,19 @@ class KKTIXAdapter(TicketingAdapter):
                 row, KKTIXSelectors.EVENT_TICKET_ROW_STATUS
             )
             remaining_match = REMAINING_RE.search(status_text)
+            remaining: int | None = None
+            if remaining_match:
+                try:
+                    remaining = int(remaining_match.group(1))
+                except ValueError:
+                    remaining = None
             options.append(
                 TicketOption(
                     index=len(options),
                     name=name,
                     price=self._parse_price(price_text),
                     available=not self._is_sold_out(f"{status_text} {name}"),
-                    remaining=int(remaining_match.group(1))
-                    if remaining_match
-                    else None,
+                    remaining=remaining,
                     status_text=status_text,
                 )
             )
@@ -677,7 +857,12 @@ class KKTIXAdapter(TicketingAdapter):
     @staticmethod
     def _parse_price(price_text: str) -> int:
         digits = DIGITS_RE.findall(price_text.replace(",", ""))
-        return int(digits[0]) if digits else 0
+        if not digits:
+            return 0
+        try:
+            return int(digits[0])
+        except ValueError:
+            return 0
 
     @staticmethod
     def _is_sold_out(text: str) -> bool:
@@ -696,15 +881,19 @@ class KKTIXAdapter(TicketingAdapter):
             sold_out = self._is_sold_out(f"{status_text} {name}")
             has_plus = await self._has(unit, KKTIXSelectors.TICKET_PLUS_BTN)
             remaining_match = REMAINING_RE.search(status_text)
+            remaining: int | None = None
+            if remaining_match:
+                try:
+                    remaining = int(remaining_match.group(1))
+                except ValueError:
+                    remaining = None
             options.append(
                 TicketOption(
                     index=index,
                     name=name,
                     price=price,
                     available=has_plus and not sold_out,
-                    remaining=int(remaining_match.group(1))
-                    if remaining_match
-                    else None,
+                    remaining=remaining,
                     status_text=status_text,
                 )
             )
@@ -837,7 +1026,10 @@ class KKTIXAdapter(TicketingAdapter):
                     unit=index,
                 )
                 return False
-            current = int(raw)
+            try:
+                current = int(raw)
+            except ValueError:
+                return False
             if current > 0:
                 minus = await self._first_present(unit, KKTIXSelectors.TICKET_MINUS_BTN)
                 if minus is None:
@@ -964,6 +1156,7 @@ class KKTIXAdapter(TicketingAdapter):
             await ng_fill(page, locator, value)
 
         await self._accept_dynamic_consents(page)
+        await self._answer_dynamic_radios(page)
         return await self._fill_attendees(page)
 
     async def _accept_dynamic_consents(self, page: Page) -> None:
@@ -1003,6 +1196,65 @@ class KKTIXAdapter(TicketingAdapter):
                 count=len(accepted),
                 terms=tuple(accepted),
             )
+
+    async def _answer_dynamic_radios(self, page: Page) -> None:
+        """處理主辦自訂的 radio 欄位。
+
+        **只動單一選項的群組**——那是「必須確認才能送出」的項目（KKTIX 用 radio
+        而不是 checkbox 表達），語意與同意條款相同，一律連同題幹記進 timeline。
+
+        多選項的群組是真正的選擇題，替使用者亂點可能買錯票或答錯資格問題，
+        因此只記錄待處理，交由既有的驗證規則或真人處理，**絕不**自行挑一個。
+        """
+        groups: dict[str, list[Locator]] = {}
+        for radio in await page.locator(DYNAMIC_RADIO).all():
+            name = str(await radio.get_attribute("name") or "")
+            if not name:
+                continue
+            groups.setdefault(name, []).append(radio)
+
+        confirmed: list[str] = []
+        unanswered: list[str] = []
+        for name, radios in groups.items():
+            if len(radios) > 1:
+                if not any([await r.is_checked() for r in radios]):
+                    unanswered.append(name)
+                continue
+
+            radio = radios[0]
+            if await radio.is_checked():
+                continue
+            await ng_click(page, radio, telemetry=self.telemetry)
+            confirmed.append(f"{name}: {await self._radio_question(page, radio)}")
+
+        if confirmed:
+            self.telemetry.record(
+                TimelineEventType.MARK,
+                "form_radio_confirmed",
+                count=len(confirmed),
+                items=tuple(confirmed),
+            )
+        if unanswered:
+            # 沒答的選擇題會讓送出被擋下；把它說清楚，不要變成無聲的逾時。
+            self.telemetry.record(
+                TimelineEventType.MARK,
+                "form_radio_unanswered",
+                count=len(unanswered),
+                fields=tuple(unanswered),
+            )
+
+    async def _radio_question(self, page: Page, radio: Locator) -> str:
+        """取出該 radio 的題幹文字，供事後追查我們替使用者確認了什麼。"""
+        del page
+        try:
+            container = radio.locator(
+                "xpath=ancestor::*[self::div or self::li][1]"
+            ).first
+            if await container.count():
+                return " ".join((await container.inner_text()).split())[:160]
+        except Exception:
+            pass
+        return ""
 
     async def _resolve_dynamic_contact_fields(self, page: Page) -> dict[str, Locator]:
         """把動態命名的聯絡人欄位依 label 文字歸位。

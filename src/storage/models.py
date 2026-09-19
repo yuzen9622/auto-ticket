@@ -61,6 +61,7 @@ class EventModel(Base):
     title: Mapped[str] = mapped_column(String(256), nullable=False)
     canonical_url: Mapped[str] = mapped_column(String(512), nullable=False)
     sale_start_at: Mapped[datetime | None] = mapped_column(UtcDateTime, nullable=True)
+    sale_end_at: Mapped[datetime | None] = mapped_column(UtcDateTime, nullable=True)
     event_start_at: Mapped[datetime | None] = mapped_column(UtcDateTime, nullable=True)
     status: Mapped[str] = mapped_column(String(32), nullable=False)
     raw_metadata: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)

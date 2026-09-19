@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-from datetime import timezone
+from datetime import UTC, datetime, timezone
 
 import httpx
 import pytest
+from bs4 import BeautifulSoup
 
 from adapters.ticketing.kktix.resolver import (
     MATCH_THRESHOLD,
@@ -11,6 +12,8 @@ from adapters.ticketing.kktix.resolver import (
     KKTIXEventResolver,
     KKTIXParseError,
     KKTIXResolveError,
+    _parse_price,
+    _parse_status,
     match_score,
     normalize_title,
     validate_org_slugs,
@@ -126,7 +129,7 @@ async def test_search_published_is_utc_and_audit_only(
     candidates = await make_resolver(kktix_client).search("Atarayo Taipei 2026")
     published = [c.published for c in candidates if c.published is not None]
     assert published
-    assert all(value.tzinfo is timezone.utc for value in published)
+    assert all(value.tzinfo is UTC for value in published)
 
 
 async def test_search_rejects_bad_payload() -> None:
@@ -177,8 +180,8 @@ async def test_fetch_event_metadata_separates_two_datetimes(
     assert event.event_start_at == EXPECTED_EVENT_START_UTC
     assert event.sale_start_at == EXPECTED_SALE_START_UTC
     assert event.event_start_at.date() != event.sale_start_at.date()
-    assert event.event_start_at.tzinfo is timezone.utc
-    assert event.sale_start_at.tzinfo is timezone.utc
+    assert event.event_start_at.tzinfo is UTC
+    assert event.sale_start_at.tzinfo is UTC
 
 
 async def test_fetch_event_metadata_identity_fields(
@@ -533,3 +536,178 @@ async def test_invalid_limit_rejected(
 
 async def test_limit_one_accepted(kktix_client: httpx.AsyncClient) -> None:
     assert len(await make_resolver(kktix_client).search("Atarayo", limit=1)) == 1
+
+
+def test_parse_price_keeps_the_decimal_point() -> None:
+    """帶小數的幣別不得被黏成大兩個數量級的數字。
+
+    全部刪成數字會讓 "HKD$1,612.00" 變成 161200，與報名頁讀到的 1612 對不上；
+    票價是完全相等比對，於是永遠配不到票，整場被誤判成售罄。
+    """
+    assert _parse_price("HKD$1,612.00") == 1612
+    assert _parse_price("HKD$1,412.0") == 1412
+    assert _parse_price("1,212.50") == 1212
+    # 沒有小數的既有格式不得被改變。
+    assert _parse_price("TWD$1,980") == 1980
+    assert _parse_price("NT$ 3,880") == 3880
+    assert _parse_price("免費") == 0
+
+
+ATOM_FEED_SAMPLE = """<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <entry>
+    <title>2026年9月場　EMBA雜誌【策略破框】2天實戰工作坊>>從問題到行動，學習打造贏的選擇</title>
+    <link rel="alternate" type="text/html" href="https://embamagazine.kktix.cc/events/emba20260918"/>
+    <author><name>EMBA雜誌</name><uri>http://www.emba.com.tw/</uri></author>
+    <published>2026-09-18T09:00:00+08:00</published>
+    <summary>從問題到行動，學習打造贏的選擇</summary>
+  </entry>
+  <entry>
+    <title>其他不相關活動</title>
+    <link rel="alternate" type="text/html" href="https://other.kktix.cc/events/other-event"/>
+    <author><name>其他主辦</name></author>
+    <published>2026-09-20T09:00:00+08:00</published>
+    <summary>摘要說明</summary>
+  </entry>
+</feed>
+"""
+
+
+async def test_search_global_parses_atom_feed() -> None:
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, text=ATOM_FEED_SAMPLE)
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    resolver = KKTIXEventResolver(client)
+    candidates = await resolver.search_global("策略破框")
+    assert len(candidates) >= 1
+    top = candidates[0]
+    assert "策略破框" in top.title
+    assert top.url == "https://embamagazine.kktix.cc/events/emba20260918"
+    assert top.organizer == "EMBA雜誌"
+    assert top.summary == "從問題到行動，學習打造贏的選擇"
+
+
+async def test_search_global_graceful_on_http_error() -> None:
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, text="Internal Server Error")
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    resolver = KKTIXEventResolver(client)
+    candidates = await resolver.search_global("任意關鍵字")
+    assert candidates == []
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "結束販售",
+        "已結束",
+        "結束",
+        "截止",
+        "報名截止",
+        "已截止",
+        "停止販售",
+        "停止報名",
+        "非販售期間",
+        "closed",
+        "ended",
+    ],
+)
+def test_parse_status_recognizes_closed_and_ended_keywords(text: str) -> None:
+    assert _parse_status(text) is TicketTypeStatus.CLOSED
+
+
+def test_derive_status_marks_all_closed_as_closed(
+    kktix_client: httpx.AsyncClient,
+) -> None:
+    event_id = "ev_test"
+    tickets = [
+        TicketType(
+            id="tt_1",
+            event_id=event_id,
+            name="早鳥票",
+            price=1000,
+            status=TicketTypeStatus.CLOSED,
+        ),
+        TicketType(
+            id="tt_2",
+            event_id=event_id,
+            name="一般票",
+            price=1200,
+            status=TicketTypeStatus.CLOSED,
+        ),
+    ]
+    assert make_resolver(kktix_client)._derive_status(tickets) is EventStatus.CLOSED
+
+
+def test_derive_status_marks_mixed_closed_and_sold_out_as_closed(
+    kktix_client: httpx.AsyncClient,
+) -> None:
+    event_id = "ev_test"
+    tickets = [
+        TicketType(
+            id="tt_1",
+            event_id=event_id,
+            name="早鳥票",
+            price=1000,
+            status=TicketTypeStatus.SOLD_OUT,
+        ),
+        TicketType(
+            id="tt_2",
+            event_id=event_id,
+            name="一般票",
+            price=1200,
+            status=TicketTypeStatus.CLOSED,
+        ),
+    ]
+    assert make_resolver(kktix_client)._derive_status(tickets) is EventStatus.CLOSED
+
+
+def test_parse_ticket_types_handles_duplicate_names_and_prices(
+    kktix_client: httpx.AsyncClient,
+) -> None:
+    """同一活動可能有多個同名同價的票種列（例如座位區 2500 出現兩次），ID 必須不碰撞。"""
+    html = """
+    <div class="tickets"><table><tbody>
+      <tr><td class="name">座位區</td><td class="price">NT$ 2,500</td></tr>
+      <tr><td class="name">座位區</td><td class="price">NT$ 2,500</td></tr>
+      <tr><td class="name">座位區</td><td class="price">NT$ 3,000</td></tr>
+    </tbody></table></div>
+    """
+    soup = BeautifulSoup(html, "html.parser")
+    resolver = make_resolver(kktix_client)
+    tickets = resolver._parse_ticket_types(soup, "ev_test")
+    assert len(tickets) == 3
+    ids = [t.id for t in tickets]
+    assert len(set(ids)) == 3, f"IDs must be unique, got {ids}"
+
+
+def test_parse_sale_start_at_captures_both_start_and_end(
+    kktix_client: httpx.AsyncClient,
+) -> None:
+    html = """
+    <div class="tickets"><table><tbody>
+      <tr>
+        <td class="name">票A</td>
+        <td class="period">
+          <span class="time">2026/05/01 12:00(+0800)</span> ~ <span class="time">2026/05/10 18:00(+0800)</span>
+        </td>
+        <td class="price">NT$ 1,000</td>
+      </tr>
+      <tr>
+        <td class="name">票B</td>
+        <td class="period">
+          <span class="time">2026/05/05 12:00(+0800)</span> ~ <span class="time">2026/05/20 18:00(+0800)</span>
+        </td>
+        <td class="price">NT$ 2,000</td>
+      </tr>
+    </tbody></table></div>
+    """
+    soup = BeautifulSoup(html, "html.parser")
+    resolver = make_resolver(kktix_client)
+    start, end, periods = resolver._parse_sale_start_at(soup)
+    assert start == datetime(2026, 5, 1, 4, 0, tzinfo=timezone.utc)
+    assert end == datetime(2026, 5, 20, 10, 0, tzinfo=timezone.utc)
+    assert len(periods) == 2
+

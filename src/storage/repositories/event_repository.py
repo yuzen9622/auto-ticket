@@ -106,6 +106,7 @@ class EventRepository:
         orm.title = event.title
         orm.canonical_url = event.canonical_url
         orm.sale_start_at = event.sale_start_at
+        orm.sale_end_at = event.sale_end_at
         orm.event_start_at = event.event_start_at
         orm.status = event.status.value
         orm.raw_metadata = event.raw_metadata
@@ -135,6 +136,7 @@ class EventRepository:
             title=orm.title,
             canonical_url=orm.canonical_url,
             sale_start_at=orm.sale_start_at,
+            sale_end_at=getattr(orm, "sale_end_at", None),
             event_start_at=orm.event_start_at,
             status=EventStatus(orm.status),
             raw_metadata=orm.raw_metadata or {},

@@ -301,7 +301,55 @@ async def test_navigate_to_event_upgrades_an_event_page_url_to_the_registration_
     await make_adapter(telemetry).navigate_to_event(
         page, "https://atc-twn.kktix.cc/events/d8a6cdd1"
     )
-    assert page.goto_urls == ["https://kktix.com/events/d8a6cdd1/registrations/new"]
+    # 第一次導航必須是登記頁；單場次活動找不到場次清單，之後的回頭探查不下單。
+    assert page.goto_urls[0] == "https://kktix.com/events/d8a6cdd1/registrations/new"
+
+
+async def test_multi_session_event_enters_the_chosen_session(
+    telemetry: TimelineRecorder,
+) -> None:
+    """多場次活動的母登記頁沒有票種；必須依偏好選進該場次自己的登記頁。"""
+    sessions = [
+        {"url": "https://ticketing.example.test/events/morning/registrations/new", "label": "【上午場】 2026/10/03 13:00"},
+        {"url": "https://ticketing.example.test/events/evening/registrations/new", "label": "【下午場】 2026/10/03 18:00"},
+    ]
+    adapter = make_adapter(telemetry)
+    assert adapter.pick_session(sessions, "上午場") == sessions[0]["url"]
+    assert adapter.pick_session(sessions, "下午場") == sessions[1]["url"]
+
+
+async def test_single_session_event_is_not_counted_as_many(
+    telemetry: TimelineRecorder,
+) -> None:
+    """單場次活動的「立即購票」「下一步」會有多顆按鈕指向同一個登記頁。
+
+    不以網址去重的話，一場會被數成三場，於是挑不出唯一解而整個卡住。
+    """
+    same = "https://ticketing.example.test/events/single/registrations/new"
+    sessions = [
+        {"url": same, "label": "立即購票"},
+        {"url": same, "label": "立即購票"},
+        {"url": same, "label": "下一步"},
+    ]
+    adapter = make_adapter(telemetry)
+    assert adapter.pick_session(sessions, None) == same
+    # 單場次時偏好沒有意義，填了也不該把它擋掉。
+    assert adapter.pick_session(sessions, "上午場") == same
+
+
+async def test_multi_session_event_never_guesses_the_session(
+    telemetry: TimelineRecorder,
+) -> None:
+    """買錯場次與買不到一樣糟，而且不可逆——挑不出唯一一個就不要挑。"""
+    sessions = [
+        {"url": "https://ticketing.example.test/events/a/registrations/new", "label": "【上午場】"},
+        {"url": "https://ticketing.example.test/events/b/registrations/new", "label": "【下午場】"},
+    ]
+    adapter = make_adapter(telemetry)
+    assert adapter.pick_session(sessions, None) is None
+    assert adapter.pick_session(sessions, "晚上場") is None
+    # 單場次活動不需要偏好也能決定。
+    assert adapter.pick_session(sessions[:1], None) == sessions[0]["url"]
 
 
 async def test_probe_page_upgrades_an_event_page_url_to_the_registration_page(
