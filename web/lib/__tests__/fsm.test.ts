@@ -83,14 +83,9 @@ describe("derivePageState 投影", () => {
     expect(derivePageState("RUNNING", "reconnecting")).toBe("UNKNOWN")
   })
 
-  it("CREATED / SCHEDULED → SCHEDULED", () => {
-    expect(derivePageState("CREATED", "open")).toBe("SCHEDULED")
+  it("SCHEDULED → SCHEDULED", () => {
+    expect(derivePageState("SCHEDULED", "open")).toBe("SCHEDULED")
     expect(derivePageState("SCHEDULED", "closed")).toBe("SCHEDULED")
-  })
-
-  it("PREPARING / READY → WARMING_UP", () => {
-    expect(derivePageState("PREPARING", "open")).toBe("WARMING_UP")
-    expect(derivePageState("READY", "open")).toBe("WARMING_UP")
   })
 
   it("PAUSED → PAUSED", () => {

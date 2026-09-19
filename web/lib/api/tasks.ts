@@ -49,21 +49,14 @@ export function cancelTask(taskId: string): Promise<CancelTaskResponse> {
   )
 }
 
-/** 僅 CREATED / CANCELLED / FAILED 可刪，其餘後端回 409 conflict。 */
 export function deleteTask(taskId: string): Promise<void> {
   return apiFetch<void>(`/api/v1/tasks/${encodeURIComponent(taskId)}`, {
     method: "DELETE",
   })
 }
 
-export const DELETABLE_TASK_STATUS = ["CREATED", "CANCELLED", "FAILED"] as const
-
-export function isDeletable(status: string): boolean {
-  return (DELETABLE_TASK_STATUS as readonly string[]).includes(status)
-}
-
 export function isStartable(status: string): boolean {
-  return status === "CREATED" || status === "SCHEDULED"
+  return status === "SCHEDULED"
 }
 
 export function isCancellable(status: string): boolean {

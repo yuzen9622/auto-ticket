@@ -28,11 +28,8 @@ const PURCHASE_STATE_TONE: Record<PurchaseState, SemanticTone> = {
 }
 
 const TASK_STATUS_TONE: Record<string, SemanticTone> = {
-  CREATED: "muted",
   CANCELLED: "muted",
   SCHEDULED: "accent",
-  PREPARING: "accent",
-  READY: "accent",
   RUNNING: "success",
   PAUSED: "warning",
   COMPLETED: "success",

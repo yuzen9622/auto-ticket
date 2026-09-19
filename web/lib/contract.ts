@@ -5,10 +5,7 @@
 
 /** src/domain/task.py TaskStatus */
 export const TASK_STATUS = [
-  "CREATED",
   "SCHEDULED",
-  "PREPARING",
-  "READY",
   "RUNNING",
   "PAUSED",
   "COMPLETED",

@@ -245,7 +245,6 @@
     "deleteHeading": "確定要刪除這個任務？",
     "deleteBody": "將永久刪除任務 {id}，此操作無法復原。",
     "deleteConfirm": "確認刪除",
-    "deleteBlocked": "目前狀態無法刪除；只有已建立、已取消或失敗的任務可以刪除。",
     "actionFailed": "操作失敗",
     "started": "已觸發執行",
     "queued": "已接受，等待排程",
@@ -437,10 +436,7 @@
   "status": {
     "unknown": "未知狀態",
     "taskStatus": {
-      "CREATED": "已建立",
       "SCHEDULED": "已排程",
-      "PREPARING": "準備中",
-      "READY": "就緒",
       "RUNNING": "執行中",
       "PAUSED": "已暫停",
       "COMPLETED": "已完成",
@@ -480,7 +476,6 @@
     "pageState": {
       "LIVE": "即時連線",
       "SCHEDULED": "已排程",
-      "WARMING_UP": "預熱中",
       "PAUSED": "已暫停",
       "FINISHED": "已結束",
       "UNKNOWN": "未知狀態"

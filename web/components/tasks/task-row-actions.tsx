@@ -38,7 +38,6 @@ import {
   cancelTask,
   deleteTask,
   isCancellable,
-  isDeletable,
   isStartable,
   startTask,
 } from "@/lib/api/tasks"
@@ -92,8 +91,6 @@ export function TaskRowActions({ task }: { task: TaskResponse }) {
     onError,
   })
 
-  const canDelete = isDeletable(task.status)
-
   return (
     <>
       <DropdownMenu>
@@ -141,20 +138,13 @@ export function TaskRowActions({ task }: { task: TaskResponse }) {
           )}
           <DropdownMenuSeparator />
           <DropdownMenuItem
-            disabled={!canDelete || remove.isPending}
+            disabled={remove.isPending}
             className="text-destructive focus:text-destructive"
-            onClick={() => {
-              if (canDelete) setShowDeleteDialog(true)
-            }}
+            onClick={() => setShowDeleteDialog(true)}
           >
             <Trash2 />
             {t("deleteTask")}
           </DropdownMenuItem>
-          {!canDelete && (
-            <p className="max-w-xs px-2 py-1 text-xs text-muted-foreground">
-              {t("deleteBlocked")}
-            </p>
-          )}
         </DropdownMenuContent>
       </DropdownMenu>
 

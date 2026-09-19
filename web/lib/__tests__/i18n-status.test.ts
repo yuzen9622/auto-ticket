@@ -30,7 +30,6 @@ describe("狀態字典涵蓋全部後端 enum", () => {
   }
 
   it("規格點名的狀態翻譯逐字符合", () => {
-    expect(messages.status.taskStatus.CREATED).toBe("已建立")
     expect(messages.status.taskStatus.SCHEDULED).toBe("已排程")
     expect(messages.status.taskStatus.RUNNING).toBe("執行中")
     expect(messages.status.taskStatus.COMPLETED).toBe("已完成")

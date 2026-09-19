@@ -260,7 +260,7 @@ async def test_task_create_and_get(db: Database) -> None:
         record = await TaskRepository(session).get(spec.task_id)
 
     assert record is not None
-    assert record.status is TaskStatus.CREATED
+    assert record.status is TaskStatus.SCHEDULED
     assert record.scheduled_at == SALE_START
     assert record.created_at.tzinfo is timezone.utc
     assert record.spec["task_id"] == spec.task_id
@@ -320,10 +320,10 @@ async def test_task_list_by_status(db: Database) -> None:
 
     async with db.session() as session:
         repo = TaskRepository(session)
-        created = await repo.list_by_status(TaskStatus.CREATED)
+        scheduled = await repo.list_by_status(TaskStatus.SCHEDULED)
         failed = await repo.list_by_status(TaskStatus.FAILED)
 
-    assert [record.id for record in created] == ["task_a"]
+    assert [record.id for record in scheduled] == ["task_a"]
     assert [record.id for record in failed] == ["task_b"]
     assert failed[0].error_message == "boom"
 

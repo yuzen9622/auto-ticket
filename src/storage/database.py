@@ -54,6 +54,19 @@ class Database:
                     "ALTER TABLE events ADD COLUMN sale_end_at DATETIME"
                 )
 
+            tables = {
+                row[0]
+                for row in sync_conn.exec_driver_sql(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                ).fetchall()
+            }
+            if "purchase_tasks" in tables:
+                # 舊值留著會讓 _to_domain 的 TaskStatus(orm.status) 直接拋 ValueError。
+                sync_conn.exec_driver_sql(
+                    "UPDATE purchase_tasks SET status='SCHEDULED' "
+                    "WHERE status IN ('CREATED','PREPARING','READY')"
+                )
+
         async with self._engine.begin() as conn:
             await conn.run_sync(models.Base.metadata.create_all)
             await conn.run_sync(_migrate)

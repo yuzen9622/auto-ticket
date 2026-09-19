@@ -32,7 +32,7 @@ function task(overrides: Record<string, unknown> = {}): TaskResponse {
   return {
     id: "task_abc123",
     event_id: "ev_mayday01",
-    status: "CREATED",
+    status: "SCHEDULED",
     execution_mode: "live",
     spec: { event_title: "五月天 2026 諾亞方舟" },
     scheduled_at: "2026-10-01T04:00:00Z",
@@ -57,9 +57,9 @@ beforeEach(() => {
 describe("任務管理表格", () => {
   it("狀態徽章只顯示翻譯後的文字", async () => {
     renderWithProviders(<TaskTable />)
-    expect(await screen.findByText("已建立")).toBeInTheDocument()
-    expect(screen.queryByText("CREATED")).toBeNull()
-    expect(screen.queryByText(/CREATED 已建立/)).toBeNull()
+    expect(await screen.findByText("已排程")).toBeInTheDocument()
+    expect(screen.queryByText("SCHEDULED")).toBeNull()
+    expect(screen.queryByText(/SCHEDULED 已排程/)).toBeNull()
   })
 
   it("未知狀態顯示「未知狀態」而不是原始值", async () => {
@@ -83,7 +83,7 @@ describe("任務管理表格", () => {
   it("狀態篩選顯示翻譯，但送給 API 的是原始 enum", async () => {
     const user = userEvent.setup()
     renderWithProviders(<TaskTable />)
-    await screen.findByText("已建立")
+    await screen.findByText("已排程")
 
     await user.click(screen.getByLabelText("依狀態篩選"))
     const option = await screen
@@ -102,7 +102,7 @@ describe("任務管理表格", () => {
 
   it("「全部狀態」不會把哨兵值送給 API", async () => {
     renderWithProviders(<TaskTable />)
-    await screen.findByText("已建立")
+    await screen.findByText("已排程")
     expect(api.listTasks).toHaveBeenCalledWith(
       expect.objectContaining({ status: undefined })
     )
@@ -110,7 +110,7 @@ describe("任務管理表格", () => {
 
   it("欄位標題都是自然語言", async () => {
     renderWithProviders(<TaskTable />)
-    await screen.findByText("已建立")
+    await screen.findByText("已排程")
     for (const header of [
       "任務編號",
       "活動",
@@ -128,23 +128,27 @@ describe("任務管理表格", () => {
 
   it("新增任務連到首頁的搜尋入口", async () => {
     renderWithProviders(<TaskTable />)
-    await screen.findByText("已建立")
+    await screen.findByText("已排程")
     expect(screen.getByRole("link", { name: "新增任務" })).toHaveAttribute(
       "href",
       "/"
     )
   })
 
-  it("不可刪除的任務用自然語言說明原因，不出現原始 enum", async () => {
+  it("執行中的任務也能刪除，不再顯示阻擋說明", async () => {
     const runningTask = task({ status: "RUNNING" })
     renderWithProviders(<TaskRowActions task={runningTask} />)
 
     const trigger = screen.getByRole("button", { name: "Open menu" })
     fireEvent.pointerDown(trigger, { button: 0, ctrlKey: false })
-    const tip = await screen.findAllByText(
-      "目前狀態無法刪除；只有已建立、已取消或失敗的任務可以刪除。"
-    )
-    expect(tip.length).toBeGreaterThan(0)
-    expect(screen.queryByText(/僅 CREATED/)).toBeNull()
+    const items = await screen.findAllByText("刪除")
+    expect(items.length).toBeGreaterThan(0)
+    for (const item of items) {
+      expect(item.closest("[role='menuitem']")).toHaveAttribute(
+        "data-disabled",
+        "false"
+      )
+    }
+    expect(screen.queryByText(/目前狀態無法刪除/)).toBeNull()
   })
 })

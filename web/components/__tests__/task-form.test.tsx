@@ -285,7 +285,7 @@ describe("表單驗證與送出", () => {
   it("送出的搶票時間是含時區位移的 ISO 8601，模式維持正式模式", async () => {
     const user = userEvent.setup()
     api.getEvent.mockResolvedValue(eventFixture())
-    api.createTask.mockResolvedValue({ id: "task_abc", status: "CREATED" })
+    api.createTask.mockResolvedValue({ id: "task_abc", status: "SCHEDULED" })
     renderWithProviders(<TaskForm eventId="ev_mayday01" />)
 
     await screen.findByLabelText("搶票時間")
@@ -307,7 +307,7 @@ describe("表單驗證與送出", () => {
   it("已在販售的活動不送搶票時間，由後端直接執行", async () => {
     const user = userEvent.setup()
     api.getEvent.mockResolvedValue(eventFixture({ status: "ON_SALE" }))
-    api.createTask.mockResolvedValue({ id: "task_abc", status: "CREATED" })
+    api.createTask.mockResolvedValue({ id: "task_abc", status: "SCHEDULED" })
     renderWithProviders(<TaskForm eventId="ev_mayday01" />)
 
     await screen.findByLabelText("執行時機")
@@ -356,7 +356,7 @@ describe("執行模式", () => {
   it("可以明確切換到測試模式", async () => {
     const user = userEvent.setup()
     api.getEvent.mockResolvedValue(eventFixture())
-    api.createTask.mockResolvedValue({ id: "task_abc", status: "CREATED" })
+    api.createTask.mockResolvedValue({ id: "task_abc", status: "SCHEDULED" })
     renderWithProviders(<TaskForm eventId="ev_mayday01" />)
 
     await screen.findByLabelText("搶票時間")

@@ -25,7 +25,7 @@ class TaskRepository:
         orm = PurchaseTaskModel(
             id=spec.task_id,
             event_id=event_id,
-            status=TaskStatus.CREATED.value,
+            status=TaskStatus.SCHEDULED.value,
             spec=spec.to_persistable_dict(),
             scheduled_at=scheduled_at,
         )

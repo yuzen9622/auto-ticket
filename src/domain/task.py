@@ -12,10 +12,7 @@ from domain.types import DomainBaseModel, UtcDatetime
 
 
 class TaskStatus(str, Enum):
-    CREATED = "CREATED"
     SCHEDULED = "SCHEDULED"
-    PREPARING = "PREPARING"
-    READY = "READY"
     RUNNING = "RUNNING"
     PAUSED = "PAUSED"
     COMPLETED = "COMPLETED"
