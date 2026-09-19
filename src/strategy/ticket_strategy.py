@@ -6,7 +6,6 @@ DOM 讀取與決策分離是刻意的——決策是唯一能被大量、快速�
 
 from __future__ import annotations
 
-import re
 from collections.abc import Collection, Sequence
 from dataclasses import dataclass
 from typing import Literal
@@ -43,6 +42,7 @@ class TicketDecision:
 NO_PRICE_MATCH = "NO_PRICE_MATCH"
 NO_NAME_MATCH = "NO_NAME_MATCH"
 INVALID_PATTERN = "INVALID_PATTERN"
+"""保留給既有紀錄判讀；名稱改為子字串比對後不再產生這個原因。"""
 UNAVAILABLE = "UNAVAILABLE"
 INSUFFICIENT_REMAINING = "INSUFFICIENT_REMAINING"
 SELECTED = "SELECTED"
@@ -90,12 +90,11 @@ def decide_ticket(
             continue
 
         if priority.ticket_name_pattern is not None:
-            try:
-                pattern = re.compile(priority.ticket_name_pattern)
-            except re.error as exc:
-                trace.append(f"{label} -> {INVALID_PATTERN} ({exc})")
-                continue
-            named = [o for o in candidates if pattern.search(o.name)]
+            # 子字串比對，不是正規表示式。票種名稱本來就常含 $ + ( ) 這類字元
+            # （例如「A＋$32 手續費」），當成 regex 編譯的話 `$` 會變成行尾錨點，
+            # 名稱永遠配不到自己，最後被誤判成整場售罄。UI 也從未宣稱支援樣式。
+            wanted = priority.ticket_name_pattern.casefold()
+            named = [o for o in candidates if wanted in o.name.casefold()]
             if not named:
                 trace.append(f"{label} -> {NO_NAME_MATCH}")
                 continue

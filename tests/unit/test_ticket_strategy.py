@@ -85,13 +85,31 @@ def test_name_pattern_miss_records_no_name_match() -> None:
     assert NO_NAME_MATCH in decision.trace[0]
 
 
-def test_invalid_pattern_is_recorded_not_raised() -> None:
+def test_name_is_matched_literally_not_as_a_regex() -> None:
+    """票種名稱是子字串比對，不是樣式。
+
+    真實票種名常含 `$`、`+`、`(`：當成 regex 編譯時 `$` 會變成行尾錨點，
+    名稱永遠配不到自己，整場被誤判成售罄（實際發生過：「A＋$32 手續費」）。
+    """
+    options = [opt(0, "A＋$32 手續費", 3200)]
     decision = decide_ticket(
-        [opt(0, "A", 3200)],
+        options, pref(TicketPriority(price=3200, ticket_name_pattern="A＋$32 手續費"))
+    )
+    assert decision.status == "SELECTED"
+
+    # regex 的特殊字元一律按字面處理，不再是語法錯誤。
+    literal = decide_ticket(
+        [opt(0, "[unclosed] 區", 3200)],
         pref(TicketPriority(price=3200, ticket_name_pattern="[unclosed")),
     )
-    assert decision.status == "SOLD_OUT"
-    assert INVALID_PATTERN in decision.trace[0]
+    assert literal.status == "SELECTED"
+
+    # 配不到就是配不到，照常記錄原因。
+    missing = decide_ticket(
+        options, pref(TicketPriority(price=3200, ticket_name_pattern="VIP"))
+    )
+    assert missing.status == "SOLD_OUT"
+    assert NO_NAME_MATCH in missing.trace[0]
 
 
 def test_price_mismatch_records_no_price_match() -> None:
