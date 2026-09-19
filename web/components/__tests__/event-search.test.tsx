@@ -333,4 +333,47 @@ describe("活動搜尋", () => {
     // 不存在多餘的外層 Panel / Card
     expect(container.querySelector("[data-slot='card']")).toBeNull()
   })
+
+  it("不顯示已結束的活動，且不顯示活動狀態 Tabs", async () => {
+    nav.params = new URLSearchParams("q=音樂會")
+    const onSale = result({
+      id: "ev_1",
+      title: "開賣中的音樂會",
+      status: "ON_SALE",
+    })
+    const announced = result({
+      id: "ev_2",
+      title: "尚未開賣的音樂會",
+      status: "ANNOUNCED",
+    })
+    const soldOut = result({
+      id: "ev_3",
+      title: "已售完的音樂會",
+      status: "SOLD_OUT",
+    })
+    const closed = result({
+      id: "ev_4",
+      title: "已結束的音樂會",
+      status: "CLOSED",
+    })
+
+    api.searchEvents.mockResolvedValue({
+      query: "音樂會",
+      results: [onSale, announced, soldOut, closed],
+    })
+
+    renderWithProviders(<EventSearch />)
+
+    // 顯示未結束活動
+    expect(await screen.findByText("開賣中的音樂會")).toBeInTheDocument()
+    expect(screen.getByText("尚未開賣的音樂會")).toBeInTheDocument()
+    expect(screen.getByText("已售完的音樂會")).toBeInTheDocument()
+
+    // 不顯示已結束活動
+    expect(screen.queryByText("已結束的音樂會")).toBeNull()
+
+    // 不存在狀態 Tabs
+    expect(screen.queryByRole("tablist")).toBeNull()
+    expect(screen.queryByRole("tab")).toBeNull()
+  })
 })

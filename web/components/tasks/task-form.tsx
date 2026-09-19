@@ -107,6 +107,18 @@ export function TaskForm({ eventId }: { eventId: string }) {
         event.sale_start_at,
         Date.now()
       ),
+      // 票價是完全相等比對，預設值 0 會把所有票排除掉。活動票種已經抓回來了，
+      // 就用它預填，讓表單一打開就是「照票面價買」而不是一個買不到任何票的設定。
+      ticket_preference: event.ticket_types.length
+        ? {
+            ...prev.ticket_preference,
+            priorities: event.ticket_types.map((ticket, index) => ({
+              price: ticket.price,
+              ticket_name_pattern: ticket.name,
+              priority: index + 1,
+            })),
+          }
+        : prev.ticket_preference,
     }))
   }, [event])
 
@@ -185,6 +197,7 @@ export function TaskForm({ eventId }: { eventId: string }) {
       verification_rules: draft.verification_rules,
       auto_login: draft.auto_login,
       qualification_code: draft.qualification_code.trim() || null,
+      session_preference: draft.session_preference.trim() || null,
       profile: draft.profile,
     })
   }
@@ -449,6 +462,23 @@ export function TaskForm({ eventId }: { eventId: string }) {
             errors={errors}
             onChange={(verification_rules) => patch({ verification_rules })}
           />
+          <div className="flex flex-col gap-1">
+            <Label htmlFor="session-preference">{t("sessionPreference")}</Label>
+            <Input
+              id="session-preference"
+              value={draft.session_preference}
+              onChange={(e) => patch({ session_preference: e.target.value })}
+              aria-describedby="session-preference-hint"
+              className="h-7"
+              autoComplete="off"
+            />
+            <span
+              id="session-preference-hint"
+              className="text-xs text-muted-foreground"
+            >
+              {t("sessionPreferenceHint")}
+            </span>
+          </div>
           <div className="flex flex-col gap-1">
             <Label htmlFor="qualification-code">{t("qualificationCode")}</Label>
             <Input

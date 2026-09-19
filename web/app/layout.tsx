@@ -1,5 +1,5 @@
 import type { Metadata } from "next"
-import { Geist, Geist_Mono } from "next/font/google"
+import { Outfit, Huninn, Geist_Mono } from "next/font/google"
 import { NextIntlClientProvider } from "next-intl"
 import { getMessages } from "next-intl/server"
 
@@ -8,9 +8,17 @@ import { AppShell } from "@/components/layout/app-shell"
 import { locale, messages as fallbackMessages } from "@/lib/i18n/config"
 import { Providers } from "./providers"
 
-const geistSans = Geist({
-  variable: "--font-geist-sans",
+const outfit = Outfit({
   subsets: ["latin"],
+  variable: "--font-outfit",
+  display: "swap",
+})
+
+const huninn = Huninn({
+  weight: "400",
+  subsets: ["latin"],
+  variable: "--font-huninn",
+  display: "swap",
 })
 
 const geistMono = Geist_Mono({
@@ -33,9 +41,9 @@ export default async function RootLayout({
   return (
     <html
       lang={locale}
-      className={`${geistSans.variable} ${geistMono.variable}`}
+      className={`${outfit.variable} ${huninn.variable} ${geistMono.variable}`}
     >
-      <body className="antialiased">
+      <body className="font-sans antialiased">
         <NextIntlClientProvider locale={locale} messages={messages}>
           <Providers>
             <AppShell>{children}</AppShell>

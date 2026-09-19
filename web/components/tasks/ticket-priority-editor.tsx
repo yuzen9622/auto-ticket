@@ -118,8 +118,15 @@ export function TicketPriorityEditor({
               onChange={(e) =>
                 update(i, { price: Math.max(0, Number(e.target.value)) })
               }
+              aria-describedby={`priority-price-hint-${i}`}
               className="tabular h-7"
             />
+            <span
+              id={`priority-price-hint-${i}`}
+              className="text-xs text-muted-foreground"
+            >
+              {t("priorityPriceHint")}
+            </span>
           </div>
 
           <div className="flex gap-1 pb-0.5">

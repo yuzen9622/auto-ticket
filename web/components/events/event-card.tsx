@@ -27,6 +27,7 @@ export function EventCard({ event }: { event: EventSearchResult }) {
   const saleStart = event.sale_start_at
     ? formatDateTime(event.sale_start_at)
     : null
+  const saleEnd = event.sale_end_at ? formatDateTime(event.sale_end_at) : null
   const eventStart = event.event_start_at
     ? formatDateTime(event.event_start_at)
     : null
@@ -74,8 +75,20 @@ export function EventCard({ event }: { event: EventSearchResult }) {
 
         {saleStart && (
           <div className="flex min-w-0 gap-2">
-            <dt className="shrink-0 text-muted-foreground">{t("saleStart")}</dt>
-            <dd className="tabular min-w-0 break-words">{saleStart}</dd>
+            <dt className="shrink-0 text-muted-foreground">
+              {saleEnd ? t("salePeriod") : t("saleStart")}
+            </dt>
+            <dd className="tabular min-w-0 break-words">
+              {saleStart}
+              {saleEnd ? ` ~ ${saleEnd}` : ""}
+            </dd>
+          </div>
+        )}
+
+        {!saleStart && saleEnd && (
+          <div className="flex min-w-0 gap-2">
+            <dt className="shrink-0 text-muted-foreground">{t("saleEnd")}</dt>
+            <dd className="tabular min-w-0 break-words">~ {saleEnd}</dd>
           </div>
         )}
 

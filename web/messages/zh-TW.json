@@ -64,6 +64,10 @@
     "clear": "清除搜尋",
     "resultsHeading": "搜尋結果",
     "resultCount": "共 {count} 場活動",
+    "allStatuses": "全部狀態",
+    "filterByStatus": "活動狀態",
+    "filteredEmpty": "沒有符合所選狀態的活動",
+    "filteredEmptyHint": "嘗試勾選其他狀態或點擊「全部狀態」查看所有活動。",
     "initial": "還沒有開始搜尋",
     "initialHint": "輸入活動名稱或關鍵字，就會列出可以搶票的活動。",
     "empty": "查無符合的活動",
@@ -80,6 +84,8 @@
     "providers": "票券商",
     "eventDate": "活動日期",
     "saleStart": "開賣時間",
+    "saleEnd": "截止時間",
+    "salePeriod": "販售期間",
     "status": "活動狀態",
     "statusPendingLoad": "票況將於選擇活動後確認",
     "description": "活動描述",
@@ -112,7 +118,7 @@
     "priorityOrder": "順序",
     "priorityName": "票種名稱",
     "priorityNameHint": "留空表示不限票種名稱。",
-    "priorityPrice": "票價上限",
+    "priorityPrice": "票價",
     "addPriority": "新增一筆票種",
     "movePriorityUp": "往上移一位",
     "movePriorityDown": "往下移一位",
@@ -177,7 +183,10 @@
     "technicalDetails": "技術資訊",
     "showValue": "顯示內容",
     "hideValue": "隱藏內容",
-    "rememberAttendee": "記住"
+    "rememberAttendee": "記住",
+    "sessionPreference": "活動場次",
+    "sessionPreferenceHint": "多場次活動必填，例如「上午場」。填錯或留空會在開賣前就停下來，不會亂買。",
+    "priorityPriceHint": "要與票種的實際票價完全相符；填錯會比對不到任何票。"
   },
   "taskFormErrors": {
     "heading": "有 {count} 個欄位需要修正",
@@ -386,7 +395,9 @@
     "clearHeading": "確定要清除所有本機聯絡人？",
     "clearBody": "將刪除這個瀏覽器儲存的全部聯絡人與參加者資料，此操作無法復原。",
     "clearConfirm": "確認清除",
-    "cleared": "已清除本機聯絡人"
+    "cleared": "已清除本機聯絡人",
+    "loginBlockedByBotCheck": "被票券平台的人機驗證擋住，還沒看到登入頁——這不代表帳號或密碼有誤。請在自動開啟的瀏覽器視窗裡完成一次驗證後再試。",
+    "loginRequiresHumanVerification": "KKTIX 在登入時要求人工驗證，所以帳號密碼沒有被受理——這不是帳密錯誤。請改用「手動登入」，在開啟的瀏覽器視窗裡自行完成驗證，登入狀態會保留下來。"
   },
   "status": {
     "unknown": "未知狀態",
@@ -449,7 +460,8 @@
     "ticketTypeStatus": {
       "AVAILABLE": "可購買",
       "SOLD_OUT": "已售罄",
-      "COMING_SOON": "尚未開賣"
+      "COMING_SOON": "尚未開賣",
+      "CLOSED": "已截止"
     },
     "seatStrategy": {
       "best_available": "最佳可選",
@@ -471,6 +483,11 @@
       "SESSION_CHECK": "檢查登入狀態",
       "LOGIN": "登入",
       "MANUAL_LOGIN": "手動登入"
+    },
+    "loginState": {
+      "LOGGED_IN": "已登入",
+      "LOGGED_OUT": "未登入",
+      "UNKNOWN": "無法確認（被人機驗證擋住）"
     }
   },
   "errors": {

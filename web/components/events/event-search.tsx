@@ -75,13 +75,27 @@ export function EventSearch() {
     [pathname, router, searchParams]
   )
 
+  // `navigate` 依賴 searchParams，每次導航都會換一個新的函式實體。把它放進下面的
+  // 依賴陣列會變成「導航 → navigate 換新 → effect 再跑 → 再導航」的無限迴圈，
+  // 頁面被反覆重掛，查詢永遠來不及完成。改用 ref 取用最新的那一份。
+  const navigateRef = React.useRef(navigate)
+  React.useEffect(() => {
+    navigateRef.current = navigate
+  }, [navigate])
+
+  // 只有「使用者真的打過字」才自動同步網址。剛掛載時 debounce 還沒追上 draft，
+  // 若不設這道閘，effect 會把「debounce 尚未追上」誤判成「使用者清空了輸入框」，
+  // 於是先把 q 砍掉再加回來，在 / 與 /?q=… 之間來回震盪。
+  const userTypedRef = React.useRef(false)
+
   // 使用者在輸入框打字，debounce 穩定後若與目前網址不同，以 replace 自動同步網址（不污染瀏覽歷史）
   React.useEffect(() => {
+    if (!userTypedRef.current) return
+    if (immediateQuery !== null) return
     const trimmedDebounced = debouncedDraft.trim()
-    if (immediateQuery === null && trimmedDebounced !== query) {
-      navigate(trimmedDebounced, true)
-    }
-  }, [debouncedDraft, query, immediateQuery, navigate])
+    if (trimmedDebounced === query) return
+    navigateRef.current(trimmedDebounced, true)
+  }, [debouncedDraft, query, immediateQuery])
 
   const results = useQuery({
     queryKey: ["event-search", effectiveQuery],
@@ -91,6 +105,7 @@ export function EventSearch() {
   })
 
   const handleDraftChange = (value: string) => {
+    userTypedRef.current = true
     setDraft(value)
     setImmediateQuery(null)
   }
@@ -110,9 +125,13 @@ export function EventSearch() {
     return t("unknownError")
   }
 
+  const events = React.useMemo(
+    () => (results.data?.results ?? []).filter((ev) => ev.status !== "CLOSED"),
+    [results.data?.results]
+  )
+
   return (
     <div className="relative flex flex-col gap-8 py-2">
-      {/* 搜尋框框上方致中 70% width */}
       <div className="mx-auto flex w-full flex-col gap-3 md:w-[70%]">
         <div className="flex flex-col items-center gap-1.5 text-center">
           <h1 className="text-xl font-bold tracking-tight sm:text-2xl">
@@ -123,8 +142,6 @@ export function EventSearch() {
         <form className="flex flex-col gap-1.5" onSubmit={onSubmit}>
           <div className="flex flex-col gap-2 sm:flex-row">
             <div className="relative flex-1">
-              {/* 視覺上靠 placeholder 與圖示即可，但輔助技術需要真正的 Label；
-                  placeholder 不是 Label，讀螢幕的人會完全不知道這個欄位是什麼。 */}
               <Label htmlFor="event-query" className="sr-only">
                 {t("inputLabel")}
               </Label>
@@ -143,8 +160,6 @@ export function EventSearch() {
                 autoComplete="off"
               />
             </div>
-            {/* 打字會自動搜尋，但表單仍要有可被觸發的送出控制項：
-                鍵盤與輔助技術使用者不該只能靠 Enter 的隱含送出。 */}
             <button type="submit" className="sr-only">
               {t("submit")}
             </button>
@@ -157,13 +172,13 @@ export function EventSearch() {
         className="sticky top-0 flex flex-col gap-3"
         aria-label={t("resultsHeading")}
       >
-        {results.data && results.data.results.length > 0 && (
+        {results.data && events.length > 0 && (
           <div className="flex items-center justify-between px-1">
             <h2 className="text-sm font-semibold tracking-tight">
               {t("resultsHeading")}
             </h2>
             <span className="text-xs text-muted-foreground">
-              {t("resultCount", { count: results.data.results.length })}
+              {t("resultCount", { count: events.length })}
             </span>
           </div>
         )}
@@ -175,9 +190,9 @@ export function EventSearch() {
             <EmptyState message={t("searching")} />
           ) : results.isError ? (
             <EmptyState message={t("errorTitle")} hint={errorMessage()} />
-          ) : results.data && results.data.results.length > 0 ? (
+          ) : results.data && events.length > 0 ? (
             <ul className="grid min-w-0 grid-cols-1 gap-3 md:grid-cols-2">
-              {results.data.results.map((event) => (
+              {events.map((event) => (
                 <EventCard key={event.id} event={event} />
               ))}
             </ul>

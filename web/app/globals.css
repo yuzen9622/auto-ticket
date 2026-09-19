@@ -40,8 +40,8 @@
   --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
   --color-sidebar-border: var(--sidebar-border);
   --color-sidebar-ring: var(--sidebar-ring);
-  --font-sans: Geist, sans-serif;
-  --font-mono: Geist Mono, monospace;
+  --font-sans: var(--font-outfit), var(--font-huninn), sans-serif;
+  --font-mono: var(--font-geist-mono), var(--font-huninn), monospace;
   --font-serif: Georgia, serif;
   --radius: 0.5rem;
   --tracking-tighter: calc(var(--tracking-normal) - 0.05em);
@@ -108,9 +108,9 @@
   --sidebar-border: oklch(0.94 0 0);
   --sidebar-border: oklch(0.922 0 0);
   --sidebar-ring: oklch(0 0 0);
-  --font-sans: Geist, sans-serif;
+  --font-sans: var(--font-outfit), var(--font-huninn), sans-serif;
   --font-serif: Georgia, serif;
-  --font-mono: Geist Mono, monospace;
+  --font-mono: var(--font-geist-mono), var(--font-huninn), monospace;
   --shadow-color: hsl(0 0% 0%);
   --shadow-opacity: 0.18;
   --shadow-blur: 2px;
@@ -172,9 +172,9 @@
   --sidebar-border: oklch(0.269 0 0);
   --sidebar-ring: oklch(0.72 0 0);
   --radius: 0.5rem;
-  --font-sans: Geist, sans-serif;
+  --font-sans: var(--font-outfit), var(--font-huninn), sans-serif;
   --font-serif: Georgia, serif;
-  --font-mono: Geist Mono, monospace;
+  --font-mono: var(--font-geist-mono), var(--font-huninn), monospace;
   --shadow-color: hsl(0 0% 0%);
   --shadow-opacity: 0.18;
   --shadow-blur: 2px;
@@ -210,7 +210,7 @@
     @apply outline-ring/50;
   }
   body {
-    @apply bg-background text-foreground;
+    @apply bg-background text-foreground font-sans;
     letter-spacing: var(--tracking-normal);
   }
 }

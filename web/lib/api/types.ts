@@ -62,6 +62,7 @@ export interface CreateTaskRequest {
   verification_rules: VerificationRule[]
   auto_login: boolean
   qualification_code?: string | null
+  session_preference?: string | null
   profile: string
 }
 
@@ -155,6 +156,7 @@ export interface EventSearchResult {
   ticketing_providers: TicketingProviderOut[]
   canonical_url: string
   sale_start_at: string | null
+  sale_end_at: string | null
   event_start_at: string | null
   status: string
   /** true 代表票種與開賣時間已由活動頁補齊。 */

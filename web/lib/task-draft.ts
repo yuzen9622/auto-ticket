@@ -19,6 +19,7 @@ export interface TaskDraft {
   timeout_seconds: number
   auto_login: boolean
   qualification_code: string
+  session_preference: string
   execution_mode: ExecutionMode
   profile: string
 }
@@ -43,6 +44,7 @@ export function createInitialDraft(): TaskDraft {
     timeout_seconds: 120,
     auto_login: false,
     qualification_code: "",
+    session_preference: "",
     // 產品預設是正式模式；測試模式必須由使用者自己選。
     execution_mode: "live",
     profile: "live",
