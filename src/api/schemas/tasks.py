@@ -28,6 +28,7 @@ class CreateTaskRequest(BaseModel):
     verification_rules: list[VerificationRule] = Field(default_factory=list)
     auto_login: bool = False
     qualification_code: str | None = None
+    session_preference: str | None = None
     profile: str = Field(default="live")
 
 

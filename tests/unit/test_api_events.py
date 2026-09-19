@@ -115,7 +115,8 @@ async def test_search_events_resolves_scope_on_the_backend(
         assert providers[0]["id"] == "kktix"
         assert providers[0]["name"] == "KKTIX"
         assert providers[0]["event_url"] == top["canonical_url"]
-        assert top["detail_loaded"] is False
+        assert top["detail_loaded"] is True
+        assert top["status"] != "UNKNOWN"
 
 
 async def test_search_events_accepts_event_url(app_with_backend_scope) -> None:
@@ -176,3 +177,137 @@ def test_resolver_orgs_come_from_the_environment() -> None:
     )
     assert settings.resolver_orgs == ("believe", "pycontw")
     assert ApiSettings.from_env({}).resolver_orgs == ()
+
+
+EMBA_ATOM_XML = """<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <entry>
+    <title>2026年9月場　EMBA雜誌【策略破框】2天實戰工作坊>>從問題到行動，學習打造贏的選擇</title>
+    <link rel="alternate" type="text/html" href="https://embamagazine.kktix.cc/events/emba20260918"/>
+    <author><name>EMBA雜誌</name></author>
+    <published>2026-09-18T09:00:00+08:00</published>
+    <summary>從問題到行動，學習打造贏的選擇</summary>
+  </entry>
+</feed>
+"""
+
+EMBA_HTML = """<!DOCTYPE html>
+<html>
+<head><title>2026年9月場　EMBA雜誌【策略破框】2天實戰工作坊</title></head>
+<body>
+<div class="header-title"><h1>2026年9月場　EMBA雜誌【策略破框】2天實戰工作坊>>從問題到行動，學習打造贏的選擇</h1></div>
+<div class="organizers"><a class="organizer-name">EMBA雜誌</a></div>
+<div class="tickets">
+  <table>
+    <tbody>
+      <tr>
+        <td class="name">實戰工作坊一般票</td>
+        <td class="price">NT$ 15,900</td>
+        <td class="period"><span class="time">2026/07/01 00:00</span></td>
+        <td class="status">開賣中</td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+</body>
+</html>
+"""
+
+
+async def test_search_events_via_global_atom_feed_when_no_scope(db: Database) -> None:
+    """即使未設定主辦 scope，也能透過全站 Atom feed 搜尋活動並完成票況確認。"""
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "kktix.com" and request.url.path == "/events.atom":
+            return httpx.Response(200, text=EMBA_ATOM_XML)
+        if request.url.host == "embamagazine.kktix.cc" and request.url.path == "/events/emba20260918":
+            return httpx.Response(200, text=EMBA_HTML)
+        return httpx.Response(404)
+
+    mock_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    # 刻意不給 resolver_orgs（模擬預設環境）
+    settings = ApiSettings(db_path=db.db_path, resolver_orgs=())
+    app = create_app(settings, db=db, http_client=mock_client)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://test",
+    ) as client:
+        resp = await client.get("/api/v1/events/search", params={"q": "策略破框"})
+        assert resp.status_code == 200
+        body = resp.json()
+        assert len(body["results"]) == 1
+        top = body["results"][0]
+        assert "策略破框" in top["title"]
+        assert top["organizer"] == "EMBA雜誌"
+        assert top["canonical_url"] == "https://embamagazine.kktix.cc/events/emba20260918"
+        # 關鍵驗證：票況已即時確認，不再是未確認（detail_loaded 為 True）！
+        assert top["detail_loaded"] is True
+        assert top["status"] == "ON_SALE"
+
+
+CLOSED_HTML = """<!DOCTYPE html>
+<html>
+<head><title>已結束的活動</title></head>
+<body>
+<div class="header-title"><h1>已結束的活動</h1></div>
+<div class="organizers"><a class="organizer-name">測試主辦</a></div>
+<div class="tickets">
+  <table>
+    <tbody>
+      <tr>
+        <td class="name">一般票</td>
+        <td class="price">NT$ 500</td>
+        <td class="period"><span class="time">2026/01/01 00:00</span></td>
+        <td class="status">已結束</td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+</body>
+</html>
+"""
+
+
+async def test_search_events_filters_out_closed_events(db: Database) -> None:
+    """查詢活動時，已結束的活動不應出現在搜尋結果中。"""
+    atom_xml = """<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <entry>
+    <title>已結束的測試活動</title>
+    <link rel="alternate" type="text/html" href="https://testorg.kktix.cc/events/closed-event"/>
+    <author><name>測試主辦</name></author>
+    <published>2026-01-01T00:00:00+08:00</published>
+    <summary>這是一場已經結束的活動</summary>
+  </entry>
+</feed>
+"""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "kktix.com" and request.url.path == "/events.atom":
+            return httpx.Response(200, text=atom_xml)
+        if request.url.host == "testorg.kktix.cc" and request.url.path == "/events/closed-event":
+            return httpx.Response(200, text=CLOSED_HTML)
+        return httpx.Response(404)
+
+    mock_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    settings = ApiSettings(db_path=db.db_path, resolver_orgs=())
+    app = create_app(settings, db=db, http_client=mock_client)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://test",
+    ) as client:
+        # 1. 透過關鍵字搜尋，已結束活動被過濾，results 應為空
+        resp = await client.get("/api/v1/events/search", params={"q": "已結束"})
+        assert resp.status_code == 200
+        assert resp.json()["results"] == []
+
+        # 2. 透過直接網址搜尋已結束活動，results 亦應為空
+        direct_resp = await client.get(
+            "/api/v1/events/search",
+            params={"q": "https://testorg.kktix.cc/events/closed-event"},
+        )
+        assert direct_resp.status_code == 200
+        assert direct_resp.json()["results"] == []
+
+

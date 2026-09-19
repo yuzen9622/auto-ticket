@@ -92,6 +92,13 @@ def register_exception_handlers(app: FastAPI) -> None:
             ),
         )
 
+    @app.exception_handler(Exception)
+    async def _unhandled_error(_request: Request, exc: Exception) -> JSONResponse:
+        return JSONResponse(
+            status_code=500,
+            content=error_body("internal_error", "Internal server error"),
+        )
+
 
 def _safe_validation_details(exc: RequestValidationError) -> list[dict[str, Any]]:
     """只回欄位位置與原因，**不回** `input`——那可能就是使用者剛送進來的機密。"""

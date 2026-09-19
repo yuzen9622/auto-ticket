@@ -95,6 +95,11 @@ class PurchaseTaskSpec(DomainBaseModel):
     verification_rules: tuple[VerificationRule, ...] = ()
     auto_login: bool = False
     qualification_code: str | None = None
+    session_preference: str | None = None
+    """多場次活動要買哪一場（比對場次標籤的子字串，例如「上午場」）。
+
+    母活動的登記頁沒有票種，不先選場次就永遠看不到票。留空時只有單場次活動能繼續，
+    多場次會 fail-closed——買錯場次不可逆，不替使用者猜。"""
 
     @model_validator(mode="after")
     def _require_payment_profile(self) -> PurchaseTaskSpec:

@@ -76,6 +76,7 @@ async def create_task(
         verification_rules=tuple(req.verification_rules),
         auto_login=req.auto_login,
         qualification_code=req.qualification_code,
+        session_preference=req.session_preference,
     )
 
     event_id: str | None = None

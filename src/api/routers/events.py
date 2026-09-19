@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import re
 from typing import Any
 
@@ -34,8 +35,10 @@ from api.settings import ApiSettings
 from domain.event import Event, EventCandidate, EventStatus, PlatformEnum
 from storage.database import Database
 from storage.repositories.event_repository import EventRepository
+from telemetry.logging import get_logger
 
 router = APIRouter(prefix="/api/v1/events", tags=["events"])
+logger = get_logger("api.events")
 
 PROVIDER_NAMES = {"kktix": "KKTIX", "tixcraft": "拓元售票", "ibon": "ibon 售票"}
 SEARCH_RESULT_LIMIT = 30
@@ -143,6 +146,7 @@ def _event_to_search_result(ev: Event) -> EventSearchResultOut:
         ticketing_providers=_providers_for(ev),
         canonical_url=ev.canonical_url,
         sale_start_at=ev.sale_start_at,
+        sale_end_at=getattr(ev, "sale_end_at", None),
         event_start_at=ev.event_start_at,
         status=ev.status.value if hasattr(ev.status, "value") else str(ev.status),
         detail_loaded=_is_detail_loaded(ev),
@@ -229,31 +233,51 @@ async def search_events(
             raise UpstreamFailedError(str(exc)) from exc
         except Exception as exc:
             raise UpstreamFailedError(str(exc)) from exc
-        async with db.session() as session:
-            event = await EventRepository(session).upsert_event(event)
-        return EventSearchResponse(query=query, results=[_event_to_search_result(event)])
-
-    remote: list[EventCandidate] = []
-    if scope:
-        resolver = default_resolver
-        client = getattr(request.app.state, "http_client", None)
-        if isinstance(client, httpx.AsyncClient):
-            resolver = KKTIXEventResolver(client, orgs=scope)
         try:
-            remote = await resolver.search(query, orgs=scope, limit=limit)
-        except KKTIXResolveError as exc:
-            # 已同步活動仍可作答；上游掛掉不該讓整個搜尋變成錯誤頁。
-            if not local:
-                raise UpstreamFailedError(str(exc)) from exc
+            async with db.session() as session:
+                event = await EventRepository(session).upsert_event(event)
         except Exception as exc:
-            if not local:
-                raise UpstreamFailedError(str(exc)) from exc
+            logger.warning("direct_event_upsert_failed", error=str(exc))
+        status_val = (
+            event.status.value
+            if hasattr(event.status, "value")
+            else str(event.status)
+        )
+        results = (
+            [_event_to_search_result(event)]
+            if status_val != EventStatus.CLOSED.value
+            else []
+        )
+        return EventSearchResponse(query=query, results=results)
+
+    resolver = default_resolver
+    client = getattr(request.app.state, "http_client", None)
+    if isinstance(client, httpx.AsyncClient):
+        resolver = KKTIXEventResolver(client, orgs=scope)
+
+    search_coros = []
+    if scope:
+        search_coros.append(resolver.search(query, orgs=scope, limit=limit))
+    search_coros.append(resolver.search_global(query, limit=limit))
+
+    search_results = await asyncio.gather(*search_coros, return_exceptions=True)
+    remote: list[EventCandidate] = []
+    scope_error: Exception | None = None
+    for res in search_results:
+        if isinstance(res, list):
+            remote.extend(res)
+        elif isinstance(res, Exception):
+            scope_error = res
+
+    if scope and not remote and not local and scope_error is not None:
+        if isinstance(scope_error, KKTIXResolveError):
+            raise UpstreamFailedError(str(scope_error)) from scope_error
+        raise UpstreamFailedError(str(scope_error)) from scope_error
 
     scored: dict[str, tuple[float, Event]] = {}
     for ev in local:
         scored[ev.id] = (match_score(query, ev.title), ev)
 
-    fresh: list[Event] = []
     for candidate in remote:
         shallow = _candidate_to_event(candidate)
         if shallow is None:
@@ -261,22 +285,43 @@ async def search_events(
         existing = scored.get(shallow.id)
         if existing is None:
             scored[shallow.id] = (candidate.score, shallow)
-            fresh.append(shallow)
         elif candidate.score > existing[0]:
             scored[shallow.id] = (candidate.score, existing[1])
 
-    # 把新看到的候選寫進來源清單，之後 `/events/{id}` 才查得到這個識別碼。
-    if fresh:
-        async with db.session() as session:
-            repo = EventRepository(session)
-            for shallow in fresh:
-                if await repo.get_by_id(shallow.id) is None:
-                    await repo.upsert_event(shallow)
-
     ranked = sorted(scored.values(), key=lambda pair: (-pair[0], pair[1].title))
+    top_events = [ev for _, ev in ranked[:limit]]
+
+    async def _hydrate(ev: Event) -> Event:
+        if _is_detail_loaded(ev):
+            return ev
+        try:
+            hydrated = await resolver.fetch_event_metadata(ev.canonical_url)
+            merged_meta = {**(ev.raw_metadata or {}), **(hydrated.raw_metadata or {})}
+            return hydrated.model_copy(update={"raw_metadata": merged_meta})
+        except Exception:
+            return ev
+
+    hydrated_events = list(await asyncio.gather(*[_hydrate(ev) for ev in top_events]))
+
+    if hydrated_events:
+        try:
+            async with db.session() as session:
+                repo = EventRepository(session)
+                for ev in hydrated_events:
+                    await repo.upsert_event(ev)
+        except Exception as exc:
+            logger.warning("hydrated_event_upsert_failed", error=str(exc))
+
+    active_events = [
+        ev
+        for ev in hydrated_events
+        if (ev.status.value if hasattr(ev.status, "value") else str(ev.status))
+        != EventStatus.CLOSED.value
+    ]
+
     return EventSearchResponse(
         query=query,
-        results=[_event_to_search_result(ev) for _, ev in ranked[:limit]],
+        results=[_event_to_search_result(ev) for ev in active_events],
     )
 
 
@@ -297,10 +342,10 @@ async def resolve_event(
         res = await resolver.resolve(req.query)
     except KKTIXResolveError as exc:
         if "organizer feed scope required" in str(exc).lower():
-            raise InvalidRequestError(str(exc))
-        raise UpstreamFailedError(str(exc))
+            raise InvalidRequestError(str(exc)) from exc
+        raise UpstreamFailedError(str(exc)) from exc
     except Exception as exc:
-        raise UpstreamFailedError(str(exc))
+        raise UpstreamFailedError(str(exc)) from exc
 
     if req.persist and res.event is not None:
         async with db.session() as session:
@@ -359,8 +404,8 @@ async def list_events(
 ) -> list[EventOut]:
     try:
         plat_enum = PlatformEnum(platform.lower())
-    except ValueError:
-        raise UnsupportedError(f"Platform {platform} is not supported")
+    except ValueError as exc:
+        raise UnsupportedError(f"Platform {platform} is not supported") from exc
 
     async with db.session() as session:
         repo = EventRepository(session)

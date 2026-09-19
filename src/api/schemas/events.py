@@ -94,6 +94,7 @@ class EventSearchResultOut(BaseModel):
     ticketing_providers: list[TicketingProviderOut] = Field(default_factory=list)
     canonical_url: str
     sale_start_at: datetime | None = None
+    sale_end_at: datetime | None = None
     event_start_at: datetime | None = None
     status: str
     detail_loaded: bool = Field(
