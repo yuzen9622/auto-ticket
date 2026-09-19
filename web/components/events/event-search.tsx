@@ -11,11 +11,37 @@ import { EmptyState } from "@/components/terminal/empty-state"
 
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
+import {
+  DateRangePicker,
+  type DateRange,
+} from "@/components/ui/date-range-picker"
 import { useDebounce } from "@/hooks/use-debounce"
 import { ApiError } from "@/lib/api/client"
 import { searchEvents } from "@/lib/api/events"
+import { useEventStatusLabel } from "@/lib/i18n/labels"
 
 const SEARCH_PARAM = "q"
+const ALL_STATUSES_VALUE = "ALL"
+const ALL_PROVIDERS_VALUE = "ALL"
+
+const STATUS_OPTIONS = [
+  "ON_SALE",
+  "ANNOUNCED",
+  "SOLD_OUT",
+] as const
+
+const PROVIDER_OPTIONS = [
+  { id: "kktix", name: "KKTIX" },
+  { id: "tixcraft", name: "拓元售票" },
+  { id: "ibon", name: "ibon 售票" },
+] as const
 
 /** 後端錯誤碼 → 搜尋頁自己的說法，比通用錯誤訊息更貼近當下在做的事。 */
 const SEARCH_MESSAGE_KEY: Record<string, string> = {
@@ -27,9 +53,18 @@ const SEARCH_MESSAGE_KEY: Record<string, string> = {
 
 export function EventSearch() {
   const t = useTranslations("search")
+  const eventStatusLabel = useEventStatusLabel()
   const router = useRouter()
   const pathname = usePathname()
   const searchParams = useSearchParams()
+
+  const [selectedStatus, setSelectedStatus] =
+    React.useState<string>(ALL_STATUSES_VALUE)
+  const [selectedProvider, setSelectedProvider] =
+    React.useState<string>(ALL_PROVIDERS_VALUE)
+  const [dateRange, setDateRange] = React.useState<DateRange | undefined>(
+    undefined
+  )
 
   // 網址是查詢條件的初始真相與持久化：重新整理、上一頁與下一頁都靠它還原。
   const query = (searchParams.get(SEARCH_PARAM) ?? "").trim()
@@ -125,10 +160,53 @@ export function EventSearch() {
     return t("unknownError")
   }
 
-  const events = React.useMemo(
+  const unclosedEvents = React.useMemo(
     () => (results.data?.results ?? []).filter((ev) => ev.status !== "CLOSED"),
     [results.data?.results]
   )
+
+  const filteredEvents = React.useMemo(() => {
+    return unclosedEvents.filter((ev) => {
+      // 1. 活動狀態篩選
+      if (selectedStatus !== ALL_STATUSES_VALUE && ev.status !== selectedStatus) {
+        return false
+      }
+
+      // 2. 票券商篩選
+      if (selectedProvider !== ALL_PROVIDERS_VALUE) {
+        const matches = ev.ticketing_providers.some((p) => {
+          if (p.id.toLowerCase() === selectedProvider.toLowerCase()) return true
+          if (selectedProvider === "tixcraft" && p.name.includes("拓元")) return true
+          if (selectedProvider === "ibon" && p.name.toLowerCase().includes("ibon")) return true
+          if (selectedProvider === "kktix" && p.name.toUpperCase().includes("KKTIX")) return true
+          return false
+        })
+        if (!matches) return false
+      }
+
+      // 3. 日期範圍篩選（以活動開始時間為主，若無則依開賣時間）
+      if (dateRange?.from) {
+        const fromTime = new Date(dateRange.from).setHours(0, 0, 0, 0)
+        const toTime = dateRange.to
+          ? new Date(dateRange.to).setHours(23, 59, 59, 999)
+          : new Date(dateRange.from).setHours(23, 59, 59, 999)
+
+        const dateStr = ev.event_start_at ?? ev.sale_start_at
+        if (!dateStr) return false
+
+        const eventTime = new Date(dateStr).getTime()
+        if (Number.isNaN(eventTime)) return false
+        if (eventTime < fromTime || eventTime > toTime) return false
+      }
+
+      return true
+    })
+  }, [unclosedEvents, selectedStatus, selectedProvider, dateRange])
+
+  const isFiltered =
+    selectedStatus !== ALL_STATUSES_VALUE ||
+    selectedProvider !== ALL_PROVIDERS_VALUE ||
+    Boolean(dateRange?.from)
 
   return (
     <div className="relative flex flex-col gap-8 py-2">
@@ -139,7 +217,7 @@ export function EventSearch() {
           </h1>
         </div>
 
-        <form className="flex flex-col gap-1.5" onSubmit={onSubmit}>
+        <form className="flex flex-col gap-3" onSubmit={onSubmit}>
           <div className="flex flex-col gap-2 sm:flex-row">
             <div className="relative flex-1">
               <Label htmlFor="event-query" className="sr-only">
@@ -164,6 +242,62 @@ export function EventSearch() {
               {t("submit")}
             </button>
           </div>
+
+          {/* 搜尋框下方功能列：選擇日期範圍 + 選擇活動狀態 + 選擇票券商 */}
+          <div className="flex flex-wrap items-center gap-3">
+            <DateRangePicker
+              date={dateRange}
+              onDateChange={setDateRange}
+              placeholder={t("selectDateRange")}
+              className="w-full sm:w-auto min-w-[240px]"
+            />
+
+            <Select
+              name="status"
+              value={selectedStatus}
+              onValueChange={setSelectedStatus}
+            >
+              <SelectTrigger
+                aria-label={t("filterByStatus")}
+                className="h-9 w-full sm:w-[150px] text-sm"
+              >
+                <SelectValue placeholder={t("filterByStatus")} />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value={ALL_STATUSES_VALUE}>
+                  {t("allStatuses")}
+                </SelectItem>
+                {STATUS_OPTIONS.map((statusKey) => (
+                  <SelectItem key={statusKey} value={statusKey}>
+                    {eventStatusLabel(statusKey)}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+
+            <Select
+              name="provider"
+              value={selectedProvider}
+              onValueChange={setSelectedProvider}
+            >
+              <SelectTrigger
+                aria-label={t("filterByProvider")}
+                className="h-9 w-full sm:w-[150px] text-sm"
+              >
+                <SelectValue placeholder={t("filterByProvider")} />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value={ALL_PROVIDERS_VALUE}>
+                  {t("allProviders")}
+                </SelectItem>
+                {PROVIDER_OPTIONS.map((provider) => (
+                  <SelectItem key={provider.id} value={provider.id}>
+                    {provider.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
         </form>
       </div>
 
@@ -172,13 +306,15 @@ export function EventSearch() {
         className="sticky top-0 flex flex-col gap-3"
         aria-label={t("resultsHeading")}
       >
-        {results.data && events.length > 0 && (
+        {results.data && unclosedEvents.length > 0 && (
           <div className="flex items-center justify-between px-1">
             <h2 className="text-sm font-semibold tracking-tight">
               {t("resultsHeading")}
             </h2>
             <span className="text-xs text-muted-foreground">
-              {t("resultCount", { count: events.length })}
+              {isFiltered
+                ? `${filteredEvents.length} / ${unclosedEvents.length}`
+                : t("resultCount", { count: unclosedEvents.length })}
             </span>
           </div>
         )}
@@ -190,12 +326,19 @@ export function EventSearch() {
             <EmptyState message={t("searching")} />
           ) : results.isError ? (
             <EmptyState message={t("errorTitle")} hint={errorMessage()} />
-          ) : results.data && events.length > 0 ? (
-            <ul className="grid min-w-0 grid-cols-1 gap-3 md:grid-cols-2">
-              {events.map((event) => (
-                <EventCard key={event.id} event={event} />
-              ))}
-            </ul>
+          ) : results.data && unclosedEvents.length > 0 ? (
+            filteredEvents.length > 0 ? (
+              <ul className="grid min-w-0 grid-cols-1 gap-3 md:grid-cols-2">
+                {filteredEvents.map((event) => (
+                  <EventCard key={event.id} event={event} />
+                ))}
+              </ul>
+            ) : (
+              <EmptyState
+                message={t("filteredEmpty")}
+                hint={t("filteredEmptyHint")}
+              />
+            )
           ) : (
             <EmptyState message={t("empty")} hint={t("emptyHint")} />
           )}

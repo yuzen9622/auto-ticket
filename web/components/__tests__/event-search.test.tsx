@@ -1,6 +1,6 @@
 import * as React from "react"
 import { beforeEach, describe, expect, it, vi } from "vitest"
-import { screen, waitFor } from "@testing-library/react"
+import { fireEvent, screen, waitFor } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 
 import { renderWithProviders } from "./helpers/render"
@@ -137,11 +137,13 @@ describe("活動搜尋", () => {
 
     renderWithProviders(<EventSearch />)
 
-    expect(await screen.findByText("五月天 2026 諾亞方舟")).toBeInTheDocument()
-    expect(screen.getByText("五月天世界巡迴演唱會台北站")).toBeInTheDocument()
-    expect(screen.getByText("相信音樂")).toBeInTheDocument()
-    expect(screen.getByText("KKTIX")).toBeInTheDocument()
-    expect(screen.getByText("尚未開賣")).toBeInTheDocument()
+    const cardTitle = await screen.findByText("五月天 2026 諾亞方舟")
+    const card = cardTitle.closest("li")
+    expect(card).not.toBeNull()
+    expect(card).toHaveTextContent("KKTIX")
+    expect(card).toHaveTextContent("五月天世界巡迴演唱會台北站")
+    expect(card).toHaveTextContent("相信音樂")
+    expect(card).toHaveTextContent("尚未開賣")
 
     expect(screen.queryByText(/score/i)).toBeNull()
     expect(screen.queryByText(/matched_by/)).toBeNull()
@@ -375,5 +377,151 @@ describe("活動搜尋", () => {
     // 不存在狀態 Tabs
     expect(screen.queryByRole("tablist")).toBeNull()
     expect(screen.queryByRole("tab")).toBeNull()
+  })
+
+  it("搜尋框下方具備日期範圍選擇器與活動狀態、票券商 Select 下拉選單", async () => {
+    nav.params = new URLSearchParams("q=音樂會")
+    api.searchEvents.mockResolvedValue({
+      query: "音樂會",
+      results: [result()],
+    })
+
+    renderWithProviders(<EventSearch />)
+
+    // 驗證日期範圍選擇按鈕存在
+    expect(screen.getByRole("button", { name: /選擇日期範圍/ })).toBeInTheDocument()
+
+    // 驗證活動狀態 Select 存在
+    const statusSelect = screen.getByRole("combobox", { name: "活動狀態" })
+    expect(statusSelect).toBeInTheDocument()
+    expect(statusSelect).toHaveTextContent("全部狀態")
+
+    // 驗證票券商 Select 存在
+    const providerSelect = screen.getByRole("combobox", { name: "票券商" })
+    expect(providerSelect).toBeInTheDocument()
+    expect(providerSelect).toHaveTextContent("全部票券商")
+  })
+
+  it("可透過活動狀態 Select 進行篩選", async () => {
+    nav.params = new URLSearchParams("q=音樂會")
+    const onSale = result({
+      id: "ev_1",
+      title: "開賣中的音樂會",
+      status: "ON_SALE",
+    })
+    const announced = result({
+      id: "ev_2",
+      title: "尚未開賣的音樂會",
+      status: "ANNOUNCED",
+    })
+
+    api.searchEvents.mockResolvedValue({
+      query: "音樂會",
+      results: [onSale, announced],
+    })
+
+    renderWithProviders(<EventSearch />)
+
+    expect(await screen.findByText("開賣中的音樂會")).toBeInTheDocument()
+    expect(screen.getByText("尚未開賣的音樂會")).toBeInTheDocument()
+
+    // 透過活動狀態 Select 的 native select 切換為「ON_SALE」
+    const statusSelectEl = document.querySelector('select[name="status"]')
+    expect(statusSelectEl).not.toBeNull()
+    fireEvent.change(statusSelectEl!, { target: { value: "ON_SALE" } })
+
+    // 僅顯示開賣中的活動
+    expect(screen.getByText("開賣中的音樂會")).toBeInTheDocument()
+    expect(screen.queryByText("尚未開賣的音樂會")).toBeNull()
+  })
+
+  it("可透過票券商 Select 進行篩選", async () => {
+    nav.params = new URLSearchParams("q=音樂會")
+    const kktixEvent = result({
+      id: "ev_1",
+      title: "KKTIX 的音樂會",
+      ticketing_providers: [{ id: "kktix", name: "KKTIX", event_url: "https://a.test" }],
+    })
+    const tixcraftEvent = result({
+      id: "ev_2",
+      title: "拓元的音樂會",
+      ticketing_providers: [{ id: "tixcraft", name: "拓元售票", event_url: "https://b.test" }],
+    })
+
+    api.searchEvents.mockResolvedValue({
+      query: "音樂會",
+      results: [kktixEvent, tixcraftEvent],
+    })
+
+    renderWithProviders(<EventSearch />)
+
+    expect(await screen.findByText("KKTIX 的音樂會")).toBeInTheDocument()
+    expect(screen.getByText("拓元的音樂會")).toBeInTheDocument()
+
+    // 透過票券商 Select 的 native select 切換為「tixcraft」
+    const providerSelectEl = document.querySelector('select[name="provider"]')
+    expect(providerSelectEl).not.toBeNull()
+    fireEvent.change(providerSelectEl!, { target: { value: "tixcraft" } })
+
+    // 僅顯示拓元的活動
+    expect(screen.getByText("拓元的音樂會")).toBeInTheDocument()
+    expect(screen.queryByText("KKTIX 的音樂會")).toBeNull()
+  })
+
+  it("當篩選後無符合活動時顯示自訂空狀態", async () => {
+    nav.params = new URLSearchParams("q=音樂會")
+    const onSale = result({
+      id: "ev_1",
+      title: "開賣中的音樂會",
+      status: "ON_SALE",
+    })
+
+    api.searchEvents.mockResolvedValue({
+      query: "音樂會",
+      results: [onSale],
+    })
+
+    renderWithProviders(<EventSearch />)
+
+    expect(await screen.findByText("開賣中的音樂會")).toBeInTheDocument()
+
+    // 切換為「已售罄」
+    const statusSelectEl = document.querySelector('select[name="status"]')
+    expect(statusSelectEl).not.toBeNull()
+    fireEvent.change(statusSelectEl!, { target: { value: "SOLD_OUT" } })
+
+    expect(await screen.findByText("沒有符合篩選條件的活動")).toBeInTheDocument()
+  })
+
+  it("可透過日期範圍選擇器篩選活動", async () => {
+    const user = userEvent.setup()
+    nav.params = new URLSearchParams("q=音樂會")
+    const decEvent = result({
+      id: "ev_dec",
+      title: "十二月音樂會",
+      event_start_at: "2026-12-25T11:00:00Z",
+    })
+    const janEvent = result({
+      id: "ev_jan",
+      title: "一月音樂會",
+      event_start_at: "2026-01-10T11:00:00Z",
+    })
+
+    api.searchEvents.mockResolvedValue({
+      query: "音樂會",
+      results: [decEvent, janEvent],
+    })
+
+    renderWithProviders(<EventSearch />)
+
+    expect(await screen.findByText("十二月音樂會")).toBeInTheDocument()
+    expect(screen.getByText("一月音樂會")).toBeInTheDocument()
+
+    // 點擊日期範圍按鈕打開 Popover
+    const dateRangeBtn = screen.getByRole("button", { name: /選擇日期範圍/ })
+    await user.click(dateRangeBtn)
+
+    // 驗證 Calendar 已打開（雙月份模式顯示 2 個月曆網格）
+    expect(screen.getAllByRole("grid")).toHaveLength(2)
   })
 })
