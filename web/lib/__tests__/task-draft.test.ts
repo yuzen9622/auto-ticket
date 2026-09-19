@@ -32,8 +32,17 @@ function validDraft() {
   }
 }
 
-function run(draft: ReturnType<typeof validDraft>, accountConfigured = true) {
-  return validateDraft(draft, { now: Date.now(), accountConfigured, message })
+function run(
+  draft: ReturnType<typeof validDraft>,
+  accountConfigured = true,
+  needsTicketingTime = true
+) {
+  return validateDraft(draft, {
+    now: Date.now(),
+    accountConfigured,
+    needsTicketingTime,
+    message,
+  })
 }
 
 describe("validateDraft", () => {
@@ -110,6 +119,12 @@ describe("validateDraft", () => {
 
     vi.advanceTimersByTime(61_000)
     expect(run(draft).ticketingTime).toBe("ticketingTimePast")
+  })
+
+  it("已在販售的活動不需要搶票時間，留空也能通過", () => {
+    const draft = validDraft()
+    draft.ticketing_time_local = ""
+    expect(run(draft, true, false)).toEqual({})
   })
 
   it("逾時時間必須大於零、重試次數不得為負", () => {

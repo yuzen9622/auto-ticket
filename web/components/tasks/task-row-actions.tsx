@@ -104,7 +104,14 @@ export function TaskRowActions({ task }: { task: TaskResponse }) {
           </Button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="start">
-          <DropdownMenuLabel>{common("actions")}</DropdownMenuLabel>
+          <DropdownMenuLabel className="text-xs text-muted-foreground">
+            {common("actions")}
+          </DropdownMenuLabel>
+
+          <DropdownMenuItem onSelect={() => router.push(`/tasks/${task.id}`)}>
+            <CircuitBoard />
+            {t("openConsole")}
+          </DropdownMenuItem>
           <DropdownMenuItem
             onClick={() => {
               void navigator.clipboard.writeText(task.id)
@@ -113,11 +120,6 @@ export function TaskRowActions({ task }: { task: TaskResponse }) {
           >
             <Copy />
             {common("copy")}
-          </DropdownMenuItem>
-
-          <DropdownMenuItem onSelect={() => router.push(`/tasks/${task.id}`)}>
-            <CircuitBoard />
-            {t("openConsole")}
           </DropdownMenuItem>
           {isStartable(task.status) && (
             <DropdownMenuItem

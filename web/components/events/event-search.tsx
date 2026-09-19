@@ -31,11 +31,7 @@ const SEARCH_PARAM = "q"
 const ALL_STATUSES_VALUE = "ALL"
 const ALL_PROVIDERS_VALUE = "ALL"
 
-const STATUS_OPTIONS = [
-  "ON_SALE",
-  "ANNOUNCED",
-  "SOLD_OUT",
-] as const
+const STATUS_OPTIONS = ["ON_SALE", "ANNOUNCED", "SOLD_OUT"] as const
 
 const PROVIDER_OPTIONS = [
   { id: "kktix", name: "KKTIX" },
@@ -168,17 +164,29 @@ export function EventSearch() {
   const filteredEvents = React.useMemo(() => {
     return unclosedEvents.filter((ev) => {
       // 1. 活動狀態篩選
-      if (selectedStatus !== ALL_STATUSES_VALUE && ev.status !== selectedStatus) {
+      if (
+        selectedStatus !== ALL_STATUSES_VALUE &&
+        ev.status !== selectedStatus
+      ) {
         return false
       }
 
-      // 2. 票券商篩選
+      // 2. 平台篩選
       if (selectedProvider !== ALL_PROVIDERS_VALUE) {
         const matches = ev.ticketing_providers.some((p) => {
           if (p.id.toLowerCase() === selectedProvider.toLowerCase()) return true
-          if (selectedProvider === "tixcraft" && p.name.includes("拓元")) return true
-          if (selectedProvider === "ibon" && p.name.toLowerCase().includes("ibon")) return true
-          if (selectedProvider === "kktix" && p.name.toUpperCase().includes("KKTIX")) return true
+          if (selectedProvider === "tixcraft" && p.name.includes("拓元"))
+            return true
+          if (
+            selectedProvider === "ibon" &&
+            p.name.toLowerCase().includes("ibon")
+          )
+            return true
+          if (
+            selectedProvider === "kktix" &&
+            p.name.toUpperCase().includes("KKTIX")
+          )
+            return true
           return false
         })
         if (!matches) return false
@@ -243,13 +251,13 @@ export function EventSearch() {
             </button>
           </div>
 
-          {/* 搜尋框下方功能列：選擇日期範圍 + 選擇活動狀態 + 選擇票券商 */}
+          {/* 搜尋框下方功能列：選擇日期範圍 + 選擇活動狀態 + 選擇平台 */}
           <div className="flex flex-wrap items-center gap-3">
             <DateRangePicker
               date={dateRange}
               onDateChange={setDateRange}
               placeholder={t("selectDateRange")}
-              className="w-full sm:w-auto min-w-[240px]"
+              className="w-full min-w-[240px] sm:w-auto"
             />
 
             <Select
@@ -259,7 +267,7 @@ export function EventSearch() {
             >
               <SelectTrigger
                 aria-label={t("filterByStatus")}
-                className="h-9 w-full sm:w-[150px] text-sm"
+                className="h-9 w-full text-sm sm:w-[150px]"
               >
                 <SelectValue placeholder={t("filterByStatus")} />
               </SelectTrigger>
@@ -282,7 +290,7 @@ export function EventSearch() {
             >
               <SelectTrigger
                 aria-label={t("filterByProvider")}
-                className="h-9 w-full sm:w-[150px] text-sm"
+                className="h-9 w-full text-sm sm:w-[150px]"
               >
                 <SelectValue placeholder={t("filterByProvider")} />
               </SelectTrigger>

@@ -137,7 +137,15 @@ export function ExperimentTable({ taskId }: { taskId?: string }) {
             </Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end">
-            <DropdownMenuLabel>{tc("actions")}</DropdownMenuLabel>
+            <DropdownMenuLabel className="text-xs text-muted-foreground">
+              {tc("actions")}
+            </DropdownMenuLabel>
+            <DropdownMenuItem
+              onSelect={() => router.push(`/experiments/${e.id}`)}
+            >
+              <History />
+              {t("timeline")}
+            </DropdownMenuItem>
             <DropdownMenuItem
               onClick={() => {
                 void navigator.clipboard.writeText(e.id)
@@ -146,12 +154,6 @@ export function ExperimentTable({ taskId }: { taskId?: string }) {
             >
               <Copy />
               {tc("copy")} ID
-            </DropdownMenuItem>
-            <DropdownMenuItem
-              onSelect={() => router.push(`/experiments/${e.id}`)}
-            >
-              <History />
-              {t("timeline")}
             </DropdownMenuItem>
             {e.task_id && (
               <DropdownMenuItem

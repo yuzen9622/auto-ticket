@@ -6,7 +6,7 @@ import { Trash2 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
-import { Switch } from "@/components/ui/switch"
+import { Switch } from "@/components/animate-ui/components/radix/switch"
 import type { VerificationRule } from "@/lib/api/types"
 
 /** 只處理主辦自訂的文字問答題；本專案不辨識任何圖形驗證碼。 */

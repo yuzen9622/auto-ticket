@@ -4,6 +4,7 @@ import {
   defaultTicketingTimeLocal,
   defaultTicketingTimeMs,
   floorToMinute,
+  isSellingNow,
   isTicketingTimeInPast,
   minTicketingTimeLocal,
   msToLocalInput,
@@ -19,6 +20,28 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.useRealTimers()
+})
+
+describe("isSellingNow", () => {
+  it("狀態是熱賣中就直接算在賣", () => {
+    expect(isSellingNow("ON_SALE", null, Date.now())).toBe(true)
+  })
+
+  it("開賣時間已過就算在賣，即使狀態還沒更新", () => {
+    expect(isSellingNow("ANNOUNCED", "2026-01-01T00:00:00Z", Date.now())).toBe(
+      true
+    )
+  })
+
+  it("開賣時間還沒到就不算在賣", () => {
+    expect(isSellingNow("ANNOUNCED", "2026-10-01T12:00:00Z", Date.now())).toBe(
+      false
+    )
+  })
+
+  it("沒有狀態也沒有開賣時間時不臆測", () => {
+    expect(isSellingNow(null, null, Date.now())).toBe(false)
+  })
 })
 
 describe("defaultTicketingTimeMs", () => {

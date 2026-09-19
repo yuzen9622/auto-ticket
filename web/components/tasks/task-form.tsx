@@ -25,7 +25,8 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
-import { Switch } from "@/components/ui/switch"
+import { Switch } from "@/components/animate-ui/components/radix/switch"
+import { CheckCircle2 } from "lucide-react"
 import { getAccountStatus } from "@/lib/api/accounts"
 import { ApiError } from "@/lib/api/client"
 import { getEvent } from "@/lib/api/events"
@@ -45,6 +46,7 @@ import {
 import {
   defaultTicketingTimeLocal,
   floorToMinute,
+  isSellingNow,
   minTicketingTimeLocal,
 } from "@/lib/ticketing-time"
 
@@ -93,6 +95,12 @@ export function TaskForm({ eventId }: { eventId: string }) {
   const currentMinute = useCurrentMinute()
   const [errors, setErrors] = React.useState<Record<string, string>>({})
   const [confirming, setConfirming] = React.useState(false)
+  // 已經在販售的活動走立即執行：不問搶票時間，建立後直接進登記頁。
+  const sellingNow = isSellingNow(
+    event?.status,
+    event?.sale_start_at,
+    currentMinute
+  )
 
   // 搶票時間只在「第一次拿到這場活動」時帶入；同一場活動的重新抓取不得蓋掉使用者輸入。
   const seededEventId = React.useRef<string | null>(null)
@@ -101,12 +109,13 @@ export function TaskForm({ eventId }: { eventId: string }) {
     if (!event || seededEventId.current === event.id) return
     seededEventId.current = event.id
     timeTouched.current = false
+    const selling = isSellingNow(event.status, event.sale_start_at, Date.now())
     setDraft((prev) => ({
       ...prev,
-      ticketing_time_local: defaultTicketingTimeLocal(
-        event.sale_start_at,
-        Date.now()
-      ),
+      // 已經在賣的活動沒有開賣可等，表單也不顯示這個欄位；留空避免送出過期的時間。
+      ticketing_time_local: selling
+        ? ""
+        : defaultTicketingTimeLocal(event.sale_start_at, Date.now()),
       // 票價是完全相等比對，預設值 0 會把所有票排除掉。活動票種已經抓回來了，
       // 就用它預填，讓表單一打開就是「照票面價買」而不是一個買不到任何票的設定。
       ticket_preference: event.ticket_types.length
@@ -159,6 +168,7 @@ export function TaskForm({ eventId }: { eventId: string }) {
     const found = validateDraft(draft, {
       now: Date.now(),
       accountConfigured,
+      needsTicketingTime: !sellingNow,
       message: (key, values) => tErrors(key, values),
     })
     setErrors(found)
@@ -186,8 +196,9 @@ export function TaskForm({ eventId }: { eventId: string }) {
     create.mutate({
       event_title: event.title,
       event_url: event.canonical_url,
-      // 一律送含時區位移的 ISO-8601，後端才不會把本地時間當成 UTC。
-      sale_start_at: toOffsetIso(draft.ticketing_time_local),
+      // 留空代表沒有開賣可等，後端據此走立即執行；
+      // 要等的話一律送含時區位移的 ISO-8601，後端才不會把本地時間當成 UTC。
+      sale_start_at: sellingNow ? null : toOffsetIso(draft.ticketing_time_local),
       ticket_preference: draft.ticket_preference,
       contact_profile: draft.contact_profile,
       attendees: draft.attendees,
@@ -232,6 +243,7 @@ export function TaskForm({ eventId }: { eventId: string }) {
       <TaskConfirm
         event={event}
         draft={draft}
+        sellingNow={sellingNow}
         submitting={create.isPending}
         onBack={() => setConfirming(false)}
         onSubmit={onSubmit}
@@ -284,14 +296,36 @@ export function TaskForm({ eventId }: { eventId: string }) {
               </span>
             </div>
 
-            <div className="flex flex-col gap-2">
-              <Label htmlFor="fallback-to-any">{t("fallbackToAny")}</Label>
+            <div
+              className="flex items-start justify-between gap-3 rounded-lg border bg-card/40 p-3 shadow-2xs transition-colors hover:bg-muted/15 cursor-pointer"
+              onClick={() =>
+                patch({
+                  ticket_preference: {
+                    ...tp,
+                    fallback_to_any: !tp.fallback_to_any,
+                  },
+                })
+              }
+            >
+              <div className="flex flex-col gap-1">
+                <Label
+                  htmlFor="fallback-to-any"
+                  className="cursor-pointer text-sm font-medium"
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  {t("fallbackToAny")}
+                </Label>
+                <span className="text-xs text-muted-foreground">
+                  {t("fallbackToAnyHint")}
+                </span>
+              </div>
               <Switch
                 id="fallback-to-any"
                 checked={tp.fallback_to_any}
                 onCheckedChange={(v) =>
                   patch({ ticket_preference: { ...tp, fallback_to_any: v } })
                 }
+                onClick={(e) => e.stopPropagation()}
               />
             </div>
           </div>
@@ -299,6 +333,7 @@ export function TaskForm({ eventId }: { eventId: string }) {
           <TicketPriorityEditor
             value={tp.priorities}
             ticketNames={ticketNames}
+            availableTickets={event.ticket_types}
             onChange={(priorities) =>
               patch({ ticket_preference: { ...tp, priorities } })
             }
@@ -339,8 +374,32 @@ export function TaskForm({ eventId }: { eventId: string }) {
               </Select>
             </div>
 
-            <div className="flex flex-col gap-2">
-              <Label htmlFor="adjacent">{t("adjacent")}</Label>
+            <div
+              className="flex items-start justify-between gap-3 rounded-lg border bg-card/40 p-3 shadow-2xs transition-colors hover:bg-muted/15 cursor-pointer"
+              onClick={() =>
+                patch({
+                  ticket_preference: {
+                    ...tp,
+                    seat_preference: {
+                      ...tp.seat_preference,
+                      adjacent: !tp.seat_preference.adjacent,
+                    },
+                  },
+                })
+              }
+            >
+              <div className="flex flex-col gap-1">
+                <Label
+                  htmlFor="adjacent"
+                  className="cursor-pointer text-sm font-medium"
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  {t("adjacent")}
+                </Label>
+                <span className="text-xs text-muted-foreground">
+                  {t("adjacentHint")}
+                </span>
+              </div>
               <Switch
                 id="adjacent"
                 checked={tp.seat_preference.adjacent}
@@ -352,6 +411,7 @@ export function TaskForm({ eventId }: { eventId: string }) {
                     },
                   })
                 }
+                onClick={(e) => e.stopPropagation()}
               />
             </div>
           </div>
@@ -462,23 +522,70 @@ export function TaskForm({ eventId }: { eventId: string }) {
             errors={errors}
             onChange={(verification_rules) => patch({ verification_rules })}
           />
-          <div className="flex flex-col gap-1">
-            <Label htmlFor="session-preference">{t("sessionPreference")}</Label>
-            <Input
-              id="session-preference"
-              value={draft.session_preference}
-              onChange={(e) => patch({ session_preference: e.target.value })}
-              aria-describedby="session-preference-hint"
-              className="h-7"
-              autoComplete="off"
-            />
-            <span
-              id="session-preference-hint"
-              className="text-xs text-muted-foreground"
-            >
-              {t("sessionPreferenceHint")}
-            </span>
-          </div>
+          {/* 活動場次：系統自動識別單場次，或提供多場次下拉選單 */}
+          {(() => {
+            const sessions = event.raw_metadata?.sessions ?? []
+            const isMultiSession = sessions.length > 1
+
+            if (isMultiSession) {
+              return (
+                <div className="flex flex-col gap-1.5">
+                  <Label htmlFor="session-preference">{t("sessionPreference")}</Label>
+                  <Select
+                    value={draft.session_preference}
+                    onValueChange={(val) => patch({ session_preference: val })}
+                  >
+                    <SelectTrigger id="session-preference" className="h-8">
+                      <SelectValue placeholder={t("sessionSelectPlaceholder")} />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {sessions.map((s, idx) => (
+                        <SelectItem key={idx} value={s.name}>
+                          <div className="flex items-center gap-2">
+                            <span className="font-medium">{s.name}</span>
+                            {s.start_at && (
+                              <span className="text-xs text-muted-foreground">
+                                （{s.start_at}）
+                              </span>
+                            )}
+                          </div>
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <span
+                    id="session-preference-hint"
+                    className="text-xs text-muted-foreground"
+                  >
+                    {t("sessionMultiHint")}
+                  </span>
+                </div>
+              )
+            }
+
+            // 單場次活動：系統已自動處理，無需手動填寫
+            return (
+              <div className="flex flex-col gap-1.5">
+                <Label className="text-sm font-medium">{t("sessionPreference")}</Label>
+                <div className="flex items-center justify-between rounded-lg border border-primary/20 bg-primary/5 p-3 text-sm">
+                  <div className="flex flex-col gap-0.5">
+                    <div className="flex items-center gap-1.5 font-medium text-foreground">
+                      <CheckCircle2 className="size-4 text-primary shrink-0" />
+                      <span>{t("sessionSingle")}</span>
+                    </div>
+                    <p className="text-xs text-muted-foreground">
+                      {t("sessionSingleHint")}
+                      {event.event_start_at &&
+                        `（${formatDateTime(event.event_start_at)}）`}
+                    </p>
+                  </div>
+                  <span className="rounded-full bg-primary/10 px-2.5 py-0.5 text-xs font-medium text-primary shrink-0">
+                    {t("sessionAutoHandled")}
+                  </span>
+                </div>
+              </div>
+            )
+          })()}
           <div className="flex flex-col gap-1">
             <Label htmlFor="qualification-code">{t("qualificationCode")}</Label>
             <Input
@@ -503,33 +610,52 @@ export function TaskForm({ eventId }: { eventId: string }) {
         <div className="flex flex-col gap-3">
           <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
             <div className="flex flex-col gap-1">
-              <Label htmlFor="ticketing-time">{t("ticketingTime")}</Label>
-              <Input
-                id="ticketing-time"
-                type="datetime-local"
-                value={draft.ticketing_time_local}
-                min={minTicketingTimeLocal(currentMinute)}
-                onChange={(e) => {
-                  timeTouched.current = true
-                  patch({ ticketing_time_local: e.target.value })
-                }}
-                aria-invalid={errors.ticketingTime !== undefined}
-                aria-describedby="ticketing-time-hint"
-                className="tabular h-7"
-              />
-              <span
-                id="ticketing-time-hint"
-                className={
-                  errors.ticketingTime
-                    ? "text-xs text-destructive"
-                    : "text-xs text-muted-foreground"
-                }
-              >
-                {errors.ticketingTime ??
-                  (event.sale_start_at
-                    ? t("ticketingTimeHint")
-                    : t("saleStartMissing"))}
-              </span>
+              {sellingNow ? (
+                <>
+                  <span id="start-timing-label" className="text-sm font-medium">
+                    {t("startTiming")}
+                  </span>
+                  <p
+                    aria-labelledby="start-timing-label"
+                    className="flex h-7 items-center text-xs font-medium"
+                  >
+                    {t("startImmediately")}
+                  </p>
+                  <span className="text-xs text-muted-foreground">
+                    {t("startImmediatelyHint")}
+                  </span>
+                </>
+              ) : (
+                <>
+                  <Label htmlFor="ticketing-time">{t("ticketingTime")}</Label>
+                  <Input
+                    id="ticketing-time"
+                    type="datetime-local"
+                    value={draft.ticketing_time_local}
+                    min={minTicketingTimeLocal(currentMinute)}
+                    onChange={(e) => {
+                      timeTouched.current = true
+                      patch({ ticketing_time_local: e.target.value })
+                    }}
+                    aria-invalid={errors.ticketingTime !== undefined}
+                    aria-describedby="ticketing-time-hint"
+                    className="tabular h-7"
+                  />
+                  <span
+                    id="ticketing-time-hint"
+                    className={
+                      errors.ticketingTime
+                        ? "text-xs text-destructive"
+                        : "text-xs text-muted-foreground"
+                    }
+                  >
+                    {errors.ticketingTime ??
+                      (event.sale_start_at
+                        ? t("ticketingTimeHint")
+                        : t("saleStartMissing"))}
+                  </span>
+                </>
+              )}
               <span className="tabular text-xs text-muted-foreground">
                 {t("originalSaleStart")}：
                 {event.sale_start_at

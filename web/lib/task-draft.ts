@@ -79,6 +79,8 @@ export interface ValidateOptions {
   /** 每次驗證都由呼叫端給「當下」的時間——送出前必須重新取得，不能沿用進頁時的值。 */
   now: number
   accountConfigured: boolean
+  /** 活動已經在販售時為 false：沒有開賣可等，表單上也沒有搶票時間這個欄位。 */
+  needsTicketingTime: boolean
   message: (key: string, values?: Record<string, string | number>) => string
 }
 
@@ -89,7 +91,7 @@ export interface ValidateOptions {
  */
 export function validateDraft(
   draft: TaskDraft,
-  { now, accountConfigured, message }: ValidateOptions
+  { now, accountConfigured, needsTicketingTime, message }: ValidateOptions
 ): Record<string, string> {
   const errors: Record<string, string> = {}
   const tp = draft.ticket_preference
@@ -154,12 +156,14 @@ export function validateDraft(
     }
   })
 
-  if (draft.ticketing_time_local === "") {
-    errors.ticketingTime = message("ticketingTimeRequired")
-  } else if (!isTicketingTimeParsable(draft.ticketing_time_local)) {
-    errors.ticketingTime = message("ticketingTimeInvalid")
-  } else if (isTicketingTimeInPast(draft.ticketing_time_local, now)) {
-    errors.ticketingTime = message("ticketingTimePast")
+  if (needsTicketingTime) {
+    if (draft.ticketing_time_local === "") {
+      errors.ticketingTime = message("ticketingTimeRequired")
+    } else if (!isTicketingTimeParsable(draft.ticketing_time_local)) {
+      errors.ticketingTime = message("ticketingTimeInvalid")
+    } else if (isTicketingTimeInPast(draft.ticketing_time_local, now)) {
+      errors.ticketingTime = message("ticketingTimePast")
+    }
   }
 
   if (!Number.isFinite(draft.timeout_seconds) || draft.timeout_seconds <= 0) {

@@ -131,7 +131,7 @@ describe("活動搜尋", () => {
     expect(screen.queryAllByRole("textbox")).toHaveLength(0)
   })
 
-  it("活動卡片顯示標題、描述、主辦單位與票券商，不顯示內部欄位", async () => {
+  it("活動卡片顯示標題、描述、主辦單位與平台，不顯示內部欄位", async () => {
     nav.params = new URLSearchParams("q=五月天")
     api.searchEvents.mockResolvedValue({ query: "五月天", results: [result()] })
 
@@ -166,7 +166,7 @@ describe("活動搜尋", () => {
     expect(screen.queryByText("狀態未確認")).toBeNull()
   })
 
-  it("同一場活動有多個票券商時全部顯示", async () => {
+  it("同一場活動有多個平台時全部顯示", async () => {
     nav.params = new URLSearchParams("q=五月天")
     api.searchEvents.mockResolvedValue({
       query: "五月天",
@@ -265,7 +265,7 @@ describe("活動搜尋", () => {
     renderWithProviders(<EventSearch />)
     expect(await screen.findByText("此活動沒有提供描述。")).toBeInTheDocument()
     expect(screen.getByText("未提供主辦單位")).toBeInTheDocument()
-    expect(screen.getByText("未提供票券商")).toBeInTheDocument()
+    expect(screen.getByText("未提供平台")).toBeInTheDocument()
     expect(screen.getByText("未知狀態")).toBeInTheDocument()
     expect(screen.queryByText("WHAT_IS_THIS")).toBeNull()
   })
@@ -379,7 +379,7 @@ describe("活動搜尋", () => {
     expect(screen.queryByRole("tab")).toBeNull()
   })
 
-  it("搜尋框下方具備日期範圍選擇器與活動狀態、票券商 Select 下拉選單", async () => {
+  it("搜尋框下方具備日期範圍選擇器與活動狀態、平台 Select 下拉選單", async () => {
     nav.params = new URLSearchParams("q=音樂會")
     api.searchEvents.mockResolvedValue({
       query: "音樂會",
@@ -389,17 +389,19 @@ describe("活動搜尋", () => {
     renderWithProviders(<EventSearch />)
 
     // 驗證日期範圍選擇按鈕存在
-    expect(screen.getByRole("button", { name: /選擇日期範圍/ })).toBeInTheDocument()
+    expect(
+      screen.getByRole("button", { name: /選擇日期範圍/ })
+    ).toBeInTheDocument()
 
     // 驗證活動狀態 Select 存在
     const statusSelect = screen.getByRole("combobox", { name: "活動狀態" })
     expect(statusSelect).toBeInTheDocument()
     expect(statusSelect).toHaveTextContent("全部狀態")
 
-    // 驗證票券商 Select 存在
-    const providerSelect = screen.getByRole("combobox", { name: "票券商" })
+    // 驗證平台 Select 存在
+    const providerSelect = screen.getByRole("combobox", { name: "平台" })
     expect(providerSelect).toBeInTheDocument()
-    expect(providerSelect).toHaveTextContent("全部票券商")
+    expect(providerSelect).toHaveTextContent("全部平台")
   })
 
   it("可透過活動狀態 Select 進行篩選", async () => {
@@ -435,17 +437,21 @@ describe("活動搜尋", () => {
     expect(screen.queryByText("尚未開賣的音樂會")).toBeNull()
   })
 
-  it("可透過票券商 Select 進行篩選", async () => {
+  it("可透過平台 Select 進行篩選", async () => {
     nav.params = new URLSearchParams("q=音樂會")
     const kktixEvent = result({
       id: "ev_1",
       title: "KKTIX 的音樂會",
-      ticketing_providers: [{ id: "kktix", name: "KKTIX", event_url: "https://a.test" }],
+      ticketing_providers: [
+        { id: "kktix", name: "KKTIX", event_url: "https://a.test" },
+      ],
     })
     const tixcraftEvent = result({
       id: "ev_2",
       title: "拓元的音樂會",
-      ticketing_providers: [{ id: "tixcraft", name: "拓元售票", event_url: "https://b.test" }],
+      ticketing_providers: [
+        { id: "tixcraft", name: "拓元售票", event_url: "https://b.test" },
+      ],
     })
 
     api.searchEvents.mockResolvedValue({
@@ -458,7 +464,7 @@ describe("活動搜尋", () => {
     expect(await screen.findByText("KKTIX 的音樂會")).toBeInTheDocument()
     expect(screen.getByText("拓元的音樂會")).toBeInTheDocument()
 
-    // 透過票券商 Select 的 native select 切換為「tixcraft」
+    // 透過平台 Select 的 native select 切換為「tixcraft」
     const providerSelectEl = document.querySelector('select[name="provider"]')
     expect(providerSelectEl).not.toBeNull()
     fireEvent.change(providerSelectEl!, { target: { value: "tixcraft" } })
@@ -490,7 +496,9 @@ describe("活動搜尋", () => {
     expect(statusSelectEl).not.toBeNull()
     fireEvent.change(statusSelectEl!, { target: { value: "SOLD_OUT" } })
 
-    expect(await screen.findByText("沒有符合篩選條件的活動")).toBeInTheDocument()
+    expect(
+      await screen.findByText("沒有符合篩選條件的活動")
+    ).toBeInTheDocument()
   })
 
   it("可透過日期範圍選擇器篩選活動", async () => {

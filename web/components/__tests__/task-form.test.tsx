@@ -134,18 +134,26 @@ describe("搶票時間自動帶入", () => {
     )
   })
 
-  it("已經開賣的活動改帶目前時間", async () => {
+  it("已經開賣的活動不問搶票時間，改為立即執行", async () => {
     api.getEvent.mockResolvedValue(
-      eventFixture({ sale_start_at: "2026-01-01T00:00:00Z" })
+      eventFixture({ status: "ON_SALE", sale_start_at: "2026-01-01T00:00:00Z" })
     )
     renderWithProviders(<TaskForm eventId="ev_mayday01" />)
 
-    const input = await screen.findByLabelText("搶票時間")
-    const pad = (n: number) => String(n).padStart(2, "0")
-    expect(input).toHaveValue(
-      `${NOW.getFullYear()}-${pad(NOW.getMonth() + 1)}-${pad(
-        NOW.getDate()
-      )}T${pad(NOW.getHours())}:${pad(NOW.getMinutes())}`
+    expect(await screen.findByLabelText("執行時機")).toHaveTextContent(
+      "立即執行"
+    )
+    expect(screen.queryByLabelText("搶票時間")).toBeNull()
+  })
+
+  it("狀態還沒更新、但開賣時間已過的活動同樣立即執行", async () => {
+    api.getEvent.mockResolvedValue(
+      eventFixture({ status: "ANNOUNCED", sale_start_at: "2026-01-01T00:00:00Z" })
+    )
+    renderWithProviders(<TaskForm eventId="ev_mayday01" />)
+
+    expect(await screen.findByLabelText("執行時機")).toHaveTextContent(
+      "立即執行"
     )
   })
 
@@ -294,6 +302,21 @@ describe("表單驗證與送出", () => {
     expect(body).not.toHaveProperty("payment_method")
     expect(JSON.stringify(body)).not.toContain("card")
     expect(nav.push).toHaveBeenCalledWith("/tasks/task_abc")
+  })
+
+  it("已在販售的活動不送搶票時間，由後端直接執行", async () => {
+    const user = userEvent.setup()
+    api.getEvent.mockResolvedValue(eventFixture({ status: "ON_SALE" }))
+    api.createTask.mockResolvedValue({ id: "task_abc", status: "CREATED" })
+    renderWithProviders(<TaskForm eventId="ev_mayday01" />)
+
+    await screen.findByLabelText("執行時機")
+    await fillContact(user)
+    await user.click(screen.getByRole("button", { name: "確認搶票資訊" }))
+    await user.click(await screen.findByRole("button", { name: "送出任務" }))
+
+    await waitFor(() => expect(api.createTask).toHaveBeenCalledTimes(1))
+    expect(api.createTask.mock.calls[0][0].sale_start_at).toBeNull()
   })
 
   it("停留頁面直到搶票時間過期後，送出時會被重新驗證擋下", async () => {

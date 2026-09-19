@@ -23,6 +23,23 @@ export function msToLocalInput(ms: number): string {
 }
 
 /**
+ * 活動現在就在賣嗎？
+ *
+ * 在賣就沒有「搶票時間」這回事：任務建立後直接進登記頁下單，不走預約開賣流程。
+ * 判斷同時看狀態與開賣時間——狀態還停在 `ANNOUNCED` 但開賣時間已過的活動，
+ * 一樣沒有東西可等。
+ */
+export function isSellingNow(
+  status: string | null | undefined,
+  saleStartAt: string | null | undefined,
+  now: number
+): boolean {
+  if (status === "ON_SALE") return true
+  const sale = parseServerDate(saleStartAt)?.getTime()
+  return sale !== undefined && sale <= now
+}
+
+/**
  * 搶票時間的預設值：活動開賣時間還沒到就用它，否則用現在。
  * 活動沒有開賣時間時同樣退回現在（呼叫端負責提示使用者確認）。
  */

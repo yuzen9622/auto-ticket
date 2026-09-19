@@ -51,8 +51,8 @@ export type ExecutionMode = "live" | "mock"
 export interface CreateTaskRequest {
   event_title: string
   event_url: string
-  /** ISO-8601，必須含時區位移。 */
-  sale_start_at: string
+  /** 要等的開賣時間；ISO-8601，必須含時區位移。null 代表活動已在販售，立即執行。 */
+  sale_start_at: string | null
   ticket_preference: TicketPreference
   contact_profile: UserContactProfile
   attendees: AttendeeProfile[]
@@ -127,6 +127,12 @@ export interface TicketingProviderOut {
   event_url: string
 }
 
+export interface EventSessionInfo {
+  name: string
+  start_at?: string | null
+  url?: string | null
+}
+
 export interface EventOut {
   id: string
   platform: string
@@ -145,7 +151,10 @@ export interface EventOut {
   ticket_types: TicketTypeOut[]
   /** false 代表票種與開賣時間尚未由活動頁補齊。 */
   detail_loaded: boolean
-  raw_metadata: Record<string, unknown> | null
+  raw_metadata: {
+    sessions?: EventSessionInfo[]
+    [key: string]: unknown
+  } | null
 }
 
 export interface EventSearchResult {

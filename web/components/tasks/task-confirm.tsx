@@ -29,12 +29,15 @@ function Row({ label, value }: { label: string; value: React.ReactNode }) {
 export function TaskConfirm({
   event,
   draft,
+  sellingNow,
   submitting,
   onBack,
   onSubmit,
 }: {
   event: EventOut
   draft: TaskDraft
+  /** 活動已經在販售：這筆任務送出後立即執行，沒有搶票時間可顯示。 */
+  sellingNow: boolean
   submitting: boolean
   onBack: () => void
   onSubmit: () => void
@@ -47,11 +50,13 @@ export function TaskConfirm({
 
   const tp = draft.ticket_preference
   const contact = draft.contact_profile
-  const ticketingTime = draft.ticketing_time_local
-    ? new Date(draft.ticketing_time_local).toLocaleString("zh-TW", {
-        hour12: false,
-      })
-    : common("none")
+  const ticketingTime = sellingNow
+    ? t("startImmediately")
+    : draft.ticketing_time_local
+      ? new Date(draft.ticketing_time_local).toLocaleString("zh-TW", {
+          hour12: false,
+        })
+      : common("none")
 
   return (
     <div className="flex min-w-0 flex-col gap-4">
@@ -64,7 +69,10 @@ export function TaskConfirm({
           </p>
 
           <dl className="flex flex-col gap-1 text-[11px]">
-            <Row label={t("ticketingTime")} value={ticketingTime} />
+            <Row
+              label={sellingNow ? t("startTiming") : t("ticketingTime")}
+              value={ticketingTime}
+            />
             <Row
               label={t("originalSaleStart")}
               value={
