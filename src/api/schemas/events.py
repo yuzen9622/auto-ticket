@@ -26,9 +26,9 @@ class TicketTypeOut(BaseModel):
 
 
 class TicketingProviderOut(BaseModel):
-    """售票的票券商。
+    """售票的平台。
 
-    一定是陣列：同一場活動未來可能同時掛在多個票券商，即使目前只有 KKTIX。
+    一定是陣列：同一場活動未來可能同時掛在多個平台，即使目前只有 KKTIX。
     """
 
     model_config = ConfigDict(extra="ignore")

@@ -9,7 +9,7 @@ from accounts.service import AccountService
 from broker.broker import SqliteTaskBroker
 from broker.jobs import JobKind
 from domain.execution import ExecutionMode
-from domain.task import PaymentMethod, PurchaseTaskSpec
+from domain.task import PaymentMethod, PurchaseTaskSpec, StartTiming
 from storage.database import Database
 from storage.models import PurchaseTaskModel
 from storage.repositories.event_repository import EventRepository
@@ -36,6 +36,28 @@ router = APIRouter(prefix="/api/v1/tasks", tags=["tasks"])
 LIVE_PLATFORM = "kktix"
 
 
+def _resolve_start_timing(
+    requested_sale_start_at: datetime | None, now: datetime
+) -> tuple[StartTiming, datetime]:
+    """決定這筆任務是等開賣還是立即執行，並給出本次執行的 T=0。
+
+    只有「使用者指定了一個還沒到的時間」才算預約搶票。沒指定、或指定的時間已經過去，
+    代表活動當下就在賣——沒有東西可等，T=0 就是現在，之後的預熱與閘門都照立即執行算。
+    """
+    if (
+        requested_sale_start_at is not None
+        and requested_sale_start_at.utcoffset() is None
+    ):
+        # 沒有時區的時間在這裡就攔下來：拿它跟現在比會炸，硬當 UTC 則會整整差掉八小時。
+        raise InvalidRequestError(
+            "sale_start_at must include a timezone offset",
+            details={"reason": "naive_datetime", "field": "sale_start_at"},
+        )
+    if requested_sale_start_at is None or requested_sale_start_at <= now:
+        return StartTiming.IMMEDIATE, now
+    return StartTiming.SCHEDULED, requested_sale_start_at
+
+
 @router.post("", response_model=TaskResponse, status_code=status.HTTP_201_CREATED)
 async def create_task(
     req: CreateTaskRequest,
@@ -59,11 +81,14 @@ async def create_task(
         )
 
     task_id = f"task_{uuid.uuid4().hex[:16]}"
+    now = datetime.now(UTC)
+    start_timing, sale_start_at = _resolve_start_timing(req.sale_start_at, now)
     spec = PurchaseTaskSpec(
         task_id=task_id,
         event_title=req.event_title,
         event_url=req.event_url,
-        sale_start_at=req.sale_start_at,
+        sale_start_at=sale_start_at,
+        start_timing=start_timing,
         ticket_preference=req.ticket_preference,
         contact_profile=req.contact_profile,
         attendees=tuple(req.attendees),
@@ -94,10 +119,12 @@ async def create_task(
             scheduled_at=spec.sale_start_at,
         )
 
-    warmup_lead = timedelta(minutes=11)
-    available_at = spec.sale_start_at - warmup_lead
-    now = datetime.now(UTC)
-    available_at = max(available_at, now)
+    # 預約搶票要留預熱的時間；立即執行沒有開賣可等，晚一秒領取就是晚一秒進登記頁。
+    if start_timing is StartTiming.IMMEDIATE:
+        available_at = now
+    else:
+        warmup_lead = timedelta(minutes=11)
+        available_at = max(spec.sale_start_at - warmup_lead, now)
 
     await broker.enqueue(
         kind=JobKind.PURCHASE,

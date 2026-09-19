@@ -19,6 +19,7 @@ from domain.task import (
     PaymentMethod,
     PurchaseTaskRecord,
     PurchaseTaskSpec,
+    StartTiming,
     TaskStatus,
     UserContactProfile,
 )
@@ -37,6 +38,7 @@ __all__ = [
     "PurchaseTaskSpec",
     "ResolveResult",
     "SeatPreference",
+    "StartTiming",
     "TaskStatus",
     "TicketPreference",
     "TicketPriority",

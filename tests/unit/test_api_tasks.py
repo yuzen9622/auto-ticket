@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
+
 import httpx
 import pytest
 
@@ -197,3 +199,89 @@ async def test_task_start_and_cancel(app_instance) -> None:
         get_resp = await client.get(f"/api/v1/tasks/{task_id}")
         assert get_resp.status_code == 200
         assert get_resp.json()["task"]["status"] == "CANCELLED"
+
+
+async def test_scheduled_task_waits_for_the_sale_and_leaves_time_to_warm_up(
+    app_instance,
+) -> None:
+    """還沒開賣：搶票時間照送進來的值，job 提前放出來做預熱。"""
+    app, broker = app_instance
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://test",
+    ) as client:
+        sale_start = datetime.now(UTC) + timedelta(days=3)
+        resp = await client.post(
+            "/api/v1/tasks",
+            json=dict(VALID_TASK_PAYLOAD, sale_start_at=sale_start.isoformat()),
+        )
+        assert resp.status_code == 201
+        task_id = resp.json()["id"]
+
+        jobs = await broker.list_jobs(task_id=task_id)
+        spec = jobs[0].payload["spec"]
+        assert spec["start_timing"] == "scheduled"
+        assert datetime.fromisoformat(spec["sale_start_at"]) == sale_start
+        assert jobs[0].available_at < sale_start
+
+
+async def test_task_without_a_sale_time_runs_immediately(app_instance) -> None:
+    """活動已經在販售：沒有搶票時間可填，任務一建立就該被領走。
+
+    這裡守的是實際踩過的 bug——表單硬要一個「搶票時間」，後端把它當成新的開賣時間，
+    於是已開賣的活動被塞進預約搶票流程，開賣前的收工線把預熱預算砍成零。
+    """
+    app, broker = app_instance
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://test",
+    ) as client:
+        payload = {k: v for k, v in VALID_TASK_PAYLOAD.items() if k != "sale_start_at"}
+        before = datetime.now(UTC)
+        resp = await client.post("/api/v1/tasks", json=payload)
+        assert resp.status_code == 201
+        after = datetime.now(UTC)
+        task_id = resp.json()["id"]
+
+        jobs = await broker.list_jobs(task_id=task_id)
+        spec = jobs[0].payload["spec"]
+        assert spec["start_timing"] == "immediate"
+        # T=0 就是建立當下，不是活動的官方開賣時間。
+        assert before <= datetime.fromisoformat(spec["sale_start_at"]) <= after
+        # 沒有預熱提前量：晚一秒領取就是晚一秒進登記頁。
+        assert jobs[0].available_at <= after
+
+
+async def test_a_sale_time_already_past_is_treated_as_immediate(app_instance) -> None:
+    """開賣時間已經過去也一樣沒東西可等，不得再排進預約搶票流程。"""
+    app, broker = app_instance
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://test",
+    ) as client:
+        sale_start = datetime.now(UTC) - timedelta(days=1)
+        resp = await client.post(
+            "/api/v1/tasks",
+            json=dict(VALID_TASK_PAYLOAD, sale_start_at=sale_start.isoformat()),
+        )
+        assert resp.status_code == 201
+        task_id = resp.json()["id"]
+
+        jobs = await broker.list_jobs(task_id=task_id)
+        spec = jobs[0].payload["spec"]
+        assert spec["start_timing"] == "immediate"
+        assert datetime.fromisoformat(spec["sale_start_at"]) > sale_start
+
+
+async def test_sale_time_without_a_timezone_is_rejected(app_instance) -> None:
+    """沒有時區的時間會整整差掉八小時；在這裡就擋下來，不要讓它走到排程。"""
+    app, _ = app_instance
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://test",
+    ) as client:
+        resp = await client.post(
+            "/api/v1/tasks",
+            json=dict(VALID_TASK_PAYLOAD, sale_start_at="2026-10-01T12:00:00"),
+        )
+        assert resp.status_code == 400

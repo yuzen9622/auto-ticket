@@ -15,7 +15,12 @@ class CreateTaskRequest(BaseModel):
 
     event_title: str = Field(min_length=1)
     event_url: str = Field(min_length=1)
-    sale_start_at: datetime
+    sale_start_at: datetime | None = None
+    """要等的開賣時間。
+
+    活動已經在販售時留空：沒有東西要等，任務建立後立即執行。填了過去的時間也一樣——
+    後端只認「這個時間還沒到」才排預約搶票。
+    """
     ticket_preference: TicketPreference
     contact_profile: UserContactProfile
     attendees: list[AttendeeProfile] = Field(default_factory=list)

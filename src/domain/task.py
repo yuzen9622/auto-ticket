@@ -23,6 +23,19 @@ class TaskStatus(str, Enum):
     CANCELLED = "CANCELLED"
 
 
+class StartTiming(str, Enum):
+    """任務的兩種執行語意。
+
+    `SCHEDULED`：活動還沒開賣，要等官方開賣時間，預熱必須在開賣前收工。
+    `IMMEDIATE`：活動已經在販售，沒有任何東西要等——建立後直接開瀏覽器、進登記頁、
+    讀票、下單。此時 `sale_start_at` 記的是任務建立時刻（本次執行的 T=0），
+    不是活動的官方開賣時間，「開賣前幾秒必須收工」那一類規則一律不適用。
+    """
+
+    SCHEDULED = "scheduled"
+    IMMEDIATE = "immediate"
+
+
 class PaymentMethod(str, Enum):
     MOCK = "mock"
     CREDIT_CARD = "credit_card"
@@ -83,6 +96,8 @@ class PurchaseTaskSpec(DomainBaseModel):
     event_title: str
     event_url: str
     sale_start_at: UtcDatetime
+    start_timing: StartTiming = StartTiming.SCHEDULED
+    """等開賣還是立即執行。舊 payload 沒有這個欄位時退回 `SCHEDULED`。"""
     ticket_preference: TicketPreference
     contact_profile: UserContactProfile
     attendees: tuple[AttendeeProfile, ...] = ()
