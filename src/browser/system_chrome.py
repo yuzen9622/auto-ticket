@@ -17,6 +17,7 @@ import asyncio
 import shutil
 import subprocess
 import sys
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -103,14 +104,20 @@ async def probe_debug_port(
 
 
 async def ensure_page(
-    endpoint: str, url: str, *, client: httpx.AsyncClient | None = None
+    endpoint: str,
+    url: str,
+    *,
+    client: httpx.AsyncClient | None = None,
+    fallback_urls: Sequence[str] | None = None,
 ) -> None:
     """確保瀏覽器裡有一個停在 `url` 的分頁；沒有就開一個。
 
     CDP attach 要求「恰好命中一個分頁」。自動啟動的瀏覽器一開始停在 about:blank，
     不先把活動頁開起來，attach 會以「命中 0 個頁籤」收場。
+    若提供了 fallback_urls，且瀏覽器中已有符合 fallback 的分頁（例如登入後轉址的分頁），
+    則視為已有合適分頁，不重複開啟新分頁。
     """
-    target = parse_page_target(url)
+    target = parse_page_target(url, fallback_urls=fallback_urls)
     owns_client = client is None
     http = client or httpx.AsyncClient(timeout=5.0)
     try:
@@ -120,7 +127,9 @@ async def ensure_page(
                 item
                 for item in response.json()
                 if item.get("type") == "page"
-                and page_url_matches(target, str(item.get("url", "")))
+                and page_url_matches(
+                    target, str(item.get("url", "")), allow_fallback=True
+                )
             ]
         except (httpx.HTTPError, ValueError):
             pages = []
@@ -140,6 +149,7 @@ async def ensure_system_chrome(
     user_data_dir: Path | None = None,
     binary: Path | None = None,
     initial_url: str | None = None,
+    fallback_urls: Sequence[str] | None = None,
     startup_timeout_s: float = 30.0,
     poll_interval_s: float = 0.25,
 ) -> LaunchedChrome:
@@ -153,7 +163,9 @@ async def ensure_system_chrome(
     async with httpx.AsyncClient(timeout=1.0) as client:
         if await probe_debug_port(endpoint, client=client):
             if initial_url:
-                await ensure_page(endpoint, initial_url, client=client)
+                await ensure_page(
+                    endpoint, initial_url, client=client, fallback_urls=fallback_urls
+                )
             return LaunchedChrome(
                 endpoint=endpoint,
                 binary=binary or Path("<existing>"),
@@ -187,7 +199,12 @@ async def ensure_system_chrome(
         while asyncio.get_running_loop().time() < deadline:
             if await probe_debug_port(endpoint, client=client):
                 if initial_url:
-                    await ensure_page(endpoint, initial_url, client=client)
+                    await ensure_page(
+                        endpoint,
+                        initial_url,
+                        client=client,
+                        fallback_urls=fallback_urls,
+                    )
                 return LaunchedChrome(
                     endpoint=endpoint,
                     binary=executable,

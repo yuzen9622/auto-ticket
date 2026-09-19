@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlsplit
@@ -43,6 +44,7 @@ class PageTarget:
     port: int
     path: str
     label: str
+    fallback_paths: tuple[str, ...] = ()
 
 
 def _normalise_host(host: str) -> str:
@@ -91,7 +93,9 @@ def parse_cdp_endpoint(raw: str) -> CdpEndpoint:
     )
 
 
-def parse_page_target(raw: str) -> PageTarget:
+def parse_page_target(
+    raw: str, fallback_urls: Sequence[str] | None = None
+) -> PageTarget:
     if not isinstance(raw, str) or not raw.strip():
         raise CdpEndpointError("CDP 頁籤 target 不可為空")
     try:
@@ -113,10 +117,56 @@ def parse_page_target(raw: str) -> PageTarget:
         path = path.rstrip("/") or "/"
     visible_port = "" if port == default_port else f":{port}"
     label = f"{scheme}://{_display_host(host)}{visible_port}{path}"
-    return PageTarget(scheme=scheme, host=host, port=port, path=path, label=label)
+
+    fallback_paths: list[str] = []
+    if fallback_urls:
+        for fb in fallback_urls:
+            if not isinstance(fb, str) or not fb.strip():
+                continue
+            try:
+                fb_parts = urlsplit(fb)
+            except ValueError as exc:
+                raise CdpEndpointError("CDP 頁籤 fallback target 格式無效") from exc
+            fb_scheme = fb_parts.scheme.lower()
+            if fb_scheme not in {"http", "https"}:
+                raise CdpEndpointError(
+                    "CDP 頁籤 fallback target 必須是 http(s) 絕對 URL"
+                )
+            fb_host = _normalise_host(fb_parts.hostname or "")
+            if fb_host != host:
+                raise CdpEndpointError(
+                    "CDP 頁籤 fallback target 的 host 必須與主 target 相同"
+                )
+            fb_port = _parsed_port(fb_parts, required=False, default=default_port)
+            if fb_port != port:
+                raise CdpEndpointError(
+                    "CDP 頁籤 fallback target 的 port 必須與主 target 相同"
+                )
+            fb_path = fb_parts.path or "/"
+            if fb_path != "/":
+                fb_path = fb_path.rstrip("/") or "/"
+            if fb_path != path and fb_path not in fallback_paths:
+                fallback_paths.append(fb_path)
+
+    return PageTarget(
+        scheme=scheme,
+        host=host,
+        port=port,
+        path=path,
+        label=label,
+        fallback_paths=tuple(fallback_paths),
+    )
 
 
-def page_url_matches(target: PageTarget, page_url: str) -> bool:
+def _path_matches(expected_path: str, actual_path: str) -> bool:
+    if expected_path == "/":
+        return actual_path == "/"
+    return actual_path == expected_path or actual_path.startswith(f"{expected_path}/")
+
+
+def page_url_matches(
+    target: PageTarget, page_url: str, *, allow_fallback: bool = False
+) -> bool:
     try:
         parts = urlsplit(page_url)
         scheme = parts.scheme.lower()
@@ -134,13 +184,16 @@ def page_url_matches(target: PageTarget, page_url: str) -> bool:
     path = parts.path or "/"
     if path != "/":
         path = path.rstrip("/") or "/"
-    if target.path == "/":
-        return path == "/"
-    return path == target.path or path.startswith(f"{target.path}/")
+    if _path_matches(target.path, path):
+        return True
+    if allow_fallback:
+        return any(_path_matches(fb, path) for fb in target.fallback_paths)
+    return False
 
 
 def select_attached_page(browser: Any, target: PageTarget) -> Any:
-    matches: list[Any] = []
+    primary_matches: list[Any] = []
+    fallback_matches: list[Any] = []
     scanned = 0
     contexts = list(browser.contexts)
     for context in contexts:
@@ -148,14 +201,24 @@ def select_attached_page(browser: Any, target: PageTarget) -> Any:
             if page.is_closed():
                 continue
             scanned += 1
-            if page_url_matches(target, page.url):
-                matches.append(page)
-    if len(matches) != 1:
-        raise CdpPageSelectionError(
-            f"CDP 頁籤 target {target.label} 命中 {len(matches)} 個頁籤"
-            f"（已掃描 {scanned} 個頁籤、{len(contexts)} 個可見 context）；必須恰好命中 1 個"
-        )
-    return matches[0]
+            if page_url_matches(target, page.url, allow_fallback=False):
+                primary_matches.append(page)
+            elif target.fallback_paths and page_url_matches(
+                target, page.url, allow_fallback=True
+            ):
+                fallback_matches.append(page)
+
+    if len(primary_matches) == 1:
+        return primary_matches[0]
+
+    if len(primary_matches) == 0 and len(fallback_matches) == 1:
+        return fallback_matches[0]
+
+    total_matches = len(primary_matches) + len(fallback_matches)
+    raise CdpPageSelectionError(
+        f"CDP 頁籤 target {target.label} 命中 {total_matches} 個頁籤"
+        f"（已掃描 {scanned} 個頁籤、{len(contexts)} 個可見 context）；必須恰好命中 1 個"
+    )
 
 
 def validate_ws_endpoint(raw: Any, endpoint: CdpEndpoint) -> str:

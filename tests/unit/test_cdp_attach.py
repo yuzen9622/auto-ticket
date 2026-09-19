@@ -381,3 +381,95 @@ def test_select_attached_page_refuses_when_two_tabs_match() -> None:
     message = str(caught.value)
     assert "2" in message
     assert "example.com/events/1/register" not in message
+
+
+# --------------------------------------------------------------- fallback target
+def test_parse_page_target_with_fallback_urls() -> None:
+    target = parse_page_target(
+        "https://kktix.com/users/sign_in",
+        fallback_urls=["https://kktix.com/", "https://kktix.com/users/sign_in"],
+    )
+    assert target.path == "/users/sign_in"
+    assert target.fallback_paths == ("/",)
+
+
+def test_parse_page_target_rejects_mismatched_fallback_host() -> None:
+    with pytest.raises(CdpEndpointError, match="host 必須與主 target 相同"):
+        parse_page_target(
+            "https://kktix.com/users/sign_in",
+            fallback_urls=["https://other.com/"],
+        )
+
+
+def test_parse_page_target_rejects_mismatched_fallback_port() -> None:
+    with pytest.raises(CdpEndpointError, match="port 必須與主 target 相同"):
+        parse_page_target(
+            "https://kktix.com/users/sign_in",
+            fallback_urls=["https://kktix.com:8443/"],
+        )
+
+
+def test_page_url_matches_with_fallback() -> None:
+    target = parse_page_target(
+        "https://kktix.com/users/sign_in",
+        fallback_urls=["https://kktix.com/"],
+    )
+    assert page_url_matches(target, "https://kktix.com/users/sign_in") is True
+    assert page_url_matches(target, "https://kktix.com/") is False
+    assert (
+        page_url_matches(target, "https://kktix.com/", allow_fallback=True) is True
+    )
+    assert (
+        page_url_matches(
+            target, "https://kktix.com/users/sign_in", allow_fallback=True
+        )
+        is True
+    )
+    assert (
+        page_url_matches(
+            target, "https://kktix.com/events/1", allow_fallback=True
+        )
+        is False
+    )
+
+
+def test_select_attached_page_uses_fallback_when_primary_not_found() -> None:
+    """模擬登入後自動轉址到首頁：primary 命中 0 個，但唯一 fallback 命中 1 個。"""
+    target = parse_page_target(
+        "https://kktix.com/users/sign_in",
+        fallback_urls=["https://kktix.com/"],
+    )
+    redirected_page = FakePage("https://kktix.com/")
+    browser = FakeBrowser(
+        FakeContext(FakePage("about:blank"), FakePage("https://google.com/")),
+        FakeContext(redirected_page),
+    )
+    assert select_attached_page(browser, target) is redirected_page
+
+
+def test_select_attached_page_prefers_primary_over_fallback() -> None:
+    """同時存在 primary 與 fallback 時，優先選取 primary。"""
+    target = parse_page_target(
+        "https://kktix.com/users/sign_in",
+        fallback_urls=["https://kktix.com/"],
+    )
+    signin_page = FakePage("https://kktix.com/users/sign_in")
+    home_page = FakePage("https://kktix.com/")
+    browser = FakeBrowser(
+        FakeContext(signin_page, home_page),
+    )
+    assert select_attached_page(browser, target) is signin_page
+
+
+def test_select_attached_page_refuses_when_multiple_fallbacks() -> None:
+    """Primary 命中 0 個，但有多個 fallback 頁籤時，仍必須拒絕。"""
+    target = parse_page_target(
+        "https://kktix.com/users/sign_in",
+        fallback_urls=["https://kktix.com/"],
+    )
+    browser = FakeBrowser(
+        FakeContext(FakePage("https://kktix.com/"), FakePage("https://kktix.com/")),
+    )
+    with pytest.raises(CdpPageSelectionError) as caught:
+        select_attached_page(browser, target)
+    assert "2" in str(caught.value)

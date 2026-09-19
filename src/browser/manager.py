@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import itertools
 import threading
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from contextlib import suppress
 from importlib import import_module
 from pathlib import Path
@@ -43,6 +43,7 @@ class PlaywrightManager:
         cdp_tracker: CdpRttTracker | None = None,
         cdp_endpoint: str | None = None,
         cdp_page_url: str | None = None,
+        cdp_page_fallback_urls: Sequence[str] | None = None,
         cdp_ws_resolver: Callable[[CdpEndpoint], Awaitable[str]] | None = None,
     ) -> None:
         self.profile = profile
@@ -54,13 +55,17 @@ class PlaywrightManager:
         if cdp_endpoint is None:
             if cdp_page_url is not None:
                 raise CdpEndpointError("cdp_page_url 需搭配 cdp_endpoint")
+            if cdp_page_fallback_urls is not None:
+                raise CdpEndpointError("cdp_page_fallback_urls 需搭配 cdp_endpoint")
             self._cdp: CdpEndpoint | None = None
             self._page_target: PageTarget | None = None
         else:
             if cdp_page_url is None:
                 raise CdpEndpointError("CDP attach 模式必須指定頁籤 target")
             self._cdp = parse_cdp_endpoint(cdp_endpoint)
-            self._page_target = parse_page_target(cdp_page_url)
+            self._page_target = parse_page_target(
+                cdp_page_url, fallback_urls=cdp_page_fallback_urls
+            )
         self._cdp_ws_resolver = cdp_ws_resolver or resolve_ws_endpoint
         self._started = False
         self._closing = False

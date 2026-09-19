@@ -693,6 +693,45 @@ def test_attach_mode_requires_a_page_target(
         )
 
 
+def test_fallback_urls_requires_cdp_endpoint(
+    tmp_path: Path, telemetry: TimelineRecorder
+) -> None:
+    with pytest.raises(CdpEndpointError, match="cdp_page_fallback_urls 需搭配 cdp_endpoint"):
+        PlaywrightManager(
+            BrowserProfile(name="borrowed", user_data_dir=tmp_path / "profile"),
+            telemetry,
+            screenshot_dir=tmp_path / "shots",
+            cdp_page_fallback_urls=["https://kktix.com/"],
+        )
+
+
+async def test_attach_mode_selects_redirected_page_via_fallback_url(
+    tmp_path: Path, telemetry: TimelineRecorder
+) -> None:
+    wanted = SentinelBorrowedPage("https://kktix.com/")
+    browser = SentinelBrowser(
+        SentinelBorrowedContext(
+            SentinelBorrowedPage("about:blank"),
+            wanted,
+        ),
+    )
+    playwright = FakeCdpPlaywright(browser)
+    manager = PlaywrightManager(
+        BrowserProfile(name="borrowed", user_data_dir=tmp_path / "profile"),
+        telemetry,
+        screenshot_dir=tmp_path / "shots",
+        playwright_launcher=lambda: playwright,
+        cdp_endpoint=CDP_ENDPOINT,
+        cdp_page_url="https://kktix.com/users/sign_in",
+        cdp_page_fallback_urls=["https://kktix.com/"],
+        cdp_ws_resolver=_resolver,
+    )
+    await manager.start()
+    page = await manager.new_page()
+    assert page is wanted
+    await manager.stop()
+
+
 async def test_attach_mode_uses_connect_over_cdp_with_no_defaults(
     tmp_path: Path,
     telemetry: TimelineRecorder,
