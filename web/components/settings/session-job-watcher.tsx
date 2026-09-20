@@ -25,42 +25,23 @@ import {
 import { useApiErrorMessage } from "@/lib/i18n/errors"
 import { useJobStateLabel } from "@/lib/i18n/labels"
 import {
-  JOB_PROGRESS_STEPS,
   explainJobError,
   formatElapsed,
   jobKindLabel,
   jobOutcomeTone,
-  jobStateHint,
-  jobStepCount,
   summarizeJobResult,
 } from "@/lib/session-job"
 import { cn } from "@/lib/utils"
 
 const POLL_INTERVAL_MS = 1000
 
-/** 三段式進度條：已完成的段落點亮，非終態時最後一段脈動表示仍在跑。 */
-function ProgressTrack({ state }: { state: string | null }) {
-  const done = state === null ? 0 : jobStepCount(state)
-  const live = state !== null && !isTerminalJobState(state)
-  const tone = state === null ? "muted" : jobOutcomeTone(state)
-
-  return (
-    <div className="flex items-center gap-1" aria-hidden>
-      {JOB_PROGRESS_STEPS.map((_, i) => (
-        <span
-          key={i}
-          className={cn(
-            "h-1 flex-1 rounded-[2px] transition-colors duration-200 ease-out",
-            i < done ? TONE_DOT_CLASS[tone] : "bg-muted",
-            live && i === done - 1 && "animate-pulse"
-          )}
-        />
-      ))}
-    </div>
-  )
-}
-
-export function SessionJobWatcher({ platform }: { platform: string }) {
+export function SessionJobWatcher({
+  platform,
+  profile = "live",
+}: {
+  platform: string
+  profile?: string
+}) {
   const t = useTranslations("settings")
   const apiErrorMessage = useApiErrorMessage()
   const jobStateLabel = useJobStateLabel()
@@ -76,20 +57,20 @@ export function SessionJobWatcher({ platform }: { platform: string }) {
   }
 
   const check = useMutation({
-    mutationFn: () => requestSessionCheck(platform, "live"),
+    mutationFn: () => requestSessionCheck(platform, profile),
     onSuccess: onAccepted,
     onError: (e) => toast.error(apiErrorMessage(e)),
   })
 
   const autoLogin = useMutation({
-    mutationFn: () => requestLogin(platform, { mode: "auto", profile: "live" }),
+    mutationFn: () => requestLogin(platform, { mode: "auto", profile }),
     onSuccess: onAccepted,
     onError: (e) => toast.error(apiErrorMessage(e)),
   })
 
   const manualLogin = useMutation({
     mutationFn: () =>
-      requestLogin(platform, { mode: "manual", profile: "live" }),
+      requestLogin(platform, { mode: "manual", profile }),
     onSuccess: onAccepted,
     onError: (e) => toast.error(apiErrorMessage(e)),
   })
@@ -222,12 +203,6 @@ export function SessionJobWatcher({ platform }: { platform: string }) {
               </div>
             </div>
 
-            <ProgressTrack state={state} />
-
-            <p className="text-xs text-muted-foreground">
-              {state === null ? t("sessionLoading") : jobStateHint(state)}
-            </p>
-
             {failure && (
               <div
                 className={cn(
@@ -268,8 +243,6 @@ export function SessionJobWatcher({ platform }: { platform: string }) {
                 ))}
               </div>
             )}
-
-            <KvRow label={t("jobId")} value={jobId} />
 
             {isError && (
               <p className="text-xs text-destructive">

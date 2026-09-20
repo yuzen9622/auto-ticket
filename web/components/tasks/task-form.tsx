@@ -37,6 +37,7 @@ import { formatDateTime, toOffsetIso } from "@/lib/format"
 import { useApiErrorMessage, isAccountNotConfigured } from "@/lib/i18n/errors"
 import { useExecutionModeLabel, useSeatStrategyLabel } from "@/lib/i18n/labels"
 import { SEAT_STRATEGY } from "@/lib/contract"
+import { DEFAULT_PROFILE, loadBrowserProfiles } from "@/lib/browser-profile"
 import {
   createInitialDraft,
   FIELD_ELEMENT_ID,
@@ -90,6 +91,14 @@ export function TaskForm({ eventId }: { eventId: string }) {
   const accountConfigured = accountQuery.data?.configured ?? false
 
   const [draft, setDraft] = React.useState<TaskDraft>(createInitialDraft)
+  const [profiles, setProfiles] = React.useState<string[]>([DEFAULT_PROFILE])
+
+  React.useEffect(() => {
+    queueMicrotask(() => {
+      const loaded = loadBrowserProfiles()
+      setProfiles(loaded)
+    })
+  }, [])
   // datetime-local 的 min 要跟著時鐘走，但 min 只是第一道門檻——
   // 真正擋下過期時間的是送出前的重新驗證。
   const currentMinute = useCurrentMinute()
@@ -807,12 +816,21 @@ export function TaskForm({ eventId }: { eventId: string }) {
 
             <div className="flex flex-col gap-1">
               <Label htmlFor="browser-profile">{t("browserProfile")}</Label>
-              <Input
-                id="browser-profile"
+              <Select
                 value={draft.profile}
-                onChange={(e) => patch({ profile: e.target.value })}
-                className="h-7"
-              />
+                onValueChange={(val) => patch({ profile: val })}
+              >
+                <SelectTrigger id="browser-profile" className="h-7 text-xs">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {profiles.map((p) => (
+                    <SelectItem key={p} value={p} className="text-xs">
+                      {p === DEFAULT_PROFILE ? `${p} (${t("defaultProfileBadge")})` : p}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             </div>
           </div>
 
@@ -822,41 +840,6 @@ export function TaskForm({ eventId }: { eventId: string }) {
             </summary>
             <p className="mt-1 text-xs text-muted-foreground">{t("advancedHint")}</p>
             <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-2">
-              <div className="flex flex-col gap-1">
-                <Label htmlFor="ocr-model-path">{t("ocrModelPath")}</Label>
-                <Input
-                  id="ocr-model-path"
-                  value={draft.ocr_model_path}
-                  onChange={(e) => patch({ ocr_model_path: e.target.value })}
-                  placeholder=""
-                  className="h-7"
-                />
-                <span id="ocr-model-path-hint" className="text-xs text-muted-foreground">
-                  {t("ocrModelPathHint")}
-                </span>
-              </div>
-
-              <div className="flex flex-col gap-1">
-                <Label htmlFor="ocr-max-retries">{t("ocrMaxRetries")}</Label>
-                <Input
-                  id="ocr-max-retries"
-                  type="number"
-                  min={1}
-                  max={20}
-                  value={draft.ocr_max_retries}
-                  onChange={(e) => patch({ ocr_max_retries: Number(e.target.value) })}
-                  aria-invalid={errors.ocrMaxRetries !== undefined}
-                  aria-describedby={errors.ocrMaxRetries ? "ocr-max-retries-error" : "ocr-max-retries-hint"}
-                  className="tabular h-7"
-                />
-                <span
-                  id={errors.ocrMaxRetries ? "ocr-max-retries-error" : "ocr-max-retries-hint"}
-                  className={errors.ocrMaxRetries ? "text-xs text-destructive" : "text-xs text-muted-foreground"}
-                >
-                  {errors.ocrMaxRetries ?? t("ocrMaxRetriesHint")}
-                </span>
-              </div>
-
               <div className="flex flex-col gap-1">
                 <Label htmlFor="cloudflare-max-retries">{t("cloudflareMaxRetries")}</Label>
                 <Input

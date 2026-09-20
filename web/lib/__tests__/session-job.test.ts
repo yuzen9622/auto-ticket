@@ -109,39 +109,27 @@ describe("summarizeJobResult", () => {
   it("summarizes a successful auto-login result", () => {
     const rows = summarizeJobResult({
       success: true,
-      page_kind: "EVENT",
+      page_kind: "LOGGED_IN",
       cookie_count: 7,
       has_session: true,
     })
-    expect(rows.map((r) => r.label)).toEqual([
-      "登入",
-      "登入狀態",
-      "KKTIX cookie",
-      "頁面判定",
-    ])
-    expect(rows[0]).toMatchObject({ value: "成功", tone: "success" })
-    expect(rows[2].value).toBe("7 個")
-    expect(rows[3].value).toBe("EVENT")
+    expect(rows.map((r) => r.label)).toEqual(["登入狀態"])
+    expect(rows[0]).toMatchObject({ value: "已登入", tone: "success" })
   })
 
   it("flags a session check without a session as a warning", () => {
     const rows = summarizeJobResult({
-      page_kind: "UNKNOWN",
+      page_kind: "LOGGED_OUT",
       cookie_count: 0,
       has_session: false,
     })
-    expect(rows.map((r) => r.label)).toEqual([
-      "登入狀態",
-      "KKTIX cookie",
-      "頁面判定",
-    ])
+    expect(rows.map((r) => r.label)).toEqual(["登入狀態"])
     expect(rows[0]).toMatchObject({ value: "未登入", tone: "warning" })
   })
 
-  it("ignores fields with unexpected types", () => {
-    expect(
-      summarizeJobResult({ success: "yes", cookie_count: "3", page_kind: 1 })
-    ).toEqual([])
+  it("handles empty or unexpected fields gracefully", () => {
+    const rows = summarizeJobResult({})
+    expect(rows).toEqual([{ label: "登入狀態", value: "未登入", tone: "warning" }])
   })
 })
 

@@ -129,48 +129,25 @@ function asBoolean(v: unknown): boolean | null {
   return typeof v === "boolean" ? v : null
 }
 
-/** 把 Worker 回傳的 result 攤成人看得懂的列；未知欄位一律忽略。 */
+/** 把 Worker 回傳的 result 攤成人看得懂的列；只保留使用者關心的登入狀態。 */
 export function summarizeJobResult(
   result: Record<string, unknown> | null,
-  platform: string = "kktix"
+  _platform: string = "kktix"
 ): JobResultRow[] {
   if (result === null) return []
   const rows: JobResultRow[] = []
 
-  const success = asBoolean(result.success)
-  if (success !== null) {
-    rows.push({
-      label: "登入",
-      value: success ? "成功" : "失敗",
-      tone: success ? "success" : "danger",
-    })
-  }
-
   const hasSession = asBoolean(result.has_session)
-  if (hasSession !== null) {
-    rows.push({
-      label: "登入狀態",
-      value: hasSession ? "已登入（偵測到 session cookie）" : "未登入",
-      tone: hasSession ? "success" : "warning",
-    })
-  }
+  const isLoggedIn =
+    hasSession === true ||
+    result.login_state === "LOGGED_IN" ||
+    result.page_kind === "LOGGED_IN"
 
-  if (typeof result.cookie_count === "number") {
-    const rawPlat =
-      typeof result.platform === "string" ? result.platform : platform
-    const platformName = rawPlat
-      ? PLATFORM_NAMES[rawPlat as Platform] ?? rawPlat
-      : "KKTIX"
-    rows.push({
-      label: `${platformName} cookie`,
-      value: `${result.cookie_count} 個`,
-      tone: "muted",
-    })
-  }
-
-  if (typeof result.page_kind === "string") {
-    rows.push({ label: "頁面判定", value: result.page_kind, tone: "muted" })
-  }
+  rows.push({
+    label: "登入狀態",
+    value: isLoggedIn ? "已登入" : "未登入",
+    tone: isLoggedIn ? "success" : "warning",
+  })
 
   return rows
 }
