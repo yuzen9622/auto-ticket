@@ -1,3 +1,4 @@
+# ruff: noqa: S112, BLE001
 """離線測試用的假 Page／Locator（以 BeautifulSoup 驅動真實頁面快照）。
 
 只實作 adapter 與 dom 模組實際用到的 Playwright API 子集，並用
@@ -121,6 +122,13 @@ class FakeLocator:
             raise self.page.evaluate_error
         self.page.dispatches.append((self.element.name, script))
 
+    async def screenshot(self, **kwargs: Any) -> bytes:
+        """對應 Playwright 的元素截圖；離線測試回傳可辨識的決定性 bytes。"""
+        element = self.element
+        self.page.screenshots.append(self.selector)
+        token = self.page.image_tokens.get(self.selector, "0")
+        return f"fake-image:{element.get('id') or element.name}:{token}".encode()
+
 
 class FakePage:
     def __init__(
@@ -136,6 +144,7 @@ class FakePage:
         self.goto_kwargs: list[dict[str, Any]] = []
         self.load_states: list[str] = []
         self.screenshots: list[str] = []
+        self.image_tokens: dict[str, str] = {}
         self.fail_load_state = False
         self.quantity_step = 1
         self.click_transitions: list[tuple[str, str]] = []

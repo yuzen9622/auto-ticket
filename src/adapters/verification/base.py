@@ -1,7 +1,7 @@
 """驗證（防機器人問答／圖形驗證碼）Port。
 
 本專案是研究系統：驗證只做「偵測 -> 交由 provider 作答 -> 回填」，
-**不實作任何繞過機制**。Cloudflare 之類的挑戰一律 fail-closed 中止。
+**不實作任何繞過機制**：圖形驗證碼以 OCR 辨識後正常作答，Cloudflare 之類的挑戰只被動等待其自行完成並重新判讀，逾時即 fail-closed 中止。
 """
 
 from __future__ import annotations

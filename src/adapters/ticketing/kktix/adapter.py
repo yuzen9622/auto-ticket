@@ -1,15 +1,19 @@
 # pyright: reportMissingImports=false
-# ruff: noqa: S112, SIM105, S110
+# ruff: noqa: S112, S110, BLE001
 """KKTIX 購票流程 adapter。
 
 契約：
 * 選擇器**一律**經 `KKTIXSelectors` 屬性存取，本檔不得出現任何選擇器字面值。
 * DOM 讀取與決策分離：本檔只把頁面讀成不可變快照，決策交給 `strategy`。
-* Cloudflare 挑戰只偵測、截圖、回報，**不實作繞過**——這是研究系統，不是規避工具。
+* Cloudflare 挑戰不實作任何繞過——不合成點擊、不偽造輸入、不竄改指紋；只允許被動等待其自行完成並重新判讀，逾時即 fail-closed 交還給人。與主辦方自家 DOM 的正常互動（填表、換一張驗證碼圖）不在此限。
+* 使用者已手動填入的驗證碼答案一律保留，OCR 不覆寫。
 """
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
+import hashlib
 import re
 from collections.abc import Awaitable, Callable, Sequence
 from enum import Enum
@@ -18,6 +22,7 @@ from urllib.parse import urlsplit
 
 from adapters.payment.base import PaymentOutcome, PaymentProvider, PaymentResult
 from adapters.ticketing.base import TicketingAdapter
+from adapters.ticketing.kktix.captcha_selectors import CaptchaSelectors
 from adapters.ticketing.kktix.dom import (
     DEFAULT_OPTIONAL_PROBE_MS,
     contains_cloudflare_challenge,
@@ -204,6 +209,17 @@ class KKTIXAdapter(TicketingAdapter):
         probe_timeout_ms: int | None = None,
         navigation_timeout_ms: int = DEFAULT_NAVIGATION_TIMEOUT_MS,
         screenshot: Callable[[str], Awaitable[Any]] | None = None,
+        ocr_max_retries: int = 1,
+        ocr_expected_length: int | None = None,
+        refresh_poll_s: float = 0.1,
+        refresh_poll_rounds: int = 10,
+        debug_capture: bool = False,
+        on_ocr_progress: Callable[[int, int], Awaitable[Any]] | None = None,
+        on_verification_done: Callable[[str], Awaitable[Any]] | None = None,
+        challenge_grace_s: float = 0.0,
+        challenge_poll_s: float = 2.0,
+        cloudflare_max_retries: int = 3,
+        on_challenge_grace: Callable[[str, float, float, int], Awaitable[Any]] | None = None,
     ) -> None:
         self.telemetry = telemetry
         self.payment = payment
@@ -220,6 +236,20 @@ class KKTIXAdapter(TicketingAdapter):
         )
         self.navigation_timeout_ms = navigation_timeout_ms
         self.screenshot = screenshot
+        self.ocr_max_retries = ocr_max_retries
+        self.ocr_expected_length = ocr_expected_length
+        self.refresh_poll_s = refresh_poll_s
+        self.refresh_poll_rounds = refresh_poll_rounds
+        self.debug_capture = debug_capture
+        self.on_ocr_progress = on_ocr_progress
+        self.on_verification_done = on_verification_done
+        # challenge_grace_s 預設 0.0 代表「不等、直接 fail-closed」，由呼叫端依設定開啟。
+        self.challenge_grace_s = challenge_grace_s
+        self.challenge_poll_s = challenge_poll_s
+        self.cloudflare_max_retries = cloudflare_max_retries
+        self.on_challenge_grace = on_challenge_grace
+        self._grace_rounds = 0
+        self._image_fingerprint: str | None = None
         self.last_ticket_decision: TicketDecision | None = None
         self.last_payment_result: PaymentResult | None = None
 
@@ -237,9 +267,19 @@ class KKTIXAdapter(TicketingAdapter):
         )
 
     async def _guard_cloudflare(self, page: Page, stage: str) -> None:
+        """偵測人機驗證挑戰。
+
+        **不繞過**：不合成點擊、不偽造輸入、不動指紋。唯一允許的動作是被動等待
+        Cloudflare 的自動挑戰自己跑完，然後重新讀一次頁面判讀。等不到就 fail-closed。
+        `challenge_grace_s <= 0` 時完全不等，行為與寬限功能加入前一致。
+        """
         marker = contains_cloudflare_challenge(await page_text(page))
         if marker is None:
             return
+        if self.challenge_grace_s > 0 and self._grace_rounds < self.cloudflare_max_retries:
+            marker = await self._wait_out_challenge(page, stage, marker)
+            if marker is None:
+                return
         if self.screenshot is not None:
             await self.screenshot(f"{CLOUDFLARE_MARK}_{stage}")
         error = CloudflareChallengeError(
@@ -247,6 +287,55 @@ class KKTIXAdapter(TicketingAdapter):
         )
         self.telemetry.record_error(CLOUDFLARE_MARK, error, stage=stage, marker=marker)
         raise error
+
+    async def _wait_out_challenge(
+        self, page: Page, stage: str, marker: str
+    ) -> str | None:
+        self._grace_rounds += 1
+        self.telemetry.record(
+            TimelineEventType.MARK,
+            "cloudflare_grace_started",
+            stage=stage,
+            marker=marker,
+            budget_s=self.challenge_grace_s,
+            round=self._grace_rounds,
+            max_rounds=self.cloudflare_max_retries,
+        )
+        loop = asyncio.get_running_loop()
+        start_time = loop.time()
+        deadline = start_time + self.challenge_grace_s
+        n = 0
+        while loop.time() < deadline:
+            await asyncio.sleep(self.challenge_poll_s)
+            n += 1
+            waited_s = loop.time() - start_time
+            if self.debug_capture and self.screenshot is not None:
+                await self.screenshot(f"cf_grace_{self._grace_rounds}_{n}")
+            current_marker = contains_cloudflare_challenge(await page_text(page))
+            if current_marker is None:
+                self.telemetry.record(
+                    TimelineEventType.MARK,
+                    "cloudflare_grace_cleared",
+                    stage=stage,
+                    waited_s=waited_s,
+                    round=self._grace_rounds,
+                )
+                return None
+            marker = current_marker
+            if self.on_challenge_grace is not None:
+                with contextlib.suppress(Exception):
+                    await self.on_challenge_grace(
+                        stage, waited_s, self.challenge_grace_s, self._grace_rounds
+                    )
+        waited_s = loop.time() - start_time
+        self.telemetry.record(
+            TimelineEventType.MARK,
+            "cloudflare_grace_timeout",
+            stage=stage,
+            waited_s=waited_s,
+            round=self._grace_rounds,
+        )
+        return marker
 
     @staticmethod
     async def _text_of(root: Any, selectors: str | Sequence[str]) -> str:
@@ -481,14 +570,12 @@ class KKTIXAdapter(TicketingAdapter):
         )
         # 場次清單是 Angular 後渲染的：`domcontentloaded` 當下 DOM 裡還沒有這些連結，
         # 不等就會把多場次活動誤判成單場次，然後停在買不了票的母活動頁上。
-        try:
+        with contextlib.suppress(Exception):
             await page.wait_for_selector(
                 EVENT_SESSION_LINKS,
                 timeout=self.navigation_timeout_ms,
                 state="attached",
             )
-        except Exception:
-            pass
 
         sessions = await self.list_sessions(page)
         if not sessions:
@@ -705,7 +792,7 @@ class KKTIXAdapter(TicketingAdapter):
                 try:
                     total += int(raw)
                 except ValueError:
-                    pass
+                    total += 0
         return total
 
     async def detect_page_state(self, page: Page) -> PageState:
@@ -1379,6 +1466,61 @@ class KKTIXAdapter(TicketingAdapter):
 
     # ---------------------------------------------------------------- 5. 驗證
 
+    def _fingerprint(self, data: bytes) -> str:
+        return f"{len(data)}:{hashlib.sha256(data).hexdigest()[:16]}"
+
+    async def _read_captcha_image(self, page: Page) -> bytes | None:
+        locator = await first_visible(
+            page,
+            CaptchaSelectors.IMAGE,
+            timeout_ms=self.probe_timeout_ms,
+            telemetry=self.telemetry,
+            field="captcha_image",
+        )
+        if locator is None:
+            return None
+        try:
+            data = await locator.screenshot()
+        except Exception:
+            self.telemetry.record(
+                TimelineEventType.MARK, "captcha_image_capture_failed"
+            )
+            return None
+        byte_data = bytes(data)
+        self._image_fingerprint = self._fingerprint(byte_data)
+        return byte_data
+
+    async def _refresh_captcha_image(
+        self, page: Page, container: Locator
+    ) -> bytes | None:
+        button = await self._locate(
+            container, CaptchaSelectors.REFRESH_BUTTON, "captcha_refresh"
+        )
+        if button is None:
+            return None
+        before = self._image_fingerprint
+        try:
+            await button.click()
+        except Exception as exc:
+            self.telemetry.record(
+                TimelineEventType.MARK, "captcha_refresh_failed", reason=str(exc)
+            )
+            return None
+        for _ in range(self.refresh_poll_rounds):
+            await asyncio.sleep(self.refresh_poll_s)
+            data = await self._read_captcha_image(page)
+            if data is not None and self._fingerprint(data) != before:
+                self.telemetry.record(TimelineEventType.MARK, "captcha_refreshed")
+                return data
+        self.telemetry.record(TimelineEventType.MARK, "captcha_refresh_no_change")
+        return None
+
+    def _is_plausible_answer(self, answer: str) -> bool:
+        s = answer.strip()
+        if not s or not s.isalnum() or not s.isascii():
+            return False
+        return self.ocr_expected_length is None or len(s) == self.ocr_expected_length
+
     async def detect_verification(self, page: Page) -> bool:
         """只偵測是否存在驗證題，不作答。
 
@@ -1389,16 +1531,34 @@ class KKTIXAdapter(TicketingAdapter):
         # 用短預算：驗證題跟聯絡人欄位同屬一張表單，而 fill_contact_form 已經等過
         # 表單渲染。到這裡 DOM 早就在了，驗證題存在就一定查得到；再等 5 秒
         # 只是在為「沒有驗證題」這个常態付費。
+        # 兩次探測平分預算，確保總探測預算不放大。
+        half_budget = max(1, self.probe_timeout_ms // 2)
         container = await first_visible(
             page,
             KKTIXSelectors.CAPTCHA_CONTAINER,
-            timeout_ms=self.probe_timeout_ms,
+            timeout_ms=half_budget,
             telemetry=self.telemetry,
             field="captcha_container",
         )
+        source: str | None = None
+        if container is not None:
+            source = "text"
+        else:
+            container = await first_visible(
+                page,
+                CaptchaSelectors.IMAGE_CONTAINER,
+                timeout_ms=self.probe_timeout_ms - half_budget,
+                telemetry=self.telemetry,
+                field="captcha_image_container",
+            )
+            if container is not None:
+                source = "image"
         present = container is not None
         self.telemetry.record(
-            TimelineEventType.MARK, "verification_probe", present=present
+            TimelineEventType.MARK,
+            "verification_probe",
+            present=present,
+            source=source,
         )
         return present
 
@@ -1407,6 +1567,10 @@ class KKTIXAdapter(TicketingAdapter):
         container = await self._locate(
             page, KKTIXSelectors.CAPTCHA_CONTAINER, "captcha_container"
         )
+        if container is None:
+            container = await self._locate(
+                page, CaptchaSelectors.IMAGE_CONTAINER, "captcha_image_container"
+            )
         if container is None:
             # 沒有驗證題是正常情況，不得誤報成失敗。
             self.telemetry.record(TimelineEventType.MARK, "verification_absent")
@@ -1417,27 +1581,98 @@ class KKTIXAdapter(TicketingAdapter):
             )
             return False
 
-        question = await self._text_of(page, KKTIXSelectors.CAPTCHA_QUESTION_TEXT)
-        result = await self.verification.solve(
-            VerificationChallenge(kind=ChallengeKind.TEXT_QUIZ, question=question)
-        )
-        self.telemetry.record(
-            TimelineEventType.MARK,
-            "verification_result",
-            provider=result.provider,
-            solved=result.solved,
-            detail=dict(result.detail),
-        )
-        if not result.solved or result.answer is None:
-            return False
-
         answer_input = await self._locate(
             page, KKTIXSelectors.CAPTCHA_INPUT, "captcha_input"
         )
         if answer_input is None:
             return False
-        await ng_fill(page, answer_input, result.answer)
-        return True
+
+        existing = (await read_input_value(answer_input)).strip()
+        if existing:
+            self.telemetry.record(
+                TimelineEventType.MARK,
+                "verification_manual_input_preserved",
+                length=len(existing),
+                source="page",
+            )
+            return True
+
+        question = await self._text_of(page, KKTIXSelectors.CAPTCHA_QUESTION_TEXT)
+        image_bytes = await self._read_captcha_image(page)
+
+        if image_bytes is None:
+            result = await self.verification.solve(
+                VerificationChallenge(kind=ChallengeKind.TEXT_QUIZ, question=question)
+            )
+            self.telemetry.record(
+                TimelineEventType.MARK,
+                "verification_result",
+                provider=result.provider,
+                solved=result.solved,
+                detail=dict(result.detail),
+            )
+            if not result.solved or result.answer is None:
+                return False
+            await ng_fill(page, answer_input, result.answer)
+            if self.on_verification_done is not None:
+                with contextlib.suppress(Exception):
+                    await self.on_verification_done(
+                        ChallengeKind.TEXT_QUIZ.value.lower()
+                    )
+            return True
+
+        attempts = 0
+        while attempts < self.ocr_max_retries:
+            attempts += 1
+            if self.on_ocr_progress is not None:
+                with contextlib.suppress(Exception):
+                    await self.on_ocr_progress(attempts, self.ocr_max_retries)
+            if self.debug_capture and self.screenshot is not None:
+                await self.screenshot(f"captcha_attempt_{attempts}")
+            result = await self.verification.solve(
+                VerificationChallenge(
+                    kind=ChallengeKind.IMAGE_CAPTCHA,
+                    question=question,
+                    image_bytes=image_bytes,
+                )
+            )
+            self.telemetry.record(
+                TimelineEventType.MARK,
+                "verification_result",
+                provider=result.provider,
+                solved=result.solved,
+                kind=ChallengeKind.IMAGE_CAPTCHA.value,
+                attempt=attempts,
+                detail=dict(result.detail),
+            )
+            if (
+                result.solved
+                and result.answer
+                and self._is_plausible_answer(result.answer)
+            ):
+                await ng_fill(page, answer_input, result.answer)
+                if self.on_verification_done is not None:
+                    with contextlib.suppress(Exception):
+                        await self.on_verification_done(
+                            ChallengeKind.IMAGE_CAPTCHA.value.lower()
+                        )
+                return True
+            if attempts >= self.ocr_max_retries:
+                break
+            refreshed = await self._refresh_captcha_image(page, container)
+            if refreshed is None:
+                self.telemetry.record(
+                    TimelineEventType.MARK,
+                    "captcha_refresh_unavailable",
+                    attempt=attempts,
+                )
+                break
+            image_bytes = refreshed
+
+        self.telemetry.record(
+            TimelineEventType.MARK, "ocr_retries_exhausted", attempts=attempts
+        )
+        return False
 
     # ---------------------------------------------------------------- 6. 付款
 

@@ -1,5 +1,8 @@
+# pyright: reportArgumentType=false
 from __future__ import annotations
 
+import asyncio
+from collections.abc import Sequence
 from typing import Any
 
 import pytest
@@ -36,6 +39,7 @@ from adapters.ticketing.kktix.dom import (
 )
 from adapters.ticketing.kktix.selectors import KKTIXSelectors
 from adapters.verification.base import (
+    ChallengeKind,
     VerificationChallenge,
     VerificationResult,
 )
@@ -53,13 +57,18 @@ CLOUDFLARE_HTML = "<html><body><h1>正在執行安全驗證</h1></body></html>"
 class StubVerification:
     name = "stub"
 
-    def __init__(self, result: VerificationResult) -> None:
-        self.result = result
+    def __init__(self, result: VerificationResult | Sequence[VerificationResult]) -> None:
+        if isinstance(result, VerificationResult):
+            self.results = [result]
+        else:
+            self.results = list(result)
         self.calls: list[VerificationChallenge] = []
 
     async def solve(self, challenge: VerificationChallenge) -> VerificationResult:
         self.calls.append(challenge)
-        return self.result
+        if len(self.results) > 1:
+            return self.results.pop(0)
+        return self.results[0]
 
 
 class StubPayment:
@@ -88,6 +97,7 @@ def make_adapter(
     verification: Any = None,
     attendees: tuple[AttendeeProfile, ...] = (),
     screenshot: Any = None,
+    **kwargs: Any,
 ) -> KKTIXAdapter:
     return KKTIXAdapter(
         telemetry=telemetry,
@@ -96,6 +106,7 @@ def make_adapter(
         attendees=attendees,
         timeout_ms=20,
         screenshot=screenshot,
+        **kwargs,
     )
 
 
@@ -1178,6 +1189,437 @@ async def test_handle_verification_reports_unsolved(
     page = FakePage.from_fixture("kktix_registration_order.html")
     assert await adapter.handle_verification(page) is False
     assert marks(telemetry, "verification_result")[0].detail["solved"] is False
+
+
+IMAGE_CAPTCHA_TEST_HTML = (
+    "<div class='custom-captcha-inner'>"
+    "<img id='cap1' src='captcha.png'>"
+    "<a id='ref_btn' ng-click='refreshCaptcha()'>換一張</a>"
+    "<input name='captcha_answer' value=''>"
+    "</div>"
+)
+
+
+async def test_handle_verification_preserves_manual_input(
+    telemetry: TimelineRecorder,
+) -> None:
+    html = (
+        "<div class='custom-captcha-inner'>"
+        "<input name='captcha_answer' value='USER99'>"
+        "</div>"
+    )
+    provider = StubVerification(VerificationResult(True, "ATA", "stub"))
+    adapter = make_adapter(telemetry, verification=provider)
+    page = FakePage(html)
+    assert await adapter.handle_verification(page) is True
+    assert provider.calls == []
+    assert not [f for f in page.fills if "captcha_answer" in f[0]]
+    preserved_marks = marks(telemetry, "verification_manual_input_preserved")
+    assert len(preserved_marks) == 1
+    assert preserved_marks[0].detail["length"] == 6
+    assert "USER99" not in str(preserved_marks[0].detail)
+
+
+async def test_handle_verification_overwrites_nothing_even_when_ocr_ready(
+    telemetry: TimelineRecorder,
+) -> None:
+    html = (
+        "<div class='custom-captcha-inner'>"
+        "<img id='cap' src='captcha.png'>"
+        "<input name='captcha_answer' value='USER99'>"
+        "</div>"
+    )
+    provider = StubVerification(VerificationResult(True, "OCR_ANS", "stub"))
+    adapter = make_adapter(telemetry, verification=provider)
+    page = FakePage(html)
+    assert await adapter.handle_verification(page) is True
+    assert provider.calls == []
+    assert not [f for f in page.fills if "captcha_answer" in f[0]]
+
+
+async def test_handle_verification_reads_image_and_marks_kind(
+    telemetry: TimelineRecorder,
+) -> None:
+    html = (
+        "<div class='custom-captcha-inner'>"
+        "<img id='cap' src='captcha.png'>"
+        "<input name='captcha_answer' value=''>"
+        "</div>"
+    )
+    provider = StubVerification(VerificationResult(True, "OCR1", "stub"))
+    adapter = make_adapter(telemetry, verification=provider)
+    page = FakePage(html)
+    assert await adapter.handle_verification(page) is True
+    assert len(provider.calls) == 1
+    call = provider.calls[0]
+    assert call.kind is ChallengeKind.IMAGE_CAPTCHA
+    assert call.image_bytes is not None and len(call.image_bytes) > 0
+
+
+async def test_handle_verification_falls_back_to_text_when_no_image(
+    telemetry: TimelineRecorder,
+) -> None:
+    provider = StubVerification(VerificationResult(True, "ATA", "stub"))
+    adapter = make_adapter(telemetry, verification=provider)
+    page = FakePage.from_fixture("kktix_registration_order.html")
+    assert await adapter.handle_verification(page) is True
+    assert len(provider.calls) == 1
+    assert provider.calls[0].kind is ChallengeKind.TEXT_QUIZ
+
+
+async def test_handle_verification_fills_ocr_answer(
+    telemetry: TimelineRecorder,
+) -> None:
+    html = (
+        "<div class='custom-captcha-inner'>"
+        "<img id='cap' src='captcha.png'>"
+        "<input name='captcha_answer' value=''>"
+        "</div>"
+    )
+    provider = StubVerification(VerificationResult(True, "OCR123", "stub"))
+    adapter = make_adapter(telemetry, verification=provider)
+    page = FakePage(html)
+    assert await adapter.handle_verification(page) is True
+    assert dict(page.fills)["input[name='captcha_answer']"] == "OCR123"
+
+
+async def test_image_capture_failure_degrades_to_text(
+    telemetry: TimelineRecorder, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    html = (
+        "<div class='custom-captcha-inner'>"
+        "<img id='cap' src='captcha.png'>"
+        "<input name='captcha_answer' value=''>"
+        "</div>"
+    )
+    from tests.fake_page import FakeLocator
+
+    async def _failing_screenshot(self, **kwargs: Any) -> bytes:
+        raise RuntimeError("screenshot failed")
+
+    monkeypatch.setattr(FakeLocator, "screenshot", _failing_screenshot)
+
+    provider = StubVerification(VerificationResult(True, "TEXT_ANS", "stub"))
+    adapter = make_adapter(telemetry, verification=provider)
+    page = FakePage(html)
+    assert await adapter.handle_verification(page) is True
+    assert len(provider.calls) == 1
+    assert provider.calls[0].kind is ChallengeKind.TEXT_QUIZ
+    assert marks(telemetry, "captcha_image_capture_failed")
+
+
+async def test_ocr_retries_by_refreshing_until_limit(
+    telemetry: TimelineRecorder,
+) -> None:
+    provider = StubVerification(VerificationResult(False, None, "stub"))
+    adapter = make_adapter(
+        telemetry,
+        verification=provider,
+        ocr_max_retries=5,
+        refresh_poll_s=0.01,
+        refresh_poll_rounds=2,
+    )
+    page = FakePage(IMAGE_CAPTCHA_TEST_HTML)
+    page.on_click("ref_btn", IMAGE_CAPTCHA_TEST_HTML.replace("cap1", "cap2"))
+    page.on_click("ref_btn", IMAGE_CAPTCHA_TEST_HTML.replace("cap1", "cap3"))
+    page.on_click("ref_btn", IMAGE_CAPTCHA_TEST_HTML.replace("cap1", "cap4"))
+    page.on_click("ref_btn", IMAGE_CAPTCHA_TEST_HTML.replace("cap1", "cap5"))
+
+    assert await adapter.handle_verification(page) is False
+    assert len(provider.calls) == 5
+    assert len(page.clicks) == 4
+    bytes_set = {c.image_bytes for c in provider.calls}
+    assert len(bytes_set) == 5
+    exhausted_marks = marks(telemetry, "ocr_retries_exhausted")
+    assert len(exhausted_marks) == 1
+    assert exhausted_marks[0].detail["attempts"] == 5
+
+
+async def test_ocr_stops_retrying_once_solved(
+    telemetry: TimelineRecorder,
+) -> None:
+    results = [
+        VerificationResult(False, None, "stub"),
+        VerificationResult(False, None, "stub"),
+        VerificationResult(True, "WIN3", "stub"),
+    ]
+    provider = StubVerification(results)
+    adapter = make_adapter(
+        telemetry,
+        verification=provider,
+        ocr_max_retries=5,
+        refresh_poll_s=0.01,
+        refresh_poll_rounds=2,
+    )
+    page = FakePage(IMAGE_CAPTCHA_TEST_HTML)
+    page.on_click("ref_btn", IMAGE_CAPTCHA_TEST_HTML.replace("cap1", "cap2"))
+    page.on_click("ref_btn", IMAGE_CAPTCHA_TEST_HTML.replace("cap1", "cap3"))
+
+    assert await adapter.handle_verification(page) is True
+    assert len(provider.calls) == 3
+    assert len(page.clicks) == 2
+
+
+async def test_ocr_retries_on_invalid_characters(
+    telemetry: TimelineRecorder,
+) -> None:
+    results = [
+        VerificationResult(True, "a b!", "stub"),
+        VerificationResult(True, "GOOD1", "stub"),
+    ]
+    provider = StubVerification(results)
+    adapter = make_adapter(
+        telemetry,
+        verification=provider,
+        ocr_max_retries=3,
+        refresh_poll_s=0.01,
+        refresh_poll_rounds=2,
+    )
+    page = FakePage(IMAGE_CAPTCHA_TEST_HTML)
+    page.on_click("ref_btn", IMAGE_CAPTCHA_TEST_HTML.replace("cap1", "cap2"))
+
+    assert await adapter.handle_verification(page) is True
+    assert len(provider.calls) == 2
+    assert len(page.clicks) == 1
+
+
+async def test_ocr_retries_on_wrong_length(
+    telemetry: TimelineRecorder,
+) -> None:
+    results = [
+        VerificationResult(True, "AB", "stub"),
+        VerificationResult(True, "AB12", "stub"),
+    ]
+    provider = StubVerification(results)
+    adapter = make_adapter(
+        telemetry,
+        verification=provider,
+        ocr_max_retries=3,
+        ocr_expected_length=4,
+        refresh_poll_s=0.01,
+        refresh_poll_rounds=2,
+    )
+    page = FakePage(IMAGE_CAPTCHA_TEST_HTML)
+    page.on_click("ref_btn", IMAGE_CAPTCHA_TEST_HTML.replace("cap1", "cap2"))
+
+    assert await adapter.handle_verification(page) is True
+    assert len(provider.calls) == 2
+    assert dict(page.fills)["input[name='captcha_answer']"] == "AB12"
+
+
+async def test_refresh_stops_when_image_unchanged(
+    telemetry: TimelineRecorder,
+) -> None:
+    provider = StubVerification(VerificationResult(False, None, "stub"))
+    adapter = make_adapter(
+        telemetry,
+        verification=provider,
+        ocr_max_retries=5,
+        refresh_poll_s=0.01,
+        refresh_poll_rounds=2,
+    )
+    page = FakePage(IMAGE_CAPTCHA_TEST_HTML)
+    assert await adapter.handle_verification(page) is False
+    assert len(page.clicks) == 1
+    assert len(provider.calls) == 1
+    assert marks(telemetry, "captcha_refresh_no_change")
+
+
+async def test_refresh_button_is_scoped_to_the_captcha_container(
+    telemetry: TimelineRecorder,
+) -> None:
+    html = (
+        "<div>"
+        "<a id='outer_refresh' ng-click='refreshOuter()'>外面刷新</a>"
+        "<div class='custom-captcha-inner'>"
+        "<img id='cap1' src='captcha.png'>"
+        "<a id='inner_refresh' ng-click='refreshInner()'>裡面刷新</a>"
+        "<input name='captcha_answer' value=''>"
+        "</div>"
+        "</div>"
+    )
+    results = [
+        VerificationResult(False, None, "stub"),
+        VerificationResult(True, "OK", "stub"),
+    ]
+    provider = StubVerification(results)
+    adapter = make_adapter(
+        telemetry,
+        verification=provider,
+        ocr_max_retries=3,
+        refresh_poll_s=0.01,
+        refresh_poll_rounds=2,
+    )
+    page = FakePage(html)
+    page.on_click("inner_refresh", html.replace("cap1", "cap2"))
+
+    assert await adapter.handle_verification(page) is True
+    assert len(page.clicks) == 1
+    clicked = page.clicked_elements[0]
+    assert clicked.get("id") == "inner_refresh"
+
+
+async def test_refresh_unavailable_breaks_the_loop(
+    telemetry: TimelineRecorder,
+) -> None:
+    html = (
+        "<div class='custom-captcha-inner'>"
+        "<canvas id='cap_canvas'></canvas>"
+        "<input name='captcha_answer' value=''>"
+        "</div>"
+    )
+    provider = StubVerification(VerificationResult(False, None, "stub"))
+    adapter = make_adapter(
+        telemetry,
+        verification=provider,
+        ocr_max_retries=5,
+        refresh_poll_s=0.01,
+        refresh_poll_rounds=2,
+    )
+    page = FakePage(html)
+    assert await adapter.handle_verification(page) is False
+    assert len(provider.calls) == 1
+    assert marks(telemetry, "captcha_refresh_unavailable")
+
+
+async def test_detect_verification_finds_image_only_container(
+    telemetry: TimelineRecorder,
+) -> None:
+    html = (
+        "<div ng-if='captcha'>"
+        "<img src='captcha.png'>"
+        "<input name='captcha_answer'>"
+        "</div>"
+    )
+    adapter = make_adapter(telemetry)
+    page = FakePage(html)
+    assert await adapter.detect_verification(page) is True
+    probe_marks = marks(telemetry, "verification_probe")
+    assert probe_marks[0].detail["present"] is True
+    waited = [t for _, t in page.wait_timeouts if t is not None]
+    assert sum(waited) <= adapter.probe_timeout_ms
+
+
+async def test_default_adapter_does_not_retry(
+    telemetry: TimelineRecorder,
+) -> None:
+    provider = StubVerification(VerificationResult(False, None, "stub"))
+    adapter = make_adapter(telemetry, verification=provider)
+    page = FakePage(IMAGE_CAPTCHA_TEST_HTML)
+    assert await adapter.handle_verification(page) is False
+    assert len(provider.calls) == 1
+
+
+async def test_guard_cloudflare_still_fails_fast_by_default(
+    telemetry: TimelineRecorder,
+) -> None:
+    adapter = make_adapter(telemetry)
+    page = FakePage(CLOUDFLARE_HTML)
+    with pytest.raises(CloudflareChallengeError):
+        await adapter._guard_cloudflare(page, "stage1")
+    assert not [e for e in telemetry.events() if "cloudflare_grace" in e.name]
+
+
+async def test_guard_cloudflare_waits_and_resumes(
+    telemetry: TimelineRecorder, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    adapter = make_adapter(
+        telemetry, challenge_grace_s=5.0, challenge_poll_s=0.01
+    )
+    contents = [CLOUDFLARE_HTML, "<html><body><h1>正常頁面</h1></body></html>"]
+
+    async def _mock_content() -> str:
+        return contents.pop(0) if contents else "<html><body><h1>正常頁面</h1></body></html>"
+
+    page = FakePage(CLOUDFLARE_HTML)
+    monkeypatch.setattr(page, "content", _mock_content)
+
+    await adapter._guard_cloudflare(page, "stage2")
+    assert marks(telemetry, "cloudflare_grace_started")
+    assert marks(telemetry, "cloudflare_grace_cleared")
+
+
+async def test_guard_cloudflare_times_out_into_fail_closed(
+    telemetry: TimelineRecorder,
+) -> None:
+    screenshots: list[str] = []
+
+    async def _mock_screenshot(name: str) -> None:
+        screenshots.append(name)
+
+    adapter = make_adapter(
+        telemetry,
+        challenge_grace_s=0.02,
+        challenge_poll_s=0.01,
+        screenshot=_mock_screenshot,
+    )
+    page = FakePage(CLOUDFLARE_HTML)
+    with pytest.raises(CloudflareChallengeError):
+        await adapter._guard_cloudflare(page, "stage3")
+    assert marks(telemetry, "cloudflare_grace_timeout")
+    assert any("cloudflare_challenge_stage3" in s for s in screenshots)
+
+
+async def test_grace_rounds_are_capped(
+    telemetry: TimelineRecorder,
+) -> None:
+    adapter = make_adapter(
+        telemetry,
+        challenge_grace_s=0.02,
+        challenge_poll_s=0.01,
+        cloudflare_max_retries=2,
+    )
+    page = FakePage(CLOUDFLARE_HTML)
+    with pytest.raises(CloudflareChallengeError):
+        await adapter._guard_cloudflare(page, "round1")
+    with pytest.raises(CloudflareChallengeError):
+        await adapter._guard_cloudflare(page, "round2")
+    with pytest.raises(CloudflareChallengeError):
+        await adapter._guard_cloudflare(page, "round3")
+
+    started = marks(telemetry, "cloudflare_grace_started")
+    assert len(started) == 2
+    assert [s.detail["stage"] for s in started] == ["round1", "round2"]
+
+
+async def test_grace_never_interacts_with_the_page(
+    telemetry: TimelineRecorder, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    adapter = make_adapter(
+        telemetry, challenge_grace_s=0.03, challenge_poll_s=0.01
+    )
+    contents = [CLOUDFLARE_HTML, CLOUDFLARE_HTML, "<html><body>正常</body></html>"]
+
+    async def _mock_content() -> str:
+        return contents.pop(0) if contents else "<html><body>正常</body></html>"
+
+    page = FakePage(CLOUDFLARE_HTML)
+    monkeypatch.setattr(page, "content", _mock_content)
+
+    await adapter._guard_cloudflare(page, "stage_clean")
+    assert page.clicks == []
+    assert page.fills == []
+    assert page.goto_urls == []
+
+
+async def test_grace_poll_interval_is_respected(
+    telemetry: TimelineRecorder, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sleeps: list[float] = []
+
+    async def _mock_sleep(s: float) -> None:
+        sleeps.append(s)
+
+    monkeypatch.setattr(asyncio, "sleep", _mock_sleep)
+
+    adapter = make_adapter(
+        telemetry, challenge_grace_s=0.05, challenge_poll_s=0.02
+    )
+    page = FakePage(CLOUDFLARE_HTML)
+    with pytest.raises(CloudflareChallengeError):
+        await adapter._guard_cloudflare(page, "poll_test")
+    assert sleeps
+    assert all(s == 0.02 for s in sleeps)
 
 
 # -------------------------------------------------------------------- 付款
