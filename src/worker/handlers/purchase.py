@@ -7,7 +7,9 @@ from typing import Any
 
 from adapters.payment import select_payment_provider
 from adapters.ticketing.kktix.adapter import KKTIXAdapter
+from adapters.verification.ddddocr_provider import DdddOcrProvider
 from adapters.verification.manual import ManualVerificationProvider
+from adapters.verification.routing import RoutingVerificationProvider
 from adapters.verification.rule_based import RuleBasedVerificationProvider
 from api.schemas.ws import ServerMessageType
 from broker.broker import SqliteTaskBroker
@@ -28,7 +30,8 @@ from ..spec_codec import rehydrate_spec
 from ..telemetry_bridge import ClockTicker, StreamingTimelineRecorder
 
 GATE_HINTS = {
-    "CHALLENGE": "瀏覽器裡出現人機驗證，請自行通過（本程式不會代為繞過）",
+    "CHALLENGE": "自動處理失敗，請在 Chrome 完成驗證（本程式不會代為繞過）",
+    "VERIFICATION": "已自動填入辨識結果，請在瀏覽器確認後自行送出",
     "LOGIN": "被導到登入頁，請在瀏覽器裡自行登入",
     "EVENT": "目前停在活動主頁，請自行點進購票登記頁",
     "ORDER": "目前停在訂單頁，請確認是不是拿錯網址",
@@ -89,8 +92,11 @@ async def execute_purchase(
         cdp_page_url=spec.event_url if borrowed else None,
     )
 
+    grace_s = settings.challenge_grace_s if spec.auto_cloudflare else 0.0
+    ocr_on = settings.ocr_enabled and spec.auto_ocr
+
     if spec.verification_rules:
-        verification: Any = RuleBasedVerificationProvider(
+        text_provider: Any = RuleBasedVerificationProvider(
             spec.verification_rules, telemetry=telemetry
         )
     else:
@@ -109,9 +115,16 @@ async def execute_purchase(
             )
             return ""
 
-        verification = ManualVerificationProvider(
+        text_provider = ManualVerificationProvider(
             prompt_for_answer, telemetry=telemetry
         )
+
+    image_provider = (
+        DdddOcrProvider(telemetry=telemetry, model_path=spec.ocr_model_path)
+        if ocr_on
+        else None
+    )
+    verification = RoutingVerificationProvider(text=text_provider, image=image_provider)
 
     # adapter 由後端允許清單依執行模式決定；spec 內的欄位不是 adapter 名稱。
     payment = select_payment_provider(
@@ -131,11 +144,62 @@ async def execute_purchase(
         ephemeral=False,
     )
 
+    async def announce_challenge_grace(
+        kind: str, elapsed_s: float, budget_s: float, round_no: int
+    ) -> None:
+        outbox.publish(
+            task_id=task_id,
+            experiment_id=experiment_id,
+            type=ServerMessageType.TASK_LOG.value,
+            payload={
+                "phase": "cloudflare_grace",
+                "page_kind": kind,
+                "elapsed_s": round(elapsed_s, 1),
+                "budget_s": budget_s,
+                "round": round_no,
+                "max_rounds": spec.cloudflare_max_retries,
+            },
+            ephemeral=True,
+        )
+
+    async def announce_ocr_progress(attempt: int, max_retries: int) -> None:
+        outbox.publish(
+            task_id=task_id,
+            experiment_id=experiment_id,
+            type=ServerMessageType.TASK_LOG.value,
+            payload={
+                "phase": "ocr_processing",
+                "attempt": attempt,
+                "max_retries": max_retries,
+            },
+            ephemeral=True,
+        )
+
+    async def announce_verification_done(kind: str) -> None:
+        outbox.publish(
+            task_id=task_id,
+            experiment_id=experiment_id,
+            type=ServerMessageType.TASK_LOG.value,
+            payload={
+                "phase": "verification_completed",
+                "kind": kind,
+            },
+            ephemeral=False,
+        )
+
     adapter = KKTIXAdapter(
         telemetry=telemetry,
         payment=payment,
         verification=verification,
         attendees=spec.attendees,
+        challenge_grace_s=grace_s,
+        challenge_poll_s=settings.challenge_poll_s,
+        cloudflare_max_retries=spec.cloudflare_max_retries,
+        ocr_max_retries=spec.ocr_max_retries,
+        debug_capture=spec.debug_screenshots_and_logs,
+        on_challenge_grace=announce_challenge_grace,
+        on_ocr_progress=announce_ocr_progress,
+        on_verification_done=announce_verification_done,
     )
 
     control_state = ControlState()
@@ -175,6 +239,11 @@ async def execute_purchase(
         attended=borrowed or not settings.headless,
         # Playwright 自帶的瀏覽器過不了 Cloudflare，開視窗也一樣；只有借用模式可以。
         can_clear_bot_check=borrowed,
+        challenge_grace_s=grace_s,
+        challenge_poll_s=settings.challenge_poll_s,
+        cloudflare_max_retries=spec.cloudflare_max_retries,
+        auto_submit_verification=spec.auto_submit_verification,
+        challenge_gate=announce_challenge_grace,
     )
 
     ticker = ClockTicker(

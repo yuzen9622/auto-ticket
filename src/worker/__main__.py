@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import argparse
-import os
 import asyncio
+import os
 from pathlib import Path
 
 from broker.broker import SqliteTaskBroker
@@ -63,6 +63,18 @@ def parse_args(args: list[str] | None = None) -> argparse.Namespace:
             "先以 --remote-debugging-port=9222 啟動你的 Chrome，再把端點給這裡"
         ),
     )
+    parser.add_argument(
+        "--challenge-grace-s",
+        type=float,
+        default=45.0,
+        help="Cloudflare 挑戰被動寬限秒數（預設 45 秒）",
+    )
+    parser.add_argument(
+        "--ocr",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="啟用或停用圖片驗證碼 OCR（預設 --ocr 啟用）",
+    )
     return parser.parse_args(args)
 
 
@@ -76,6 +88,8 @@ async def amain(args: argparse.Namespace) -> None:
         clock_tick_hz=args.clock_tick_hz,
         screenshot_dir=Path(args.screenshot_dir),
         cdp_endpoint=args.cdp_endpoint,
+        challenge_grace_s=args.challenge_grace_s,
+        ocr_enabled=bool(args.ocr),
     )
     settings.screenshot_dir.mkdir(parents=True, exist_ok=True)
     settings.db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -97,6 +111,9 @@ async def amain(args: argparse.Namespace) -> None:
     print(f"    - 運行模式  : {mode_str}")
     print(f"    - 資料庫    : {settings.db_path}")
     print(f"    - Profile   : {settings.profile}")
+    ocr_str = "啟用" if settings.ocr_enabled else "停用"
+    print(f"    - 驗證碼 OCR : {ocr_str}")
+    print(f"    - 挑戰寬限  : {settings.challenge_grace_s} 秒")
     print("[*] 正在監聽任務隊列中...（建立並觸發任務後，瀏覽器才會開啟）")
     print("=" * 60)
 

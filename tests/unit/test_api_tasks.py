@@ -180,7 +180,7 @@ async def test_create_task_invalid_preference(app_instance) -> None:
 
 
 async def test_task_start_and_cancel(app_instance) -> None:
-    app, broker = app_instance
+    app, _broker = app_instance
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app),
         base_url="http://test",
@@ -351,3 +351,49 @@ async def test_delete_is_idempotent_only_once(app_instance) -> None:
         task_id = await _create_task(client)
         assert (await client.delete(f"/api/v1/tasks/{task_id}")).status_code == 204
         assert (await client.delete(f"/api/v1/tasks/{task_id}")).status_code == 404
+
+
+async def test_create_task_defaults_the_automation_fields(app_instance) -> None:
+    app, _ = app_instance
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://test",
+    ) as client:
+        resp = await client.post("/api/v1/tasks", json=VALID_TASK_PAYLOAD)
+        assert resp.status_code == 201
+        spec = resp.json()["spec"]
+        assert spec["auto_cloudflare"] is True
+        assert spec["auto_ocr"] is True
+        assert spec["auto_submit_verification"] is True
+        assert spec["ocr_model_path"] is None
+        assert spec["ocr_max_retries"] == 5
+        assert spec["cloudflare_max_retries"] == 3
+        assert spec["debug_screenshots_and_logs"] is False
+
+
+async def test_create_task_passes_through_the_automation_fields(app_instance) -> None:
+    app, _ = app_instance
+    custom_payload = dict(
+        VALID_TASK_PAYLOAD,
+        auto_cloudflare=False,
+        auto_ocr=False,
+        auto_submit_verification=False,
+        ocr_model_path="/custom/model.onnx",
+        ocr_max_retries=8,
+        cloudflare_max_retries=1,
+        debug_screenshots_and_logs=True,
+    )
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://test",
+    ) as client:
+        resp = await client.post("/api/v1/tasks", json=custom_payload)
+        assert resp.status_code == 201
+        spec = resp.json()["spec"]
+        assert spec["auto_cloudflare"] is False
+        assert spec["auto_ocr"] is False
+        assert spec["auto_submit_verification"] is False
+        assert spec["ocr_model_path"] == "/custom/model.onnx"
+        assert spec["ocr_max_retries"] == 8
+        assert spec["cloudflare_max_retries"] == 1
+        assert spec["debug_screenshots_and_logs"] is True

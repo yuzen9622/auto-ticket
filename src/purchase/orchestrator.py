@@ -7,11 +7,11 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timezone
 import os
 import sys
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any
@@ -155,6 +155,11 @@ class PurchaseOrchestrator:
         attended: bool = True,
         can_clear_bot_check: bool = True,
         unattended_gate_grace_s: float = 20.0,
+        challenge_grace_s: float = 0.0,
+        challenge_poll_s: float = 2.0,
+        cloudflare_max_retries: int = 3,
+        auto_submit_verification: bool = True,
+        challenge_gate: Callable[[str, float, float, int], Awaitable[None]] | None = None,
         gate_must_finish_before_sale_s: float = 60.0,
         race_loop_timeout_s: float = 120.0,
         queue_poll_s: float = 0.5,
@@ -195,6 +200,11 @@ class PurchaseOrchestrator:
         self.attended = attended
         self.can_clear_bot_check = can_clear_bot_check
         self.unattended_gate_grace_s = unattended_gate_grace_s
+        self.challenge_grace_s = challenge_grace_s
+        self.challenge_poll_s = challenge_poll_s
+        self.cloudflare_max_retries = cloudflare_max_retries
+        self.auto_submit_verification = auto_submit_verification
+        self.challenge_gate = challenge_gate
         # 就緒閘門必須在開賣前收工。等人等過頭等於帶著「還在確認」的狀態撞進開賣，
         # 而開賣瞬間的每一毫秒都用來搶票，不是用來檢查頁面。
         self.gate_must_finish_before_sale_s = gate_must_finish_before_sale_s
@@ -358,6 +368,8 @@ class PurchaseOrchestrator:
         # 真的需要人（登入、人機驗證）時下面會把它拉到現在，不受安靜期拘束。
         announce_at = self._loop_time() + self.session_gate_poll_s
         announced = False
+        challenge_seen_at: float | None = None
+        challenge_rounds = 0
         kind = await self.adapter.probe_page(page, self.spec.event_url)
         attempt = 1
         while True:
@@ -368,6 +380,14 @@ class PurchaseOrchestrator:
                 attempt=attempt,
             )
             if kind is KKTIXPageKind.REGISTRATION:
+                if challenge_seen_at is not None:
+                    self.telemetry.record(
+                        TimelineEventType.MARK,
+                        "challenge_grace_cleared",
+                        waited_s=self._loop_time() - challenge_seen_at,
+                        round=challenge_rounds,
+                    )
+                    challenge_seen_at = None
                 self._rt.session_ready_url = self._page_url(page)
                 self.telemetry.record(
                     TimelineEventType.MARK, "session_ready", attempts=attempt
@@ -405,15 +425,64 @@ class PurchaseOrchestrator:
             # 但「再讀一次已經載好的 DOM」不會碰到對方站台，所以間隔要看**在等什麼**：
             # 等人去點東西就隔久一點，等 Angular 把登記頁編譯完就該馬上再看一次。
             needs_human = self._needs_a_human(kind)
-            if needs_human and not announced:
+            in_grace = False
+            if kind is KKTIXPageKind.CHALLENGE and self.challenge_grace_s > 0:
+                if challenge_seen_at is None:
+                    challenge_seen_at = self._loop_time()
+                    challenge_rounds += 1
+                    self.telemetry.record(
+                        TimelineEventType.MARK,
+                        "challenge_grace_started",
+                        budget_s=self.challenge_grace_s,
+                        attempt=attempt,
+                        round=challenge_rounds,
+                        max_rounds=self.cloudflare_max_retries,
+                    )
+                waited = self._loop_time() - challenge_seen_at
+                in_grace = (
+                    waited < self.challenge_grace_s
+                    and challenge_rounds <= self.cloudflare_max_retries
+                )
+                if in_grace and self.challenge_gate is not None:
+                    await self.challenge_gate(
+                        "CHALLENGE", waited, self.challenge_grace_s, challenge_rounds
+                    )
+                if not in_grace and not announced:
+                    self.telemetry.record(
+                        TimelineEventType.MARK,
+                        "challenge_grace_timeout",
+                        waited_s=waited,
+                        attempt=attempt,
+                        round=challenge_rounds,
+                    )
+            elif kind is not KKTIXPageKind.CHALLENGE and challenge_seen_at is not None:
+                self.telemetry.record(
+                    TimelineEventType.MARK,
+                    "challenge_grace_cleared",
+                    waited_s=self._loop_time() - challenge_seen_at,
+                    round=challenge_rounds,
+                )
+                challenge_seen_at = None
+
+            if needs_human and not announced and not in_grace:
                 # 真的要等人動手，立刻喊，不用等安靜期過完。
                 announce_at = self._loop_time()
-            if self.session_gate is not None and self._loop_time() >= announce_at:
+            if (
+                self.session_gate is not None
+                and not in_grace
+                and self._loop_time() >= announce_at
+            ):
                 await self.session_gate(str(getattr(kind, "value", kind)), attempt)
                 announced = True
                 announce_at = self._loop_time() + self.session_gate_poll_s
             await asyncio.sleep(
-                self.session_gate_poll_s if needs_human else self.session_render_poll_s
+                self.challenge_poll_s
+                if in_grace
+                else (
+                    self.session_gate_poll_s
+                    if needs_human
+                    else self.session_render_poll_s
+                )
             )
             kind = await self.adapter.probe_page(page)
             attempt += 1
@@ -440,7 +509,7 @@ class PurchaseOrchestrator:
         if self.spec.start_timing is StartTiming.IMMEDIATE:
             return None
         remaining_to_sale = (
-            self.spec.sale_start_at - datetime.now(timezone.utc)
+            self.spec.sale_start_at - datetime.now(UTC)
         ).total_seconds()
         if remaining_to_sale <= 0:
             return None
@@ -694,7 +763,10 @@ class PurchaseOrchestrator:
         fsm.set_requires_verification(requires)
         self._send(EVENT_FORM_SUBMITTED)
         if requires:
-            await self._resolve_verification(page)
+            should_submit = await self._resolve_verification(page)
+            if not should_submit:
+                await self._await_manual_submit(page)
+                return
         if not await self.adapter.submit_order(page):
             raise PurchaseStepError("submit_order", "confirm button unavailable")
         # 訂單已成立：之後任何「看起來還在填表」的判讀都是漸進渲染造成的假象。
@@ -732,6 +804,9 @@ class PurchaseOrchestrator:
         if not bool(await self.adapter.handle_verification(page)):
             raise PurchaseStepError("handle_verification", "re-answer failed")
         self._send(EVENT_VERIFICATION_PASSED)
+        if not self.auto_submit_verification:
+            await self._await_manual_submit(page)
+            return
         if not await self.adapter.submit_order(page):
             raise PurchaseStepError("submit_order", "confirm button unavailable")
         # 訂單已成立：之後任何「看起來還在填表」的判讀都是漸進渲染造成的假象。
@@ -827,7 +902,7 @@ class PurchaseOrchestrator:
             raise PurchaseStepError("payment", "FSM in terminal state")
         await self._run_payment(page)
 
-    async def _resolve_verification(self, page: Any) -> None:
+    async def _resolve_verification(self, page: Any) -> bool:
         fsm = self.fsm
         assert fsm is not None
         while True:
@@ -835,9 +910,22 @@ class PurchaseOrchestrator:
             event = verification_event_for(solved, fsm.can_retry_verification())
             self._send(event)
             if event == EVENT_VERIFICATION_PASSED:
-                return
+                return self.auto_submit_verification
             if fsm.current_state_id != "VERIFICATION_REQUIRED":
                 raise PurchaseStepError("handle_verification", "verification exhausted")
+
+    async def _await_manual_submit(self, page: Any) -> None:
+        if self.session_gate is not None:
+            await self.session_gate("VERIFICATION", 1)
+        deadline = self._loop_time() + self.session_gate_timeout_s
+        while self._loop_time() < deadline:
+            await asyncio.sleep(self.session_gate_poll_s)
+            requires = bool(await self.adapter.detect_verification(page))
+            if not requires:
+                self._rt.order_submitted = True
+                self._rt.form_submitted = True
+                return
+        raise PurchaseStepError("submit_order", "manual submit timed out")
 
     async def _run_payment(self, page: Any) -> None:
         self._send(EVENT_SUBMIT_PAYMENT)

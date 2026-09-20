@@ -73,7 +73,7 @@ class AttendeeProfile(DomainBaseModel):
 class VerificationRule(DomainBaseModel):
     """文字問答題的一條作答規則。
 
-    只處理主辦自訂的**文字**問答題；本專案不辨識任何圖形驗證碼。
+    本規則只作用於主辦自訂的**文字**問答題。圖形驗證碼不走規則比對，改由 OCR provider 辨識（見 adapters/verification/ddddocr_provider.py）。
     `is_regex` 為 False 時 `pattern` 以子字串比對題幹（不分大小寫）。
     """
 
@@ -112,6 +112,27 @@ class PurchaseTaskSpec(DomainBaseModel):
 
     母活動的登記頁沒有票種，不先選場次就永遠看不到票。留空時只有單場次活動能繼續，
     多場次會 fail-closed——買錯場次不可逆，不替使用者猜。"""
+
+    # --- 自動化行為（一般設定）。舊 payload 沒有這些欄位時一律取預設值。 ---
+    auto_cloudflare: bool = True
+    """偵測到 Cloudflare 人機驗證時，先安靜等一段有上限的寬限期讓它自己過。
+
+    關閉時維持「一偵測到就交還給人」的舊行為。本系統在任何情況下都不繞過 Cloudflare。"""
+    auto_ocr: bool = True
+    """圖片驗證碼交給 OCR 辨識。關閉時圖片題直接回報未解出，走人工路徑。"""
+    auto_submit_verification: bool = True
+    """辨識完成後自動送出。關閉時仍會把答案填好，但送出那一下由使用者自己按。"""
+
+    # --- 進階設定 ---
+    ocr_model_path: str | None = None
+    """自訂 OCR 模型（.onnx）路徑；留空用內建模型。路徑無效時退回內建模型，不讓任務因此失敗。"""
+    ocr_max_retries: int = Field(default=5, ge=1, le=20)
+    """單次作答內「辨識 → 點刷新換圖 → 再辨識」的最大次數。與 FSM 的 max_retries 是兩回事：
+    後者算的是送出後被判定答錯的重答次數。"""
+    cloudflare_max_retries: int = Field(default=3, ge=0, le=20)
+    """允許開啟幾次被動寬限窗；每次窗內會重複 probe 頁面直到通過或該次逾時。用罄後立即 fail-closed。"""
+    debug_screenshots_and_logs: bool = False
+    """每次 OCR 嘗試與每輪寬限 probe 額外截圖並記錄；排查用，平時關閉以免拖慢開賣瞬間。"""
 
     @model_validator(mode="after")
     def _require_payment_profile(self) -> PurchaseTaskSpec:

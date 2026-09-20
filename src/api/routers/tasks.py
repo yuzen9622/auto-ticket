@@ -1,3 +1,4 @@
+# ruff: noqa: B008
 from __future__ import annotations
 
 import uuid
@@ -101,6 +102,13 @@ async def create_task(
         auto_login=req.auto_login,
         qualification_code=req.qualification_code,
         session_preference=req.session_preference,
+        auto_cloudflare=req.auto_cloudflare,
+        auto_ocr=req.auto_ocr,
+        auto_submit_verification=req.auto_submit_verification,
+        ocr_model_path=req.ocr_model_path,
+        ocr_max_retries=req.ocr_max_retries,
+        cloudflare_max_retries=req.cloudflare_max_retries,
+        debug_screenshots_and_logs=req.debug_screenshots_and_logs,
     )
 
     event_id: str | None = None

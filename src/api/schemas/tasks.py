@@ -34,6 +34,13 @@ class CreateTaskRequest(BaseModel):
     auto_login: bool = False
     qualification_code: str | None = None
     session_preference: str | None = None
+    auto_cloudflare: bool = True
+    auto_ocr: bool = True
+    auto_submit_verification: bool = True
+    ocr_model_path: str | None = None
+    ocr_max_retries: int = Field(default=5, ge=1, le=20)
+    cloudflare_max_retries: int = Field(default=3, ge=0, le=20)
+    debug_screenshots_and_logs: bool = False
     profile: str = Field(default="live")
 
 

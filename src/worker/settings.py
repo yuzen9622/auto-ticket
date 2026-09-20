@@ -15,6 +15,8 @@ ENV_DB_PATH = "AUTO_TICKET_DB_PATH"
 ENV_SCREENSHOT_DIR = "AUTO_TICKET_SCREENSHOT_DIR"
 ENV_VAULT_ROOT = "AUTO_TICKET_VAULT_ROOT"
 ENV_CDP_ENDPOINT = "AUTO_TICKET_CDP_ENDPOINT"
+ENV_CHALLENGE_GRACE_S = "AUTO_TICKET_CHALLENGE_GRACE_S"
+ENV_OCR_ENABLED = "AUTO_TICKET_OCR_ENABLED"
 
 
 def default_worker_id() -> str:
@@ -42,6 +44,12 @@ class WorkerSettings:
     manual_login_notice_s: float = 5.0
     # 人機驗證要真人去點，240 秒常常不夠他發現通知再走到瀏覽器前面。
     session_gate_timeout_s: float = 600.0
+    # Cloudflare 的自動挑戰多半數秒內自己會過。先安靜等一段有上限的寬限期，
+    # 期滿仍在才喊人——一偵測到就發通知會把「系統自己能處理」的情況也丟給使用者。
+    challenge_grace_s: float = 45.0
+    challenge_poll_s: float = 2.0
+    # OCR 總開關。模型載不起來、平台不支援這類環境層問題，不該要使用者逐一改任務設定。
+    ocr_enabled: bool = True
     # 借用使用者自己的 Chrome（`http://127.0.0.1:9222`）。KKTIX 的 Cloudflare 擋
     # Playwright 自帶的瀏覽器，開視窗也沒用，只有借用模式過得去。
     cdp_endpoint: str | None = None
@@ -59,6 +67,19 @@ class WorkerSettings:
     @classmethod
     def from_env(cls, environ: Mapping[str, str] | None = None) -> WorkerSettings:
         source = os.environ if environ is None else environ
+        grace_raw = source.get(ENV_CHALLENGE_GRACE_S)
+        grace_s = 45.0
+        if grace_raw is not None:
+            try:
+                grace_s = float(grace_raw)
+            except ValueError:
+                grace_s = 45.0
+
+        ocr_raw = source.get(ENV_OCR_ENABLED)
+        ocr_on = True
+        if ocr_raw is not None:
+            ocr_on = ocr_raw.strip().lower() not in {"0", "false", "no", "off"}
+
         return cls(
             db_path=Path(source.get(ENV_DB_PATH, str(DEFAULT_DB_PATH))),
             screenshot_dir=Path(
@@ -66,4 +87,6 @@ class WorkerSettings:
             ),
             vault_root=Path(source.get(ENV_VAULT_ROOT, str(DEFAULT_VAULT_ROOT))),
             cdp_endpoint=source.get(ENV_CDP_ENDPOINT) or None,
+            challenge_grace_s=grace_s,
+            ocr_enabled=ocr_on,
         )

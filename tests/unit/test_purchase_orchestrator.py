@@ -1,8 +1,11 @@
+# pyright: reportArgumentType=false
+# ruff: noqa: BLE001
 from __future__ import annotations
 
+import contextlib
 import json
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
@@ -23,7 +26,8 @@ from adapters.ticketing.kktix.adapter import (
     PageState,
 )
 from domain.preference import SeatPreference, TicketPreference, TicketPriority
-from domain.task import PurchaseTaskSpec, StartTiming, UserContactProfile
+from domain.task import PurchaseTaskSpec, UserContactProfile
+from fsm.machine import PurchaseWorkflow
 from purchase.handlers import (
     FATAL_TICKET_REASONS,
     TICKET_REASON_EVENTS,
@@ -37,7 +41,7 @@ from telemetry.timeline import TimelineRecorder
 from tests.fake_page import FakeBrowser, FakePage
 from tests.netguard import netguard_autouse  # noqa: F401
 
-BASE_WALL = datetime(2026, 5, 1, 12, 0, tzinfo=timezone.utc)
+BASE_WALL = datetime(2026, 5, 1, 12, 0, tzinfo=UTC)
 TRIGGER_DRIFT_US = 4200
 ALL_STAGES = tuple(WarmupStage)
 
@@ -713,8 +717,6 @@ async def test_session_gate_fails_closed_when_never_ready(tmp_path: Path) -> Non
 
 async def test_gate_never_waits_past_the_sale_moment(tmp_path: Path) -> None:
     """等人不能等過開賣：開賣瞬間要用來搶票，不是用來確認頁面狀態。"""
-    from datetime import datetime, timedelta, timezone
-
     adapter = StubAdapter(probe_kinds=[KKTIXPageKind.CHALLENGE] * 50)
     orchestrator, _, _, _ = build(tmp_path, adapter)
     orchestrator.session_gate_poll_s = 0.0
@@ -725,7 +727,7 @@ async def test_gate_never_waits_past_the_sale_moment(tmp_path: Path) -> None:
     orchestrator.gate_must_finish_before_sale_s = 60.0
     orchestrator.spec = orchestrator.spec.model_copy(
         update={
-            "sale_start_at": datetime.now(timezone.utc) + timedelta(seconds=70)
+            "sale_start_at": datetime.now(UTC) + timedelta(seconds=70)
         }
     )
 
@@ -738,13 +740,11 @@ async def test_gate_budget_is_unclamped_once_the_sale_has_started(
     tmp_path: Path,
 ) -> None:
     """補跑情境：開賣已過就沒有開賣瞬間要保護，改由呼叫端的預算決定。"""
-    from datetime import datetime, timedelta, timezone
-
     adapter = StubAdapter()
     orchestrator, _, _, _ = build(tmp_path, adapter)
     orchestrator.spec = orchestrator.spec.model_copy(
         update={
-            "sale_start_at": datetime.now(timezone.utc) - timedelta(seconds=5)
+            "sale_start_at": datetime.now(UTC) - timedelta(seconds=5)
         }
     )
     assert orchestrator._gate_budget_cap() is None
@@ -856,9 +856,8 @@ async def test_fast_reprobing_does_not_multiply_the_notifications(
     orchestrator.session_gate = gate
     sleep, slept = _fake_clock(orchestrator)
 
-    with patch("asyncio.sleep", sleep):
-        with pytest.raises(PurchaseStepError):
-            await orchestrator._check_session(_ctx())
+    with patch("asyncio.sleep", sleep), pytest.raises(PurchaseStepError):
+        await orchestrator._check_session(_ctx())
 
     assert slept == [0.25] * 64, len(slept)
     assert [kind for kind, _ in announced] == ["UNKNOWN"] * 3, announced
@@ -1109,7 +1108,7 @@ async def test_auto_login_screenshot_barrier(
         ]
     )
     timeline_file = tmp_path / "timeline.json"
-    orchestrator, _, browser, telemetry = build(
+    orchestrator, _, _browser, _telemetry = build(
         tmp_path, adapter, spec=spec, timeline_path=timeline_file
     )
 
@@ -1158,3 +1157,238 @@ async def test_reset_tickets_failure_fails_closed(tmp_path: Path) -> None:
     report = await orchestrator.run()
     assert report.final_state == "FAILED"
     assert "Failed to reset quantities to zero" in str(report.error)
+
+
+async def test_challenge_grace_silences_the_gate(tmp_path: Path) -> None:
+    announced: list[tuple[str, int]] = []
+
+    async def gate(kind: str, attempt: int) -> None:
+        announced.append((kind, attempt))
+
+    adapter = StubAdapter(probe_kinds=[KKTIXPageKind.CHALLENGE] * 10)
+    orchestrator, _, browser, _ = build(tmp_path, adapter)
+    orchestrator._rt.page = browser.page
+    orchestrator.challenge_grace_s = 30.0
+    orchestrator.challenge_poll_s = 2.0
+    orchestrator.session_gate_poll_s = 5.0
+    orchestrator.session_gate = gate
+    sleep, _ = _fake_clock(orchestrator)
+
+    with patch("asyncio.sleep", sleep), contextlib.suppress(PurchaseStepError):
+        orchestrator.session_gate_timeout_s = 10.0
+        await orchestrator._check_session(_ctx())
+
+    assert announced == []
+
+
+async def test_challenge_grace_announces_after_expiry(tmp_path: Path) -> None:
+    announced: list[tuple[str, int]] = []
+
+    async def gate(kind: str, attempt: int) -> None:
+        announced.append((kind, attempt))
+
+    adapter = StubAdapter(probe_kinds=[KKTIXPageKind.CHALLENGE] * 20)
+    orchestrator, _, browser, _ = build(tmp_path, adapter)
+    orchestrator._rt.page = browser.page
+    orchestrator.challenge_grace_s = 10.0
+    orchestrator.challenge_poll_s = 2.0
+    orchestrator.session_gate_poll_s = 5.0
+    orchestrator.session_gate_timeout_s = 25.0
+    orchestrator.session_gate = gate
+    sleep, _ = _fake_clock(orchestrator)
+
+    with patch("asyncio.sleep", sleep), contextlib.suppress(PurchaseStepError):
+        await orchestrator._check_session(_ctx())
+
+    assert len(announced) >= 1
+    assert announced[0][0] == "CHALLENGE"
+
+
+async def test_challenge_clears_during_grace_and_resumes(tmp_path: Path) -> None:
+    announced: list[tuple[str, int]] = []
+
+    async def gate(kind: str, attempt: int) -> None:
+        announced.append((kind, attempt))
+
+    adapter = StubAdapter(
+        probe_kinds=[
+            KKTIXPageKind.CHALLENGE,
+            KKTIXPageKind.CHALLENGE,
+            KKTIXPageKind.REGISTRATION,
+        ]
+    )
+    orchestrator, _, browser, telemetry = build(tmp_path, adapter)
+    orchestrator._rt.page = browser.page
+    orchestrator.challenge_grace_s = 30.0
+    orchestrator.challenge_poll_s = 2.0
+    orchestrator.session_gate = gate
+    sleep, _ = _fake_clock(orchestrator)
+
+    with patch("asyncio.sleep", sleep):
+        await orchestrator._check_session(_ctx())
+
+    assert announced == []
+    cleared = [e for e in telemetry.events() if e.name == "challenge_grace_cleared"]
+    assert len(cleared) == 1
+
+
+async def test_challenge_grace_does_not_extend_the_deadline(tmp_path: Path) -> None:
+    adapter = StubAdapter(probe_kinds=[KKTIXPageKind.CHALLENGE] * 50)
+    orchestrator, _, browser, _ = build(tmp_path, adapter)
+    orchestrator._rt.page = browser.page
+    orchestrator.challenge_grace_s = 300.0
+    orchestrator.session_gate_timeout_s = 20.0
+    orchestrator.challenge_poll_s = 2.0
+    sleep, slept = _fake_clock(orchestrator)
+
+    with patch("asyncio.sleep", sleep), pytest.raises(
+        PurchaseStepError, match="page not ready before sale: CHALLENGE"
+    ):
+        await orchestrator._check_session(_ctx())
+
+    assert sum(slept) <= 22.0
+
+
+async def test_challenge_grace_respects_gate_budget_cap(tmp_path: Path) -> None:
+    adapter = StubAdapter(probe_kinds=[KKTIXPageKind.CHALLENGE] * 50)
+    orchestrator, _, browser, _ = build(tmp_path, adapter)
+    orchestrator._rt.page = browser.page
+    orchestrator.challenge_grace_s = 300.0
+    orchestrator.challenge_poll_s = 2.0
+    orchestrator.session_gate_timeout_s = 600.0
+    orchestrator.gate_must_finish_before_sale_s = 60.0
+    orchestrator.spec = orchestrator.spec.model_copy(
+        update={"sale_start_at": datetime.now(UTC) + timedelta(seconds=70)}
+    )
+    sleep, slept = _fake_clock(orchestrator)
+
+    with patch("asyncio.sleep", sleep), pytest.raises(PurchaseStepError):
+        await orchestrator._check_session(_ctx())
+
+    assert sum(slept) <= 12.0
+
+
+async def test_grace_disabled_by_default_keeps_current_behaviour(tmp_path: Path) -> None:
+    announced: list[tuple[str, int]] = []
+
+    async def gate(kind: str, attempt: int) -> None:
+        announced.append((kind, attempt))
+
+    adapter = StubAdapter(probe_kinds=[KKTIXPageKind.CHALLENGE, KKTIXPageKind.REGISTRATION])
+    orchestrator, _, browser, _ = build(tmp_path, adapter)
+    orchestrator._rt.page = browser.page
+    orchestrator.challenge_grace_s = 0.0
+    orchestrator.session_gate = gate
+    sleep, _ = _fake_clock(orchestrator)
+
+    with patch("asyncio.sleep", sleep):
+        await orchestrator._check_session(_ctx())
+
+    assert announced == [("CHALLENGE", 1)]
+
+
+async def test_bot_check_unclearable_still_fails_fast_during_grace(tmp_path: Path) -> None:
+    adapter = StubAdapter(probe_kinds=[KKTIXPageKind.CHALLENGE] * 20)
+    orchestrator, _, browser, _ = build(tmp_path, adapter)
+    orchestrator._rt.page = browser.page
+    orchestrator.challenge_grace_s = 60.0
+    orchestrator.challenge_poll_s = 2.0
+    orchestrator.can_clear_bot_check = False
+    orchestrator.unattended_gate_grace_s = 6.0
+    sleep, slept = _fake_clock(orchestrator)
+
+    with patch("asyncio.sleep", sleep), pytest.raises(
+        PurchaseStepError, match="bot check cannot be cleared by this browser"
+    ):
+        await orchestrator._check_session(_ctx())
+
+    assert sum(slept) <= 8.0
+
+
+async def test_challenge_rounds_capped_in_the_gate(tmp_path: Path) -> None:
+    announced: list[tuple[str, int]] = []
+
+    async def gate(kind: str, attempt: int) -> None:
+        announced.append((kind, attempt))
+
+    adapter = StubAdapter(
+        probe_kinds=[
+            KKTIXPageKind.CHALLENGE,
+            KKTIXPageKind.LOGIN,
+            KKTIXPageKind.CHALLENGE,
+            KKTIXPageKind.REGISTRATION,
+        ]
+    )
+    orchestrator, _, browser, _ = build(tmp_path, adapter)
+    orchestrator._rt.page = browser.page
+    orchestrator.challenge_grace_s = 30.0
+    orchestrator.challenge_poll_s = 2.0
+    orchestrator.cloudflare_max_retries = 1
+    orchestrator.session_gate = gate
+    sleep, _ = _fake_clock(orchestrator)
+
+    with patch("asyncio.sleep", sleep):
+        await orchestrator._check_session(_ctx())
+
+    assert ("CHALLENGE", 3) in announced
+
+
+async def test_manual_submit_mode_does_not_call_submit_order(tmp_path: Path) -> None:
+    adapter = StubAdapter(requires_verification=True)
+    orchestrator, _, browser, _ = build(tmp_path, adapter)
+    orchestrator.fsm = PurchaseWorkflow(orchestrator.spec, orchestrator.telemetry)
+    orchestrator._rt.page = browser.page
+    orchestrator.auto_submit_verification = False
+    orchestrator.session_gate_poll_s = 0.01
+    announced: list[tuple[str, int]] = []
+
+    async def gate(kind: str, attempt: int) -> None:
+        announced.append((kind, attempt))
+        adapter.requires_verification = False
+
+    orchestrator.session_gate = gate
+
+    await orchestrator._handle_form_filling(browser.page)
+    assert "submit_order" not in adapter.calls
+    assert ("VERIFICATION", 1) in announced
+
+
+async def test_manual_submit_mode_resumes_when_user_submits(tmp_path: Path) -> None:
+    adapter = StubAdapter(requires_verification=True)
+    orchestrator, _, browser, _ = build(tmp_path, adapter)
+    orchestrator._rt.page = browser.page
+    orchestrator.session_gate_poll_s = 0.01
+
+    call_count = 0
+
+    async def _detect(page: Any) -> bool:
+        nonlocal call_count
+        call_count += 1
+        return call_count < 3
+
+    adapter.detect_verification = _detect
+
+    await orchestrator._await_manual_submit(browser.page)
+    assert orchestrator._rt.form_submitted is True
+    assert browser.page.clicks == []
+
+
+async def test_manual_submit_mode_times_out(tmp_path: Path) -> None:
+    adapter = StubAdapter(requires_verification=True)
+    orchestrator, _, browser, _ = build(tmp_path, adapter)
+    orchestrator._rt.page = browser.page
+    orchestrator.session_gate_timeout_s = 0.02
+    orchestrator.session_gate_poll_s = 0.01
+
+    with pytest.raises(PurchaseStepError, match="manual submit timed out"):
+        await orchestrator._await_manual_submit(browser.page)
+
+
+async def test_auto_submit_is_the_default(tmp_path: Path) -> None:
+    adapter = StubAdapter()
+    orchestrator, _, browser, _ = build(tmp_path, adapter)
+    orchestrator.fsm = PurchaseWorkflow(orchestrator.spec, orchestrator.telemetry)
+    orchestrator._rt.page = browser.page
+    assert orchestrator.auto_submit_verification is True
+    await orchestrator._handle_form_filling(browser.page)
+    assert "submit_order" in adapter.calls
