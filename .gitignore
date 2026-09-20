@@ -9,6 +9,7 @@ venv/
 *.db-shm
 .env
 .env.local
+.vault_key
 data/
 .browser_profiles/
 .DS_Store

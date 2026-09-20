@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
 import os
 from collections.abc import Mapping
 from pathlib import Path
@@ -11,9 +12,12 @@ from cryptography.fernet import Fernet, InvalidToken
 
 from .models import AccountStatus, mask_account
 
+logger = logging.getLogger(__name__)
+
 ENV_VAULT_KEY = "AUTO_TICKET_VAULT_KEY"
 ENV_KKTIX_ACCOUNT = "AUTO_TICKET_KKTIX_USERNAME"
 ENV_KKTIX_KEY = "AUTO_TICKET_KKTIX_PASSWORD"
+KEY_FILENAME = ".vault_key"
 
 
 class VaultKeyError(ValueError):
@@ -75,11 +79,61 @@ class EncryptedFileVault:
         cls,
         root: Path,
         environ: Mapping[str, str] | None = None,
+        auto_generate: bool = True,
     ) -> EncryptedFileVault | None:
         env = os.environ if environ is None else environ
+        key_path = Path(root) / KEY_FILENAME
         raw_key = env.get(ENV_VAULT_KEY, "").strip()
+
+        # 1. 環境變數未提供時，讀取本地 .vault_key
         if not raw_key:
-            return None
+            if key_path.exists():
+                try:
+                    raw_key = key_path.read_text(encoding="ascii").strip()
+                except Exception as exc:
+                    raise VaultKeyError(
+                        f"Failed to read vault key from {key_path}"
+                    ) from exc
+            elif auto_generate:
+                try:
+                    Path(root).mkdir(parents=True, exist_ok=True)
+                    generated_bytes = Fernet.generate_key()
+                    raw_key = generated_bytes.decode("ascii")
+                    fd = os.open(
+                        key_path, os.O_CREAT | os.O_WRONLY | os.O_TRUNC, 0o600
+                    )
+                    try:
+                        with os.fdopen(fd, "w", encoding="ascii") as f:
+                            f.write(raw_key)
+                        os.chmod(key_path, 0o600)
+                    except Exception:
+                        if key_path.exists():
+                            key_path.unlink(missing_ok=True)
+                        raise
+                except Exception as exc:
+                    raise VaultKeyError(
+                        f"Failed to auto-generate vault key at {key_path}"
+                    ) from exc
+            else:
+                return None
+        else:
+            # 2. 若環境變數提供合法 key 且本地尚未保存 key 檔，順便保存至本地
+            if not key_path.exists() and auto_generate:
+                try:
+                    Path(root).mkdir(parents=True, exist_ok=True)
+                    fd = os.open(
+                        key_path, os.O_CREAT | os.O_WRONLY | os.O_TRUNC, 0o600
+                    )
+                    try:
+                        with os.fdopen(fd, "w", encoding="ascii") as f:
+                            f.write(raw_key)
+                        os.chmod(key_path, 0o600)
+                    except Exception:
+                        if key_path.exists():
+                            key_path.unlink(missing_ok=True)
+                except Exception as exc:
+                    logger.debug("Failed to persist vault key to %s: %s", key_path, exc)
+
         try:
             key_bytes = raw_key.encode("ascii")
             decoded = base64.urlsafe_b64decode(key_bytes)

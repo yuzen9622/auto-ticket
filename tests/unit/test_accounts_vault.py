@@ -108,17 +108,34 @@ def test_encrypted_file_vault_decrypt_error(tmp_path: Path) -> None:
 
 
 def test_encrypted_file_vault_from_env(tmp_path: Path) -> None:
-    # 沒 key 回 None
-    assert EncryptedFileVault.from_env(tmp_path, {}) is None
+    # 1. auto_generate=False 時，沒 key 回 None
+    assert EncryptedFileVault.from_env(tmp_path, {}, auto_generate=False) is None
 
-    # key 格式錯誤抛 VaultKeyError
+    # 2. 預設 auto_generate=True：沒 key 時自動生成並保存 .vault_key
+    vault_auto = EncryptedFileVault.from_env(tmp_path, {})
+    assert vault_auto is not None
+    key_file = tmp_path / ".vault_key"
+    assert key_file.exists()
+    saved_key = key_file.read_text(encoding="ascii").strip()
+    assert len(saved_key) > 0
+
+    # 3. 再次載入時讀取同一個 .vault_key
+    vault_auto.store("kktix", "user_auto", "pass_auto")
+    vault_reloaded = EncryptedFileVault.from_env(tmp_path, {})
+    assert vault_reloaded is not None
+    pair = vault_reloaded.load("kktix")
+    assert pair == ("user_auto", "pass_auto")
+
+    # 4. key 格式錯誤抛 VaultKeyError
     with pytest.raises(VaultKeyError):
         EncryptedFileVault.from_env(tmp_path, {"AUTO_TICKET_VAULT_KEY": "invalid_key"})
 
-    # 合法 key
+    # 5. 合法 key 優先使用
     valid_key = Fernet.generate_key().decode("ascii")
-    vault = EncryptedFileVault.from_env(tmp_path, {"AUTO_TICKET_VAULT_KEY": valid_key})
+    tmp_path_2 = tmp_path / "another_vault"
+    vault = EncryptedFileVault.from_env(tmp_path_2, {"AUTO_TICKET_VAULT_KEY": valid_key})
     assert vault is not None
+    assert (tmp_path_2 / ".vault_key").exists()
 
 
 def test_account_service_priority(tmp_path: Path) -> None:
