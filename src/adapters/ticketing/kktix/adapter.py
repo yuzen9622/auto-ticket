@@ -617,6 +617,65 @@ class KKTIXAdapter(TicketingAdapter):
         self.telemetry.record(TimelineEventType.MARK, "guest_modal_login_redirect")
         return True
 
+    async def _wait_for_turnstile(
+        self, page: Page, timeout_ms: int | None = None
+    ) -> bool:
+        """等待 Cloudflare Turnstile 人機驗證完成（有 token 填入）。
+
+        依安全邊界不合成點擊或繞過，僅偵測驗證狀態。
+        若頁面上無 Turnstile 則直接放行；若有 Turnstile 則等待其產生非空 response。
+        """
+        container = await self._first_present(
+            page, KKTIXSelectors.LOGIN_TURNSTILE_CONTAINER
+        )
+        response_input = await self._first_present(
+            page, KKTIXSelectors.LOGIN_TURNSTILE_RESPONSE
+        )
+        if container is None and response_input is None:
+            return True
+
+        if timeout_ms is not None:
+            timeout = timeout_ms
+        elif self.challenge_grace_s > 0:
+            try:
+                timeout = int(self.challenge_grace_s * 1000)
+            except (ValueError, TypeError):
+                timeout = self.navigation_timeout_ms
+        else:
+            timeout = self.navigation_timeout_ms
+
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + (timeout / 1000.0)
+        self.telemetry.record(
+            TimelineEventType.MARK,
+            "turnstile_wait_started",
+            budget_s=timeout / 1000.0,
+        )
+
+        while loop.time() < deadline:
+            if response_input is None:
+                response_input = await self._first_present(
+                    page, KKTIXSelectors.LOGIN_TURNSTILE_RESPONSE
+                )
+            if response_input is not None:
+                with contextlib.suppress(Exception):
+                    val = (await response_input.input_value()).strip()
+                    if val:
+                        self.telemetry.record(
+                            TimelineEventType.MARK,
+                            "turnstile_verified",
+                            token_len=len(val),
+                        )
+                        return True
+            await asyncio.sleep(0.2)
+
+        self.telemetry.record(
+            TimelineEventType.MARK,
+            "turnstile_timeout",
+            waited_s=timeout / 1000.0,
+        )
+        return False
+
     async def login(self, page: Page, username: str, secret_token: str) -> bool:
         """以呼叫端傳入的憑證登入，回報是否已離開登入頁。
 
@@ -648,6 +707,11 @@ class KKTIXAdapter(TicketingAdapter):
         if submit is None:
             await self._clear_key_field(key_field)
             self.telemetry.record(TimelineEventType.MARK, "login_submit_missing")
+            return False
+
+        turnstile_ok = await self._wait_for_turnstile(page)
+        if not turnstile_ok:
+            await self._clear_key_field(key_field)
             return False
 
         await ng_click(page, submit, telemetry=self.telemetry)

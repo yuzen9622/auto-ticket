@@ -75,6 +75,17 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+KKTIX_AUTH_COOKIE_NAMES = {
+    "user_id_v2",
+    "user_display_name_v2",
+    "user_avatar_url_v2",
+    "user_path_v2",
+    "user_time_zone_offset_v2",
+    "user_time_zone",
+    "user_time_zone_v2",
+}
+
+
 def summarize_cookies(
     cookies: Sequence[Any], host_fragment: str = "kktix"
 ) -> tuple[int, bool]:
@@ -83,6 +94,7 @@ def summarize_cookies(
     has_session = any(
         "session" in str(c.get("name", "")).lower()
         or "token" in str(c.get("name", "")).lower()
+        or str(c.get("name", "")) in KKTIX_AUTH_COOKIE_NAMES
         for c in relevant
     )
     return len(relevant), has_session

@@ -239,6 +239,15 @@ class KKTIXSelectors:
         "form[action*='sign_in'] button[type='submit']",
         "button[type='submit']",
     ]
+    LOGIN_TURNSTILE_CONTAINER = [
+        ".cf-turnstile",
+        "div[class*='cf-turnstile']",
+        "iframe[src*='challenges.cloudflare.com']",
+    ]
+    LOGIN_TURNSTILE_RESPONSE = [
+        "input[name='cf-turnstile-response']",
+        "input[name*='turnstile']",
+    ]
 
     # =========================================================================
     # 4c. 彈窗 (Modal)：搶輸／無可配座位／未登入訪客

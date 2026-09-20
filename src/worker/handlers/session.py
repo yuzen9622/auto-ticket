@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
 import time
 from collections.abc import Sequence
 from enum import Enum
 from typing import Any
 
-from accounts.vault import EncryptedFileVault, EnvCredentialSource
+from accounts.vault import EncryptedFileVault, EnvCredentialSource, VaultDecryptError
 from adapters.payment.mock import MockPaymentProvider
 from adapters.ticketing.kktix.adapter import (
     LOGIN_HUMAN_VERIFICATION_TEXTS,
@@ -26,6 +27,8 @@ from telemetry.timeline import TimelineRecorder
 
 from ..control import ControlPoller, ControlState
 from ..settings import WorkerSettings
+
+logger = logging.getLogger(__name__)
 
 PLATFORM_SESSION_CONFIG = {
     "kktix": {
@@ -52,21 +55,52 @@ PLATFORM_SESSION_CONFIG = {
 }
 
 
+KKTIX_AUTH_COOKIE_NAMES = {
+    "user_id_v2",
+    "user_display_name_v2",
+    "user_avatar_url_v2",
+    "user_path_v2",
+    "user_time_zone_offset_v2",
+    "user_time_zone",
+    "user_time_zone_v2",
+}
+
+
+def has_kktix_auth_cookies(cookies: Sequence[dict[str, Any]] | None) -> bool:
+    """檢查是否有 KKTIX 登入後發放的使用者身分 cookie（如 user_id_v2）。
+
+    未登入訪客不會擁有 user_id_v2 或 user_display_name_v2。
+    只有成功登入後，KKTIX 才會發放這組 cookie。
+    """
+    if not cookies:
+        return False
+    for c in cookies:
+        domain = str(c.get("domain", ""))
+        name = str(c.get("name", ""))
+        val = str(c.get("value", "")).strip()
+        if "kktix" in domain and name in KKTIX_AUTH_COOKIE_NAMES and val:
+            return True
+    return False
+
+
 def summarize_cookies(
     cookies: list[dict[str, Any]], host_fragment: str = "kktix"
 ) -> tuple[int, bool]:
-    """只回報數量與「是否存在 session 類 cookie」——**絕不印出 cookie 內容**。
+    """只回報數量與「是否存在有效登入 session」——**絕不印出 cookie 內容**。
 
-    注意：這個布林值**不能當成「已登入」**。cookie 名字帶 session 只代表站方發過
-    一個 session，未登入的訪客一樣會拿到；被 Cloudflare 擋住時更是連頁面都沒看到。
-    真正的登入判定要看登入後才拿得到的畫面，見 `probe_login_state`。
+    對於 KKTIX，嚴格檢查是否有登入專屬的 cookie（如 user_id_v2 等）；
+    未登入訪客持有的 _kktix_session 不會被誤判為已登入。
+    其他平台則檢驗 session / token 關鍵字。
     """
     relevant = [c for c in cookies if host_fragment in str(c.get("domain", ""))]
-    has_session = any(
-        "session" in str(c.get("name", "")).lower()
-        or "token" in str(c.get("name", "")).lower()
-        for c in relevant
-    )
+    if host_fragment == "kktix":
+        has_session = has_kktix_auth_cookies(relevant)
+    else:
+        has_session = any(
+            "session" in str(c.get("name", "")).lower()
+            or "token" in str(c.get("name", "")).lower()
+            for c in relevant
+        )
     return len(relevant), has_session
 
 
@@ -78,17 +112,36 @@ class LoginState(str, Enum):
     UNKNOWN = "UNKNOWN"
 
 
-async def probe_login_state(adapter: Any, page: Any) -> LoginState:
-    """以頁面實際判定登入與否。
+async def probe_login_state(
+    adapter: Any,
+    page: Any,
+    cookies: Sequence[dict[str, Any]] | None = None,
+    platform: str = "kktix",
+) -> LoginState:
+    """以頁面與 Cookie 實際判定登入與否。
 
-    被人機驗證擋住時一律回 UNKNOWN——那時候我們根本沒看到 KKTIX 的頁面，
+    被人機驗證擋住時一律回 UNKNOWN——那時候我們根本沒看到真實頁面，
     宣稱「已登入」是在編造事實。
+    若在登入頁，回傳 LOGGED_OUT。
+    對於 KKTIX，檢查是否具備登入特有的 cookie（如 user_id_v2）。
     """
     kind = await adapter.probe_page(page, page.url)
     if kind is KKTIXPageKind.CHALLENGE:
         return LoginState.UNKNOWN
     if kind is KKTIXPageKind.LOGIN:
         return LoginState.LOGGED_OUT
+
+    if platform == "kktix":
+        target_cookies = cookies
+        if target_cookies is None:
+            try:
+                target_cookies = await page.context.cookies()
+            except Exception:
+                target_cookies = []
+        if has_kktix_auth_cookies(target_cookies):
+            return LoginState.LOGGED_IN
+        return LoginState.LOGGED_OUT
+
     return LoginState.LOGGED_IN
 
 
@@ -171,19 +224,26 @@ async def execute_session_check(
         if platform == "kktix":
             adapter = KKTIXAdapter(telemetry=telemetry, payment=MockPaymentProvider())
             probe = await adapter.probe_page(page, page.url)
-            login_state = await probe_login_state(adapter, page)
-            page_kind = probe.name
+            login_state = await probe_login_state(
+                adapter, page, cookies=cookies, platform=platform
+            )
+            if probe is KKTIXPageKind.CHALLENGE:
+                page_kind = "CHALLENGE"
+            elif login_state is LoginState.LOGGED_IN:
+                page_kind = "LOGGED_IN"
+            else:
+                page_kind = "LOGGED_OUT"
         else:
             is_login_page = cfg["login_path_fragment"] in str(page.url).lower()
             if has_session and not is_login_page:
                 login_state = LoginState.LOGGED_IN
-                page_kind = "NORMAL"
+                page_kind = "LOGGED_IN"
             elif is_login_page:
                 login_state = LoginState.LOGGED_OUT
-                page_kind = "LOGIN"
+                page_kind = "LOGGED_OUT"
             else:
                 login_state = LoginState.UNKNOWN
-                page_kind = "UNKNOWN"
+                page_kind = "LOGGED_OUT"
 
         result = {
             "platform": platform,
@@ -231,16 +291,24 @@ async def execute_auto_login(
 
     vault = EncryptedFileVault.from_env(settings.vault_root)
     pair = None
+    vault_error = None
     if vault is not None and vault.available(platform):
-        pair = vault.load(platform)
+        try:
+            pair = vault.load(platform)
+        except VaultDecryptError as exc:
+            logger.warning(
+                "Failed to decrypt vault credentials for %s: %s", platform, exc
+            )
+            vault_error = "vault_decrypt_failed"
     if not pair:
         pair = EnvCredentialSource().load(platform)
 
     if not pair:
+        error_reason = vault_error or "no_credentials_configured"
         await broker.fail(
             job.id,
             worker_id=worker_id,
-            error="no_credentials_configured",
+            error=error_reason,
             retry=False,
         )
         return
@@ -283,13 +351,17 @@ async def execute_auto_login(
             return
 
         # 若已是登入狀態（例如訪問 login_url 後因已登入被 302 轉址回首頁），不需重複填表
-        login_state_before = await probe_login_state(adapter, page)
+        cookies_before = await page.context.cookies()
+        login_state_before = await probe_login_state(
+            adapter, page, cookies=cookies_before, platform=platform
+        )
         if login_state_before is LoginState.LOGGED_IN:
-            cookies = await page.context.cookies()
-            cookie_count, has_session = summarize_cookies(cookies)
+            cookie_count, has_session = summarize_cookies(
+                cookies_before, host_fragment=cfg["host_fragment"]
+            )
             result = {
                 "success": True,
-                "page_kind": probe_before.name,
+                "page_kind": "LOGGED_IN",
                 "cookie_count": cookie_count,
                 "has_session": has_session,
                 "login_state": login_state_before.value,
@@ -300,17 +372,28 @@ async def execute_auto_login(
         await adapter.login(page, account, access_key)
 
         probe = await adapter.probe_page(page, page.url)
-        login_state = await probe_login_state(adapter, page)
+        cookies = await page.context.cookies()
+        cookie_count, has_session = summarize_cookies(
+            cookies, host_fragment=cfg["host_fragment"]
+        )
+        login_state = await probe_login_state(
+            adapter, page, cookies=cookies, platform=platform
+        )
         # `adapter.login()` 只檢查「有沒有離開登入頁」，而人機驗證頁同樣不是登入頁，
         # 於是被誤判成成功。成功與否一律以實際登入狀態為準。
         success = login_state is LoginState.LOGGED_IN
         needs_human = await _login_needs_human_verification(page)
-        cookies = await page.context.cookies()
-        cookie_count, has_session = summarize_cookies(cookies)
+
+        if probe is KKTIXPageKind.CHALLENGE:
+            page_kind = "CHALLENGE"
+        elif success:
+            page_kind = "LOGGED_IN"
+        else:
+            page_kind = "LOGGED_OUT"
 
         result = {
             "success": success,
-            "page_kind": probe.name,
+            "page_kind": page_kind,
             "cookie_count": cookie_count,
             "has_session": has_session,
             "login_state": login_state.value,
@@ -424,13 +507,16 @@ async def execute_manual_login(
             )
 
             if platform == "kktix" and adapter is not None:
-                probe = await adapter.probe_page(page, page.url)
-                if has_session:
+                login_state = await probe_login_state(
+                    adapter, page, cookies=cookies, platform=platform
+                )
+                if login_state is LoginState.LOGGED_IN:
                     result = {
                         "platform": platform,
-                        "page_kind": probe.name,
+                        "page_kind": "LOGGED_IN",
                         "cookie_count": cookie_count,
                         "has_session": True,
+                        "login_state": login_state.value,
                     }
                     await broker.complete(job.id, worker_id=worker_id, result=result)
                     return
@@ -439,9 +525,10 @@ async def execute_manual_login(
                 if has_session and not is_login_page:
                     result = {
                         "platform": platform,
-                        "page_kind": "NORMAL",
+                        "page_kind": "LOGGED_IN",
                         "cookie_count": cookie_count,
                         "has_session": True,
+                        "login_state": "LOGGED_IN",
                     }
                     await broker.complete(job.id, worker_id=worker_id, result=result)
                     return
