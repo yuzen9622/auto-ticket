@@ -89,10 +89,36 @@ export interface HumanGateLogPayload {
   can_clear_bot_check?: boolean
 }
 
+/** Worker 正在被動等待 Cloudflare 的自動挑戰自己跑完（不代為繞過，只是等）。 */
+export interface CloudflareGraceLogPayload {
+  phase: "cloudflare_grace"
+  page_kind: string
+  elapsed_s: number
+  budget_s: number
+  round: number
+  max_rounds: number
+}
+
+/** 正在辨識圖片驗證碼；attempt / max_retries 對應「（x/y）」。 */
+export interface OcrProgressLogPayload {
+  phase: "ocr_processing"
+  attempt: number
+  max_retries: number
+}
+
+/** 驗證已完成（含手動輸入被保留的情況），流程即將繼續。 */
+export interface VerificationDoneLogPayload {
+  phase: "verification_completed"
+  kind: string
+}
+
 export type TaskLogPayload =
   | SnapshotLogPayload
   | AckLogPayload
   | HumanGateLogPayload
+  | CloudflareGraceLogPayload
+  | OcrProgressLogPayload
+  | VerificationDoneLogPayload
   | GeneralLogPayload
 
 export type ServerMessage =
@@ -108,6 +134,18 @@ export function isSnapshot(p: TaskLogPayload): p is SnapshotLogPayload {
 
 export function isHumanGate(p: TaskLogPayload): p is HumanGateLogPayload {
   return (p as HumanGateLogPayload).phase === "waiting_for_human"
+}
+
+export function isCloudflareGrace(p: TaskLogPayload): p is CloudflareGraceLogPayload {
+  return (p as CloudflareGraceLogPayload).phase === "cloudflare_grace"
+}
+
+export function isOcrProgress(p: TaskLogPayload): p is OcrProgressLogPayload {
+  return (p as OcrProgressLogPayload).phase === "ocr_processing"
+}
+
+export function isVerificationDone(p: TaskLogPayload): p is VerificationDoneLogPayload {
+  return (p as VerificationDoneLogPayload).phase === "verification_completed"
 }
 
 export function isAck(p: TaskLogPayload): p is AckLogPayload {

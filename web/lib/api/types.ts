@@ -63,6 +63,13 @@ export interface CreateTaskRequest {
   auto_login: boolean
   qualification_code?: string | null
   session_preference?: string | null
+  auto_cloudflare?: boolean
+  auto_ocr?: boolean
+  auto_submit_verification?: boolean
+  ocr_model_path?: string | null
+  ocr_max_retries?: number
+  cloudflare_max_retries?: number
+  debug_screenshots_and_logs?: boolean
   profile: string
 }
 

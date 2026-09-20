@@ -408,3 +408,86 @@ describe("執行模式", () => {
     }
   })
 })
+
+describe("自動化設定與進階設定", () => {
+  it("預設送出的 payload 含 7 個欄位且為預設值", async () => {
+    const user = userEvent.setup()
+    api.getEvent.mockResolvedValue(eventFixture())
+    api.createTask.mockResolvedValue({ id: "task_abc", status: "SCHEDULED" })
+    renderWithProviders(<TaskForm eventId="ev_mayday01" />)
+
+    await screen.findByLabelText("搶票時間")
+    await fillContact(user)
+    await user.click(screen.getByRole("button", { name: "確認搶票資訊" }))
+    await user.click(await screen.findByRole("button", { name: "送出任務" }))
+
+    await waitFor(() => expect(api.createTask).toHaveBeenCalledTimes(1))
+    const payload = api.createTask.mock.calls[0][0]
+    expect(payload.auto_cloudflare).toBe(true)
+    expect(payload.auto_ocr).toBe(true)
+    expect(payload.auto_submit_verification).toBe(true)
+    expect(payload.ocr_model_path).toBeNull()
+    expect(payload.ocr_max_retries).toBe(5)
+    expect(payload.cloudflare_max_retries).toBe(3)
+    expect(payload.debug_screenshots_and_logs).toBe(false)
+  })
+
+  it("關掉一般開關並改動進階欄位後，送出的 payload 逐欄相符", async () => {
+    const user = userEvent.setup()
+    api.getEvent.mockResolvedValue(eventFixture())
+    api.createTask.mockResolvedValue({ id: "task_abc", status: "SCHEDULED" })
+    renderWithProviders(<TaskForm eventId="ev_mayday01" />)
+
+    await screen.findByLabelText("搶票時間")
+    await fillContact(user)
+
+    // 切換一般開關
+    await user.click(screen.getByLabelText("自動處理安全驗證"))
+    await user.click(screen.getByLabelText("自動辨識圖片驗證碼"))
+    await user.click(screen.getByLabelText("辨識後自動送出"))
+
+    // 修改進階欄位
+    const ocrRetries = screen.getByLabelText("驗證碼最大嘗試次數")
+    await user.clear(ocrRetries)
+    await user.type(ocrRetries, "8")
+
+    const cfRetries = screen.getByLabelText("安全驗證最大等待次數")
+    await user.clear(cfRetries)
+    await user.type(cfRetries, "1")
+
+    await user.click(screen.getByLabelText("Debug 截圖與詳細記錄"))
+
+    await user.click(screen.getByRole("button", { name: "確認搶票資訊" }))
+    await user.click(await screen.findByRole("button", { name: "送出任務" }))
+
+    await waitFor(() => expect(api.createTask).toHaveBeenCalledTimes(1))
+    const payload = api.createTask.mock.calls[0][0]
+    expect(payload.auto_cloudflare).toBe(false)
+    expect(payload.auto_ocr).toBe(false)
+    expect(payload.auto_submit_verification).toBe(false)
+    expect(payload.ocr_model_path).toBeNull()
+    expect(payload.ocr_max_retries).toBe(8)
+    expect(payload.cloudflare_max_retries).toBe(1)
+    expect(payload.debug_screenshots_and_logs).toBe(true)
+  })
+
+  it("ocr_max_retries 填 0 顯示錯誤且不送出", async () => {
+    const user = userEvent.setup()
+    api.getEvent.mockResolvedValue(eventFixture())
+    renderWithProviders(<TaskForm eventId="ev_mayday01" />)
+
+    await screen.findByLabelText("搶票時間")
+    await fillContact(user)
+
+    const ocrRetries = screen.getByLabelText("驗證碼最大嘗試次數")
+    await user.clear(ocrRetries)
+    await user.type(ocrRetries, "0")
+
+    await user.click(screen.getByRole("button", { name: "確認搶票資訊" }))
+
+    expect(api.createTask).not.toHaveBeenCalled()
+    expect(
+      await screen.findByText("驗證碼最大嘗試次數必須介於 1 到 20 次。")
+    ).toBeInTheDocument()
+  })
+})

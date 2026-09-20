@@ -20,6 +20,13 @@ export interface TaskDraft {
   auto_login: boolean
   qualification_code: string
   session_preference: string
+  auto_cloudflare: boolean
+  auto_ocr: boolean
+  auto_submit_verification: boolean
+  ocr_model_path: string
+  ocr_max_retries: number
+  cloudflare_max_retries: number
+  debug_screenshots_and_logs: boolean
   execution_mode: ExecutionMode
   profile: string
 }
@@ -45,6 +52,13 @@ export function createInitialDraft(): TaskDraft {
     auto_login: false,
     qualification_code: "",
     session_preference: "",
+    auto_cloudflare: true,
+    auto_ocr: true,
+    auto_submit_verification: true,
+    ocr_model_path: "",
+    ocr_max_retries: 5,
+    cloudflare_max_retries: 3,
+    debug_screenshots_and_logs: false,
     // 產品預設是正式模式；測試模式必須由使用者自己選。
     execution_mode: "live",
     profile: "live",
@@ -66,6 +80,10 @@ export function FIELD_ELEMENT_ID(key: string): string {
       return "timeout-seconds"
     case "maxRetries":
       return "max-retries"
+    case "ocrMaxRetries":
+      return "ocr-max-retries"
+    case "cloudflareMaxRetries":
+      return "cloudflare-max-retries"
     case "executionMode":
       return "execution-mode"
     case "priorities":
@@ -171,6 +189,23 @@ export function validateDraft(
   }
   if (!Number.isFinite(draft.max_retries) || draft.max_retries < 0) {
     errors.maxRetries = message("maxRetriesNegative")
+  }
+
+  if (
+    !Number.isFinite(draft.ocr_max_retries) ||
+    draft.ocr_max_retries < 1 ||
+    draft.ocr_max_retries > 20 ||
+    !Number.isInteger(draft.ocr_max_retries)
+  ) {
+    errors.ocrMaxRetries = message("ocrMaxRetriesRange")
+  }
+  if (
+    !Number.isFinite(draft.cloudflare_max_retries) ||
+    draft.cloudflare_max_retries < 0 ||
+    draft.cloudflare_max_retries > 20 ||
+    !Number.isInteger(draft.cloudflare_max_retries)
+  ) {
+    errors.cloudflareMaxRetries = message("cloudflareMaxRetriesRange")
   }
 
   // 正式模式沒有帳號設定時，連請求都不要送——後端也會擋，但使用者該在這裡就知道。

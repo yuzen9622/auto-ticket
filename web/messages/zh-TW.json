@@ -201,7 +201,24 @@
     "sessionMultiHint": "系統已為您抓取活動場次清單，請直接從選單中挑選欲搶票的場次。",
     "sessionManualInput": "手動自訂場次名稱",
     "sessionManualHint": "若活動為多場次但系統未列出，可手動輸入場次名稱或關鍵字；單場次活動請留空。",
-    "priorityPriceHint": "要與票種的實際票價完全相符；填錯會比對不到任何票。"
+    "priorityPriceHint": "要與票種的實際票價完全相符；填錯會比對不到任何票。",
+    "automationSection": "自動化設定",
+    "autoCloudflare": "自動處理安全驗證",
+    "autoCloudflareHint": "偵測到平台的人機驗證時，先安靜等它自己跑完再繼續；等不到才會請你接手。本程式在任何情況下都不會代為繞過。",
+    "autoOcr": "自動辨識圖片驗證碼",
+    "autoOcrHint": "關閉後遇到圖片驗證碼會直接請你接手。",
+    "autoSubmitVerification": "辨識後自動送出",
+    "autoSubmitVerificationHint": "關閉後仍會自動把答案填好，但送出那一下由你自己按。",
+    "advancedSection": "進階設定",
+    "advancedHint": "沒有特殊需求請保持預設值。",
+    "ocrModelPath": "自訂 OCR 模型路徑",
+    "ocrModelPathHint": "留空使用內建模型；路徑無效時會自動退回內建模型。",
+    "ocrMaxRetries": "驗證碼最大嘗試次數",
+    "ocrMaxRetriesHint": "辨識失敗時會點刷新換一張新圖再試，最多這麼多次。",
+    "cloudflareMaxRetries": "安全驗證最大等待次數",
+    "cloudflareMaxRetriesHint": "最多允許開啟幾次自動等待；用完後一偵測到就交還給你。",
+    "debugScreenshotsAndLogs": "Debug 截圖與詳細記錄",
+    "debugScreenshotsAndLogsHint": "每次辨識與每輪等待都額外截圖，方便事後排查；會略為拖慢開賣瞬間的速度。"
   },
   "taskFormErrors": {
     "heading": "有 {count} 個欄位需要修正",
@@ -221,6 +238,8 @@
     "ticketingTimePast": "搶票時間不能早於目前時間，請重新選擇。",
     "timeoutPositive": "搶票逾時時間必須大於零。",
     "maxRetriesNegative": "最大重試次數不能小於零。",
+    "ocrMaxRetriesRange": "驗證碼最大嘗試次數必須介於 1 到 20 次。",
+    "cloudflareMaxRetriesRange": "安全驗證最大等待次數必須介於 0 到 20 次。",
     "accountNotConfigured": "正式模式需要先在設定頁完成帳號設定。"
   },
   "taskList": {
@@ -310,7 +329,13 @@
     "gateUnattendedBody": "這個任務的瀏覽器在背景執行，沒有畫面可以讓你點選，因此人機驗證與登入都無法通過。請以顯示視窗的方式重新啟動執行程式後再跑一次。",
     "gateOpenPage": "開啟該頁面",
     "gateBotCheckTitle": "人機驗證擋住了：需要改用你自己的 Chrome",
-    "gateBotCheckBody": "票券平台的人機驗證會擋掉程式內建的瀏覽器，就算開著視窗也過不了。請先以遠端偵錯埠 9222 啟動你自己的 Chrome，再讓執行程式接上去，驗證就會由你的瀏覽器自己通過。"
+    "gateBotCheckBody": "票券平台的人機驗證會擋掉程式內建的瀏覽器，就算開著視窗也過不了。請先以遠端偵錯埠 9222 啟動你自己的 Chrome，再讓執行程式接上去，驗證就會由你的瀏覽器自己通過。",
+    "autoCloudflareTitle": "正在自動完成安全驗證",
+    "autoCloudflareBody": "票券平台的安全驗證多半會在數秒內自己跑完。程式正在被動等待並重新確認頁面，不會代為點選或偽裝操作。等待期滿仍未通過時，才會請你到瀏覽器裡自行處理。",
+    "autoCloudflareProgress": "已等待 {elapsed} 秒 / 上限 {budget} 秒（第 {round} 次，共 {maxRounds} 次）",
+    "autoOcrTitle": "正在辨識驗證碼（{attempt}/{max}）",
+    "autoOcrBody": "辨識不成功時會自動換一張新的驗證碼再試，達到次數上限才會請你接手。",
+    "autoVerificationDone": "驗證完成，繼續購票"
   },
   "history": {
     "heading": "歷史紀錄",

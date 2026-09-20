@@ -4,7 +4,10 @@ import { screen } from "@testing-library/react"
 
 import { renderWithProviders } from "./helpers/render"
 import { ClockPanel } from "@/components/console/clock-panel"
-import type { ClockTickPayload } from "@/lib/ws/types"
+import { AutomationStatusBanner } from "@/components/console/automation-status-banner"
+import { HumanGateBanner } from "@/components/console/human-gate-banner"
+import type { ClockTickPayload, HumanGateLogPayload } from "@/lib/ws/types"
+import type { AutomationStatus } from "@/lib/ws/use-task-socket"
 
 const RECEIVED_AT = Date.now()
 
@@ -93,5 +96,100 @@ describe("倒數面板", () => {
       tick({ phase: "ticketing", time_to_sale_ms: 0, time_to_timeout_ms: 45_000 })
     )
     expect(screen.getByText("搶票倒數")).toBeInTheDocument()
+  })
+})
+
+describe("自動化執行狀態橫幅與互斥", () => {
+  it("收到 cloudflare_grace 顯示「正在自動完成安全驗證」且 role 為 status", () => {
+    const status: AutomationStatus = {
+      phase: "cloudflare_grace",
+      page_kind: "CHALLENGE",
+      elapsed_s: 4.2,
+      budget_s: 45,
+      round: 1,
+      max_rounds: 3,
+    }
+    renderWithProviders(<AutomationStatusBanner status={status} />)
+    expect(screen.getByRole("status")).toBeInTheDocument()
+    expect(screen.getByText("正在自動完成安全驗證")).toBeInTheDocument()
+    expect(screen.getByText(/已等待 4.2 秒 \/ 上限 45 秒/)).toBeInTheDocument()
+  })
+
+  it("收到 ocr_processing 顯示「正在辨識驗證碼（2/5）」", () => {
+    const status: AutomationStatus = {
+      phase: "ocr_processing",
+      attempt: 2,
+      max_retries: 5,
+    }
+    renderWithProviders(<AutomationStatusBanner status={status} />)
+    expect(screen.getByRole("status")).toBeInTheDocument()
+    expect(screen.getByText("正在辨識驗證碼（2/5）")).toBeInTheDocument()
+    expect(
+      screen.getByText(
+        "辨識不成功時會自動換一張新的驗證碼再試，達到次數上限才會請你接手。"
+      )
+    ).toBeInTheDocument()
+  })
+
+  it("收到 verification_completed 顯示「驗證完成，繼續購票」", () => {
+    const status: AutomationStatus = {
+      phase: "verification_completed",
+      kind: "image_captcha",
+    }
+    renderWithProviders(<AutomationStatusBanner status={status} />)
+    expect(screen.getByRole("status")).toBeInTheDocument()
+    expect(screen.getByText("驗證完成，繼續購票")).toBeInTheDocument()
+  })
+
+  it("隨後收到 waiting_for_human 時互斥呈現 human gate 橫幅", () => {
+    const automationStatus: AutomationStatus = {
+      phase: "cloudflare_grace",
+      page_kind: "CHALLENGE",
+      elapsed_s: 45,
+      budget_s: 45,
+      round: 1,
+      max_rounds: 3,
+    }
+    const gate: HumanGateLogPayload = {
+      phase: "waiting_for_human",
+      page_kind: "CHALLENGE",
+      attempt: 1,
+      hint: "自動處理失敗，請在 Chrome 完成驗證（本程式不會代為繞過）",
+      event_url: "https://example.test",
+      attended: true,
+      can_clear_bot_check: true,
+    }
+
+    const { rerender } = renderWithProviders(
+      <>
+        <AutomationStatusBanner status={automationStatus} />
+        <HumanGateBanner gate={null} />
+      </>
+    )
+    expect(screen.getByText("正在自動完成安全驗證")).toBeInTheDocument()
+
+    rerender(
+      <>
+        <AutomationStatusBanner status={null} />
+        <HumanGateBanner gate={gate} />
+      </>
+    )
+    expect(screen.queryByText("正在自動完成安全驗證")).toBeNull()
+    expect(
+      screen.getByText("自動處理失敗，請在 Chrome 完成驗證（本程式不會代為繞過）")
+    ).toBeInTheDocument()
+  })
+
+  it("自動狀態橫幅內沒有任何 button", () => {
+    const status: AutomationStatus = {
+      phase: "cloudflare_grace",
+      page_kind: "CHALLENGE",
+      elapsed_s: 2,
+      budget_s: 45,
+      round: 1,
+      max_rounds: 3,
+    }
+    renderWithProviders(<AutomationStatusBanner status={status} />)
+    expect(screen.queryByRole("button")).toBeNull()
   })
 })

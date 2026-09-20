@@ -11,9 +11,23 @@ import type {
   ClockTickPayload,
   ScreenshotPayload,
   ServerMessage,
+  CloudflareGraceLogPayload,
+  OcrProgressLogPayload,
+  VerificationDoneLogPayload,
+  HumanGateLogPayload,
 } from "@/lib/ws/types"
-import { isHumanGate, isSnapshot } from "@/lib/ws/types"
-import type { HumanGateLogPayload } from "@/lib/ws/types"
+import {
+  isHumanGate,
+  isSnapshot,
+  isCloudflareGrace,
+  isOcrProgress,
+  isVerificationDone,
+} from "@/lib/ws/types"
+
+export type AutomationStatus =
+  | CloudflareGraceLogPayload
+  | OcrProgressLogPayload
+  | VerificationDoneLogPayload
 
 /** 指數退避：500ms → 1s → 2s → 4s → 8s（上限）。 */
 const BACKOFF_MS = [500, 1000, 2000, 4000, 8000]
@@ -29,6 +43,8 @@ export interface TaskSocketState {
   snapshotStatus: { task_status: string; job_state: string } | null
   /** Worker 正在等人處理；狀態一往前走就清掉。 */
   humanGate: HumanGateLogPayload | null
+  /** 自動化執行狀態（Cloudflare 寬限、OCR 辨識進度、完成）。 */
+  automation: AutomationStatus | null
   send: (cmd: Omit<ClientCommand, "task_id">) => boolean
   clearLogs: () => void
 }
@@ -49,6 +65,8 @@ export function useTaskSocket(
   const [visitedStates, setVisitedStates] = React.useState<string[]>([])
   const [humanGate, setHumanGate] =
     React.useState<HumanGateLogPayload | null>(null)
+  const [automation, setAutomation] =
+    React.useState<AutomationStatus | null>(null)
   const [snapshotStatus, setSnapshotStatus] = React.useState<{
     task_status: string
     job_state: string
@@ -78,6 +96,7 @@ export function useTaskSocket(
       const { to_state } = msg.payload
       // 狀態往前走＝閘門過了，等人的提示就該收掉。
       setHumanGate(null)
+      setAutomation(null)
       setCurrentState(to_state)
       setVisitedStates((prev) =>
         prev.includes(to_state) ? prev : [...prev, to_state]
@@ -95,9 +114,20 @@ export function useTaskSocket(
 
     if (msg.type === "TASK_LOG" && isHumanGate(msg.payload)) {
       setHumanGate(msg.payload)
+      setAutomation(null)
+    }
+
+    if (
+      msg.type === "TASK_LOG" &&
+      (isCloudflareGrace(msg.payload) ||
+        isOcrProgress(msg.payload) ||
+        isVerificationDone(msg.payload))
+    ) {
+      setAutomation(msg.payload)
     }
 
     if (msg.type === "TASK_LOG" && isSnapshot(msg.payload)) {
+      setAutomation(null)
       setSnapshotStatus({
         task_status: msg.payload.task_status,
         job_state: msg.payload.job_state,
@@ -219,6 +249,7 @@ export function useTaskSocket(
     visitedStates,
     snapshotStatus,
     humanGate,
+    automation,
     send,
     clearLogs,
   }

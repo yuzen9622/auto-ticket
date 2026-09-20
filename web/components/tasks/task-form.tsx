@@ -209,6 +209,13 @@ export function TaskForm({ eventId }: { eventId: string }) {
       auto_login: draft.auto_login,
       qualification_code: draft.qualification_code.trim() || null,
       session_preference: draft.session_preference.trim() || null,
+      auto_cloudflare: draft.auto_cloudflare,
+      auto_ocr: draft.auto_ocr,
+      auto_submit_verification: draft.auto_submit_verification,
+      ocr_model_path: draft.ocr_model_path.trim() || null,
+      ocr_max_retries: draft.ocr_max_retries,
+      cloudflare_max_retries: draft.cloudflare_max_retries,
+      debug_screenshots_and_logs: draft.debug_screenshots_and_logs,
       profile: draft.profile,
     })
   }
@@ -762,6 +769,42 @@ export function TaskForm({ eventId }: { eventId: string }) {
               />
             </div>
 
+            <div className="flex flex-col gap-2">
+              <Label htmlFor="auto-cloudflare">{t("autoCloudflare")}</Label>
+              <Switch
+                id="auto-cloudflare"
+                checked={draft.auto_cloudflare}
+                onCheckedChange={(v) => patch({ auto_cloudflare: v })}
+              />
+              <span id="auto-cloudflare-hint" className="text-xs text-muted-foreground">
+                {t("autoCloudflareHint")}
+              </span>
+            </div>
+
+            <div className="flex flex-col gap-2">
+              <Label htmlFor="auto-ocr">{t("autoOcr")}</Label>
+              <Switch
+                id="auto-ocr"
+                checked={draft.auto_ocr}
+                onCheckedChange={(v) => patch({ auto_ocr: v })}
+              />
+              <span id="auto-ocr-hint" className="text-xs text-muted-foreground">
+                {t("autoOcrHint")}
+              </span>
+            </div>
+
+            <div className="flex flex-col gap-2">
+              <Label htmlFor="auto-submit-verification">{t("autoSubmitVerification")}</Label>
+              <Switch
+                id="auto-submit-verification"
+                checked={draft.auto_submit_verification}
+                onCheckedChange={(v) => patch({ auto_submit_verification: v })}
+              />
+              <span id="auto-submit-verification-hint" className="text-xs text-muted-foreground">
+                {t("autoSubmitVerificationHint")}
+              </span>
+            </div>
+
             <div className="flex flex-col gap-1">
               <Label htmlFor="browser-profile">{t("browserProfile")}</Label>
               <Input
@@ -772,6 +815,82 @@ export function TaskForm({ eventId }: { eventId: string }) {
               />
             </div>
           </div>
+
+          <details className="mt-2 rounded-md border border-border/50 p-3">
+            <summary className="cursor-pointer text-xs font-medium text-muted-foreground hover:text-foreground">
+              {t("advancedSection")}
+            </summary>
+            <p className="mt-1 text-xs text-muted-foreground">{t("advancedHint")}</p>
+            <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-2">
+              <div className="flex flex-col gap-1">
+                <Label htmlFor="ocr-model-path">{t("ocrModelPath")}</Label>
+                <Input
+                  id="ocr-model-path"
+                  value={draft.ocr_model_path}
+                  onChange={(e) => patch({ ocr_model_path: e.target.value })}
+                  placeholder=""
+                  className="h-7"
+                />
+                <span id="ocr-model-path-hint" className="text-xs text-muted-foreground">
+                  {t("ocrModelPathHint")}
+                </span>
+              </div>
+
+              <div className="flex flex-col gap-1">
+                <Label htmlFor="ocr-max-retries">{t("ocrMaxRetries")}</Label>
+                <Input
+                  id="ocr-max-retries"
+                  type="number"
+                  min={1}
+                  max={20}
+                  value={draft.ocr_max_retries}
+                  onChange={(e) => patch({ ocr_max_retries: Number(e.target.value) })}
+                  aria-invalid={errors.ocrMaxRetries !== undefined}
+                  aria-describedby={errors.ocrMaxRetries ? "ocr-max-retries-error" : "ocr-max-retries-hint"}
+                  className="tabular h-7"
+                />
+                <span
+                  id={errors.ocrMaxRetries ? "ocr-max-retries-error" : "ocr-max-retries-hint"}
+                  className={errors.ocrMaxRetries ? "text-xs text-destructive" : "text-xs text-muted-foreground"}
+                >
+                  {errors.ocrMaxRetries ?? t("ocrMaxRetriesHint")}
+                </span>
+              </div>
+
+              <div className="flex flex-col gap-1">
+                <Label htmlFor="cloudflare-max-retries">{t("cloudflareMaxRetries")}</Label>
+                <Input
+                  id="cloudflare-max-retries"
+                  type="number"
+                  min={0}
+                  max={20}
+                  value={draft.cloudflare_max_retries}
+                  onChange={(e) => patch({ cloudflare_max_retries: Number(e.target.value) })}
+                  aria-invalid={errors.cloudflareMaxRetries !== undefined}
+                  aria-describedby={errors.cloudflareMaxRetries ? "cloudflare-max-retries-error" : "cloudflare-max-retries-hint"}
+                  className="tabular h-7"
+                />
+                <span
+                  id={errors.cloudflareMaxRetries ? "cloudflare-max-retries-error" : "cloudflare-max-retries-hint"}
+                  className={errors.cloudflareMaxRetries ? "text-xs text-destructive" : "text-xs text-muted-foreground"}
+                >
+                  {errors.cloudflareMaxRetries ?? t("cloudflareMaxRetriesHint")}
+                </span>
+              </div>
+
+              <div className="flex flex-col gap-2">
+                <Label htmlFor="debug-screenshots-and-logs">{t("debugScreenshotsAndLogs")}</Label>
+                <Switch
+                  id="debug-screenshots-and-logs"
+                  checked={draft.debug_screenshots_and_logs}
+                  onCheckedChange={(v) => patch({ debug_screenshots_and_logs: v })}
+                />
+                <span id="debug-screenshots-and-logs-hint" className="text-xs text-muted-foreground">
+                  {t("debugScreenshotsAndLogsHint")}
+                </span>
+              </div>
+            </div>
+          </details>
         </div>
       </Panel>
 

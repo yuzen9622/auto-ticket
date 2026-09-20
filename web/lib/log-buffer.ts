@@ -1,6 +1,14 @@
 import { formatTimeOfDay, parseServerDate } from "@/lib/format"
 import type { ServerMessage } from "@/lib/ws/types"
-import { isAck, isHumanGate, isProtocolError, isSnapshot } from "@/lib/ws/types"
+import {
+  isAck,
+  isCloudflareGrace,
+  isHumanGate,
+  isOcrProgress,
+  isProtocolError,
+  isSnapshot,
+  isVerificationDone,
+} from "@/lib/ws/types"
 
 export type LogLevel = "error" | "state" | "shot" | "tick" | "info" | "snap"
 
@@ -37,7 +45,10 @@ export function deriveLevel(msg: ServerMessage): LogLevel {
       if (isSnapshot(p)) return "snap"
       // 等人處理是要被看見的事，歸在最顯眼的等級，不要沉進一般訊息裡。
       if (isHumanGate(p)) return "error"
-      if (!isAck(p) && !isHumanGate(p) && p.event_type === "error") return "error"
+      if (isCloudflareGrace(p) || isOcrProgress(p) || isVerificationDone(p)) {
+        return "info"
+      }
+      if (!isAck(p) && p.event_type === "error") return "error"
       return "info"
     }
   }
@@ -81,6 +92,15 @@ export function summarize(msg: ServerMessage): string {
       }
       if (isHumanGate(p)) {
         return `${p.page_kind} ${p.hint}`
+      }
+      if (isCloudflareGrace(p)) {
+        return `cloudflare_grace [${p.page_kind}] waited=${p.elapsed_s}s/${p.budget_s}s (round ${p.round}/${p.max_rounds})`
+      }
+      if (isOcrProgress(p)) {
+        return `ocr_processing (${p.attempt}/${p.max_retries})`
+      }
+      if (isVerificationDone(p)) {
+        return `verification_completed kind=${p.kind}`
       }
       const detail =
         p.detail === undefined || p.detail === null

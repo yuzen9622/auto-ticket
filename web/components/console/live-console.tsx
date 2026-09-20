@@ -12,6 +12,7 @@ import {
 } from "@/components/animate-ui/components/radix/accordion"
 import { ClockPanel } from "@/components/console/clock-panel"
 import { ConsoleHeader } from "@/components/console/console-header"
+import { AutomationStatusBanner } from "@/components/console/automation-status-banner"
 import { HumanGateBanner } from "@/components/console/human-gate-banner"
 import { ControlBar } from "@/components/console/control-bar"
 import { LogStream } from "@/components/console/log-stream"
@@ -93,6 +94,9 @@ export function LiveConsole({ taskId }: { taskId: string }) {
         wsStatus={socket.status}
       />
 
+      <AutomationStatusBanner
+        status={socket.humanGate ? null : socket.automation}
+      />
       <HumanGateBanner gate={socket.humanGate} />
 
       {/* xl 以上鎖死單列高（面板各自內捲）；窄幅改成網格自己捲動，
