@@ -2,14 +2,22 @@ from __future__ import annotations
 
 import pytest
 
-from domain.preference import SeatPreference, TicketPreference, TicketPriority
+from domain.preference import (
+    SeatPreference,
+    TicketPreference,
+    TicketPriority,
+    TicketRule,
+)
 from strategy.ticket_strategy import (
     EXCLUDED,
+    EXCLUDED_BY_NAME,
     INSUFFICIENT_REMAINING,
     INVALID_PATTERN,
     NO_NAME_MATCH,
     NO_PRICE_MATCH,
+    OUT_OF_PRICE_RANGE,
     UNAVAILABLE,
+    UNKNOWN_PRICE,
     TicketOption,
     decide_ticket,
     is_selectable,
@@ -273,3 +281,98 @@ def test_exclusion_matches_by_name_not_by_index() -> None:
         excluded_names=("A",),
     )
     assert decision.option is not None and decision.option.index == 5
+
+
+def rule_pref(rule: TicketRule, *, quantity: int = 2, fallback: bool = False) -> TicketPreference:
+    """只靠規則挑票：priorities 填一筆不可能命中的價格當佔位。"""
+    return TicketPreference(
+        quantity=quantity,
+        priorities=[TicketPriority(price=10_000_000)],
+        rule=rule,
+        fallback_to_any=fallback,
+    )
+
+
+def test_rule_picks_within_budget_preferring_the_dearest() -> None:
+    """開賣前只知道預算與取向，開賣瞬間才知道票價——這正是規則要處理的情況。"""
+    options = [opt(0, "A區", 4500), opt(1, "B區", 3800), opt(2, "C區", 2800)]
+    decision = decide_ticket(options, rule_pref(TicketRule(max_price=3800, price_order="highest")))
+    assert decision.status == "SELECTED"
+    assert decision.option is not None and decision.option.price == 3800
+    assert decision.fallback_used is False
+
+
+def test_rule_lowest_first_picks_the_cheapest_in_range() -> None:
+    options = [opt(0, "A區", 4500), opt(1, "B區", 3800), opt(2, "C區", 2800)]
+    decision = decide_ticket(options, rule_pref(TicketRule(min_price=2800, price_order="lowest")))
+    assert decision.option is not None and decision.option.price == 2800
+
+
+def test_rule_default_order_keeps_page_order() -> None:
+    options = [opt(0, "A區", 2800), opt(1, "B區", 3800)]
+    decision = decide_ticket(options, rule_pref(TicketRule(max_price=4000)))
+    assert decision.option is not None and decision.option.index == 0
+
+
+def test_rule_prefer_patterns_outrank_price() -> None:
+    """關鍵字比價格取向強：說了要全票就不能因為優待票比較貴而挑優待票。"""
+    options = [opt(0, "優待票", 3800), opt(1, "全票", 2800)]
+    decision = decide_ticket(
+        options,
+        rule_pref(TicketRule(prefer_name_patterns=["全票"], price_order="highest")),
+    )
+    assert decision.option is not None and decision.option.name == "全票"
+
+
+def test_excluded_patterns_are_absolute_even_with_fallback() -> None:
+    """身障票入場要查驗證件，資格不符當場作廢——fallback 也不得買到。"""
+    options = [opt(0, "身障席", 400)]
+    decision = decide_ticket(
+        options,
+        rule_pref(TicketRule(exclude_name_patterns=["身障"]), fallback=True),
+    )
+    assert decision.status == "SOLD_OUT"
+    assert any(EXCLUDED_BY_NAME in line for line in decision.trace)
+
+
+def test_rule_with_budget_skips_tickets_without_a_printed_price() -> None:
+    """價格 0 是「頁面沒印價格」不是免費；設了預算就不能拿它來湊。"""
+    options = [opt(0, "全區", 0), opt(1, "A區", 2800)]
+    decision = decide_ticket(options, rule_pref(TicketRule(max_price=3000, price_order="lowest")))
+    assert decision.option is not None and decision.option.price == 2800
+    assert any(UNKNOWN_PRICE in line for line in decision.trace)
+
+
+def test_rule_without_budget_still_accepts_unpriced_tickets() -> None:
+    """拓元的「全區」就沒印價格；沒設預算時不該因此變成搶不到票。"""
+    decision = decide_ticket([opt(0, "全區", 0)], rule_pref(TicketRule(price_order="highest")))
+    assert decision.status == "SELECTED"
+    assert decision.option is not None and decision.option.name == "全區"
+
+
+def test_rule_runs_after_exact_price_and_before_blunt_fallback() -> None:
+    options = [opt(0, "A區", 4500), opt(1, "B區", 2800)]
+    preference = TicketPreference(
+        quantity=2,
+        priorities=[TicketPriority(price=2800)],
+        rule=TicketRule(price_order="highest"),
+    )
+    decision = decide_ticket(options, preference)
+    assert decision.matched_priority is not None
+    assert decision.option is not None and decision.option.price == 2800
+
+
+def test_rule_out_of_range_falls_through_to_fallback() -> None:
+    options = [opt(0, "A區", 4500)]
+    decision = decide_ticket(
+        options, rule_pref(TicketRule(max_price=1000), fallback=True)
+    )
+    assert decision.status == "SELECTED"
+    assert decision.fallback_used is True
+    assert any(OUT_OF_PRICE_RANGE in line for line in decision.trace)
+
+
+def test_rule_never_picks_an_unavailable_ticket() -> None:
+    options = [opt(0, "A區", 2800, available=False), opt(1, "B區", 1800)]
+    decision = decide_ticket(options, rule_pref(TicketRule(price_order="highest")))
+    assert decision.option is not None and decision.option.name == "B區"
