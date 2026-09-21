@@ -22,6 +22,8 @@ else:
 DEFAULT_PROBE_TIMEOUT_MS = 2000
 DEFAULT_OPTIONAL_PROBE_MS = 500
 DEFAULT_DISPATCH_TIMEOUT_MS = 1000
+#: 零等待探測時最多檢查幾個同選擇器的元素；再多就是頁面結構有問題。
+PRESENT_SCAN_LIMIT = 10
 SELECTOR_FALLBACK_MARK = "selector_fallback"
 DISPATCH_SKIPPED_MARK = "ng_dispatch_skipped"
 
@@ -79,6 +81,43 @@ async def first_visible(
             )
         return locator
     return None
+
+
+async def first_present_visible(
+    page: Page, selectors: str | Sequence[str]
+) -> Locator | None:
+    """**現在**就可見的第一個元素；元素不在 DOM 裡就立刻回 None。
+
+    和 `first_visible` 只差一件事：它不等。`first_visible` 的語意是「等這個元素
+    出現」，用在開賣瞬間才長出來的按鈕上是對的；但「現在有沒有售罄彈窗」「這一頁
+    有沒有驗證碼」是**問句**不是等待——拿 `first_visible` 去問，問一次就付一次
+    逾時，跑在每輪判頁的熱迴圈上會把整個搶票時間吃光。
+    """
+    for selector in candidate_selectors(selectors):
+        locator = page.locator(selector)
+        try:
+            total = await locator.count()
+        except Exception:
+            continue
+        for index in range(min(total, PRESENT_SCAN_LIMIT)):
+            candidate = locator.nth(index)
+            with contextlib.suppress(Exception):
+                if await candidate.is_visible():
+                    return candidate
+    return None
+
+
+async def present_count(page: Page, selectors: str | Sequence[str]) -> int:
+    """符合的元素在 DOM 裡有幾個，不看可見性、不等待。
+
+    座位圖的 `<area>` 是零尺寸元素，Playwright 的可見性判定對它永遠是 False；
+    這種頁面只能用「存不存在」判斷，用可見性問只會等到逾時再拿到錯的答案。
+    """
+    total = 0
+    for selector in candidate_selectors(selectors):
+        with contextlib.suppress(Exception):
+            total += await page.locator(selector).count()
+    return total
 
 
 async def ng_dispatch(
