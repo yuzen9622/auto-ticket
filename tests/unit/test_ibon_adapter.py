@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from adapters.ticketing.ibon.adapter import IbonAdapter, normalize_ibon_url
+from adapters.ticketing.ibon.selectors import IbonSelectors
 from adapters.ticketing.page_state import (
     REASON_SELECTED,
     CloudflareChallengeError,
@@ -65,6 +66,15 @@ class MockLocator:
                 return child
         return MockLocator(selector, visible=False)
 
+    async def count(self) -> int:
+        """零等待探測會先問「有幾個」，mock 也要能回答，否則新的探測路徑等於沒被測到。"""
+        return len(self._children) if self._children else 1
+
+    def nth(self, index: int) -> MockLocator:
+        if self._children:
+            return self._children[index]
+        return self if index == 0 else MockLocator("out-of-range", visible=False)
+
     async def all(self) -> list[MockLocator]:
         return list(self._children) if self._children else [self]
 
@@ -115,8 +125,9 @@ class MockPage:
         self.locators: dict[str, MockLocator] = {}
         self.goto_urls: list[str] = []
         self.go_back_count = 0
-        self.wait_urls: list[str] = []
+        self.wait_urls: list[Any] = []
         self.wait_load_states: list[str] = []
+        self.evaluated: list[tuple[str, Any]] = []
 
     async def content(self) -> str:
         return self._html
@@ -128,8 +139,12 @@ class MockPage:
     async def go_back(self, **kwargs: Any) -> None:
         self.go_back_count += 1
 
-    async def wait_for_url(self, pattern: str, timeout: float | None = None) -> None:
+    async def wait_for_url(self, pattern: Any, timeout: float | None = None) -> None:
         self.wait_urls.append(pattern)
+
+    async def evaluate(self, expression: str, arg: Any = None) -> Any:
+        self.evaluated.append((expression, arg))
+        return None
 
     async def wait_for_load_state(self, state: str = "domcontentloaded", timeout: float | None = None) -> None:
         self.wait_load_states.append(state)
@@ -143,11 +158,17 @@ class MockPage:
         return MockLocator(selector, visible=False)
 
 
-def test_ibon_old_url_normalization() -> None:
-    old_url = "https://ticket.ibon.com.tw/ActivityInfo/UTK0202_000.aspx?PERFORMANCE_PRICE_AREA_ID=A01"
-    normalized = normalize_ibon_url(old_url)
-    assert "UTK0201_000.aspx" in normalized
-    assert "UTK0202" not in normalized
+def test_ibon_url_is_not_rewritten() -> None:
+    """UTK0202_ 是「選張數」那一頁，不是舊版票區頁。
+
+    之前把它改寫成 UTK0201_000.aspx，等於每次選完票區就被推回票區頁，流程永遠
+    走不到付款。
+    """
+    quantity_url = (
+        "https://orders.ibon.com.tw/application/UTK02/UTK0202_.aspx"
+        "?PERFORMANCE_ID=B0CB317N&GROUP_ID=&PERFORMANCE_PRICE_AREA_ID=B0CB7VJ3"
+    )
+    assert normalize_ibon_url(quantity_url) == quantity_url
 
 
 def test_ibon_probe_page() -> None:
@@ -158,10 +179,10 @@ def test_ibon_probe_page() -> None:
     assert pytest.importorskip("asyncio").run(adapter.probe_page(page)) == PageKind.EVENT
 
     # Area / Ticket -> REGISTRATION
-    page = MockPage(url="https://ticket.ibon.com.tw/ActivityInfo/UTK0201_000.aspx?PERFORMANCE_ID=1")
+    page = MockPage(url="https://orders.ibon.com.tw/application/UTK02/UTK0201_000.aspx?PERFORMANCE_ID=1")
     assert pytest.importorskip("asyncio").run(adapter.probe_page(page)) == PageKind.REGISTRATION
 
-    page = MockPage(url="https://ticket.ibon.com.tw/ActivityInfo/UTK0201_001.aspx?PERFORMANCE_PRICE_AREA_ID=A01")
+    page = MockPage(url="https://orders.ibon.com.tw/application/UTK02/UTK0202_.aspx?PERFORMANCE_PRICE_AREA_ID=A01")
     assert pytest.importorskip("asyncio").run(adapter.probe_page(page)) == PageKind.REGISTRATION
 
     # Login / loginhuiwan
@@ -177,15 +198,15 @@ def test_ibon_detect_page_state() -> None:
     adapter = IbonAdapter()
 
     # Area page
-    page = MockPage(url="https://ticket.ibon.com.tw/ActivityInfo/UTK0201_000.aspx")
+    page = MockPage(url="https://orders.ibon.com.tw/application/UTK02/UTK0201_000.aspx")
     assert pytest.importorskip("asyncio").run(adapter.detect_page_state(page)) == PageState.TICKET_SELECTION
 
     # Form / Ticket page
-    page = MockPage(url="https://ticket.ibon.com.tw/ActivityInfo/UTK0201_001.aspx")
+    page = MockPage(url="https://orders.ibon.com.tw/application/UTK02/UTK0202_.aspx")
     assert pytest.importorskip("asyncio").run(adapter.detect_page_state(page)) == PageState.FORM_FILLING
 
     # Qualification code
-    page = MockPage(url="https://ticket.ibon.com.tw/ActivityInfo/UTK0201_0.aspx")
+    page = MockPage(url="https://orders.ibon.com.tw/application/UTK02/UTK0201_0.aspx?rn=1")
     assert pytest.importorskip("asyncio").run(adapter.detect_page_state(page)) == PageState.QUALIFICATION_CODE
 
     # Queue-It
@@ -196,11 +217,11 @@ def test_ibon_detect_page_state() -> None:
 
     # Failure modal
     modal_page = MockPage(
-        url="https://ticket.ibon.com.tw/ActivityInfo/UTK0201_001.aspx",
+        url="https://orders.ibon.com.tw/application/UTK02/UTK0202_.aspx",
         html='<div class="modal show"><div class="modal-body">已售完</div></div>',
     )
     modal_loc = MockLocator(".modal.show", text="已售完", visible=True)
-    modal_page.locators[".modal.show, .modal.in, #myModal, .sweet-alert, div[class*='alert']"] = modal_loc
+    modal_page.locators[IbonSelectors.FAILURE_MODAL] = modal_loc
     assert pytest.importorskip("asyncio").run(adapter.detect_page_state(modal_page)) == PageState.FAILURE_MODAL
 
     # Cloudflare fail-closed
@@ -225,26 +246,26 @@ def test_ibon_quantity_decision_propagation() -> None:
         fallback_used=False,
         trace=(),
     )
-    page = MockPage(url="https://ticket.ibon.com.tw/ActivityInfo/UTK0201_000.aspx")
-    buy_btn = MockLocator("btnBuy", visible=True)
-    page.locators["a[id*='btnBuy'], [id$='btnBuy'], table.table a.btn, input[value*='選購']"] = (
-        MockLocator("btns", children=[buy_btn])
-    )
+    page = zone_page()
 
     ok, reason = pytest.importorskip("asyncio").run(adapter.apply_ticket_decision(page, decision))
     assert ok is True
     assert reason == REASON_SELECTED
     assert adapter._target_quantity == 4
-    assert buy_btn.clicked == 1
+    # `<area>` 是零尺寸元素點不動，必須照頁面自己的 Send() 導頁。
+    assert len(page.evaluated) == 1
+    assert page.evaluated[0][1] == ["0202", "B0CB317N", "A01", ""]
 
     # 2. fill_contact_form 選到 4 張
-    ticket_page = MockPage(url="https://ticket.ibon.com.tw/ActivityInfo/UTK0201_001.aspx")
+    ticket_page = MockPage(
+        url="https://orders.ibon.com.tw/application/UTK02/UTK0202_.aspx?PERFORMANCE_ID=B0CB317N"
+    )
     select_loc = MockLocator("select", visible=True)
     chk_seat = MockLocator("chkSeat", visible=True, checked=False)
     agree_loc = MockLocator("agree", visible=True, checked=False)
-    ticket_page.locators["select[id*='ddlAmount'], [id$='ddlAmount'], table.table select"] = select_loc
-    ticket_page.locators["#ctl00_ContentPlaceHolder1_chkSeat, [id$='chkSeat']"] = chk_seat
-    ticket_page.locators["#ctl00_ContentPlaceHolder1_chkAgree, [id$='chkAgree']"] = agree_loc
+    ticket_page.locators[IbonSelectors.TICKET_SELECTS] = select_loc
+    ticket_page.locators[IbonSelectors.NON_ADJACENT_SEAT_CHECKBOX] = chk_seat
+    ticket_page.locators[IbonSelectors.AGREE_CHECKBOX] = agree_loc
 
     fill_ok = pytest.importorskip("asyncio").run(
         adapter.fill_contact_form(
@@ -260,12 +281,14 @@ def test_ibon_quantity_decision_propagation() -> None:
 
 def test_ibon_dismiss_failure_modal_returns_to_area() -> None:
     adapter = IbonAdapter()
-    page = MockPage(url="https://ticket.ibon.com.tw/ActivityInfo/UTK0201_001.aspx")
+    page = MockPage(
+        url="https://orders.ibon.com.tw/application/UTK02/UTK0202_.aspx?PERFORMANCE_ID=B0CB317N"
+    )
 
     close_btn = MockLocator("close_btn", visible=True)
-    page.locators[".modal.show button.close, .sweet-alert button.confirm, button[data-dismiss='modal'], button.btn-primary"] = close_btn
-    table_loc = MockLocator("table", visible=True)
-    page.locators["#ctl00_ContentPlaceHolder1_DataGrid1, #ctl00_ContentPlaceHolder1_divArea table, table.table"] = table_loc
+    page.locators[IbonSelectors.FAILURE_MODAL_CLOSE] = close_btn
+    table_loc = MockLocator("seatmap", visible=True)
+    page.locators[IbonSelectors.ZONE_TABLE] = table_loc
 
     dismiss_ok = pytest.importorskip("asyncio").run(adapter.dismiss_failure_modal(page))
     assert dismiss_ok is True
@@ -273,31 +296,52 @@ def test_ibon_dismiss_failure_modal_returns_to_area() -> None:
     assert page.go_back_count == 1
 
 
-def test_ibon_read_registration_tickets() -> None:
-    adapter = IbonAdapter()
+def area_locator(name: str, title: str, area_id: str) -> MockLocator:
+    """座位圖上的一個票區。`<area>` 只有屬性可讀，沒有文字也量不到大小。"""
+    return MockLocator(
+        name,
+        attrs={
+            "title": title,
+            "href": f"javascript:Send('0202', 'B0CB317N', '{area_id}', '');",
+        },
+    )
+
+
+def zone_page() -> MockPage:
     page = MockPage(
-        url="https://ticket.ibon.com.tw/ActivityInfo/UTK0201_000.aspx",
+        url="https://orders.ibon.com.tw/application/UTK02/UTK0201_000.aspx?PERFORMANCE_ID=B0CB317N",
         html=load_fixture("ibon_utk0201_000.html"),
     )
-    row1 = MockLocator("row1", text="VIP特區 4500 熱賣中 選購", visible=True)
-    row2 = MockLocator("row2", text="搖滾A區 3500 已售完", visible=True)
-    row3 = MockLocator("row3", text="二樓看台區 2500 尚有空位 選購", visible=True)
-    page.locators["#ctl00_ContentPlaceHolder1_DataGrid1 tbody tr, table.table tbody tr"] = (
-        MockLocator("rows", children=[row1, row2, row3])
+    page.locators[IbonSelectors.ZONE_ROWS] = MockLocator(
+        "areas",
+        children=[
+            area_locator("vip", "票區:VIP 票價：4,500 尚餘：熱賣中", "A01"),
+            area_locator("rock", "票區:搖滾A區 票價：3500 尚餘：0", "A02"),
+            area_locator("balcony", "票區:二樓看台區 票價：2500 尚餘：6", "A03"),
+        ],
+    )
+    return page
+
+
+def test_ibon_read_registration_tickets_from_seat_map() -> None:
+    adapter = IbonAdapter()
+    tickets = pytest.importorskip("asyncio").run(
+        adapter.read_registration_tickets(zone_page())
     )
 
-    tickets = pytest.importorskip("asyncio").run(adapter.read_registration_tickets(page))
     assert len(tickets) == 3
-    assert tickets[0].name == "VIP特區"
+    assert tickets[0].name == "VIP"
     assert tickets[0].price == 4500
     assert tickets[0].available is True
+    # 「熱賣中」只代表有票，不公布剩餘量。
+    assert tickets[0].remaining is None
 
     assert tickets[1].name == "搖滾A區"
-    assert tickets[1].price == 3500
-    assert tickets[1].available is False  # 已售完
+    assert tickets[1].available is False  # 尚餘：0
+    assert tickets[1].remaining == 0
 
     assert tickets[2].name == "二樓看台區"
-    assert tickets[2].price == 2500
+    assert tickets[2].remaining == 6
     assert tickets[2].available is True
 
 
@@ -313,11 +357,13 @@ def test_ibon_handle_verification_ocr() -> None:
     )
     adapter = IbonAdapter(verification=verification, ocr_expected_length=4)
 
-    page = MockPage(url="https://ticket.ibon.com.tw/ActivityInfo/UTK0201_001.aspx")
+    page = MockPage(
+        url="https://orders.ibon.com.tw/application/UTK02/UTK0202_.aspx?PERFORMANCE_ID=B0CB317N"
+    )
     img_loc = MockLocator("captcha_img", visible=True)
     input_loc = MockLocator("captcha_input", visible=True)
-    page.locators["#ctl00_ContentPlaceHolder1_imgVerify, [id$='imgVerify'], #imgVerify"] = img_loc
-    page.locators["#ctl00_ContentPlaceHolder1_txtVerify, [id$='txtVerify'], #txtVerify"] = input_loc
+    page.locators[IbonSelectors.CAPTCHA_IMAGE] = img_loc
+    page.locators[IbonSelectors.CAPTCHA_INPUT] = input_loc
 
     solved = pytest.importorskip("asyncio").run(adapter.handle_verification(page))
     assert solved is True
@@ -462,3 +508,35 @@ def test_ibon_handle_cloudflare() -> None:
 
     clean_page = MockPage(html="<html><body>normal content</body></html>")
     assert pytest.importorskip("asyncio").run(adapter.handle_cloudflare(clean_page)) is True
+
+
+def test_ibon_payment_page_is_payment_required() -> None:
+    """UTK0206_ 是購票確認與付款頁；沒有這條判定就永遠走不到付款。"""
+    adapter = IbonAdapter()
+    page = MockPage(
+        url="https://orders.ibon.com.tw/application/UTK02/UTK0206_.aspx"
+    )
+    state = pytest.importorskip("asyncio").run(adapter.detect_page_state(page))
+    assert state == PageState.PAYMENT_REQUIRED
+
+
+def test_ibon_quantity_page_is_form_filling() -> None:
+    adapter = IbonAdapter()
+    for url in (
+        "https://orders.ibon.com.tw/application/UTK02/UTK0202_.aspx?PERFORMANCE_ID=B0C",
+        "https://orders.ibon.com.tw/application/UTK02/UTK0205_.aspx?PERFORMANCE_ID=B0C",
+        "https://orders.ibon.com.tw/application/UTK02/UTK0201_001.aspx?PERFORMANCE_ID=B0C",
+    ):
+        state = pytest.importorskip("asyncio").run(
+            adapter.detect_page_state(MockPage(url=url))
+        )
+        assert state == PageState.FORM_FILLING, url
+
+
+def test_ibon_login_redirect_is_guest_modal() -> None:
+    adapter = IbonAdapter()
+    page = MockPage(
+        url="https://huiwan.ibon.com.tw/huiwan/LoginHuiwan/UserLogin.aspx?taxid=1"
+    )
+    state = pytest.importorskip("asyncio").run(adapter.detect_page_state(page))
+    assert state == PageState.GUEST_MODAL

@@ -1,14 +1,24 @@
-"""ibon 活動解析器。"""
+"""ibon 活動解析器。
+
+ibon 的前台是 Angular SPA，HTML 裡沒有活動資料；所有內容都來自三支 JSON API：
+
+* ``POST /api/ActivityInfo/GetIndexData``（form ``pattern``）——全站活動清單。
+* ``POST /api/ActivityInfo/GetDetailData``（form ``id``）——單一活動的完整欄位。
+* ``POST /api/ActivityInfo/GetGameInfoList``（**JSON** body）——場次清單與購票連結。
+
+第三支一定要用 JSON body 並帶 ``hasDeadline``；少了它伺服器會回 ``Enable=false``
+且每個場次的 ``Href`` 都是 null，正是拿不到開賣狀態與購票網址的原因。
+"""
 
 from __future__ import annotations
 
 import contextlib
-import json
 import logging
 import re
 from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import urljoin, urlsplit
+from zoneinfo import ZoneInfo
 
 import httpx
 from bs4 import BeautifulSoup
@@ -25,83 +35,176 @@ from domain.event import (
 
 logger = logging.getLogger(__name__)
 
-KNOWN_IBON_PROMOTERS = (
-    ("高鐵", "台灣高速鐵路股份有限公司"),
-    ("六福村", "六福開發股份有限公司"),
-    ("海洋生物博物館", "國立海洋生物博物館"),
-    ("海生館", "國立海洋生物博物館"),
-    ("阿里山", "農業部林業及自然保育署嘉義分署"),
-    ("野柳", "野柳地質公園"),
-    ("西湖渡假村", "西湖渡假村股份有限公司"),
-    ("傳說對決", "新加坡商競舞電競有限公司臺灣分公司"),
-    ("傳說十週年", "新加坡商競舞電競有限公司臺灣分公司"),
-    ("江美琪", "萬力達娛樂事業有限公司、星統寰宇娛樂有限公司"),
-    ("厄倫蒂兒", "春魚創意 、這方娛樂"),
-    ("暗喻幻想", "東穹國際音樂股份有限公司"),
-    ("台灣好行", "交通部觀光署"),
-    ("東琉線", "東琉線交通客船聯營處"),
+TAIPEI_TZ = ZoneInfo("Asia/Taipei")
+
+#: 活動說明開頭幾乎都是這幾段全站共用的公告，直接當描述會每個活動長一樣。
+BOILERPLATE_MARKERS = (
+    "ibon售票網會員登入調整",
+    "會員帳號連結",
+    "加值優惠",
+    "訂購此活動票券可加購高鐵",
+    "ibon票劵加購高鐵",
+    "ibon票券加購高鐵",
+    "為協助您管理帳號登入方式",
+    "為避免開賣時登入逾時",
+    "了解更多",
+    "可加購高鐵車票",
+    "高鐵車票並享折扣",
+    "可購買去程單程票",
+    "單程票到達站",
+    "起可加購高鐵",
+    "成年禮金",
+    "文化幣",
+    "請詳見",
 )
+
+#: 純日期、純符號、或只有幾個字的行不是描述，是排版殘渣。
+_DATE_ONLY_RE = re.compile(r"^[\d\s/()（）\-~～:：.、,，一二三四五六日起至]+$")
+
+ORGANIZER_LABELS = ("主辦單位", "主辦", "指導單位", "共同主辦")
+ORGANIZER_REJECT_WORDS = (
+    "保有",
+    "保留",
+    "有權",
+    "規定",
+    "公告",
+    "權利",
+    "變更",
+    "沒收",
+    "不負",
+    "得視",
+)
+
+#: 中文標籤後面常常再跟一個英文標籤（「主辦單位 Organizer：…」），要一起吃掉，
+#: 否則抓到的「主辦單位」會是 "Organizer：某某公司"。
+_ORGANIZER_RE = re.compile(
+    r"(?:{labels})\s*(?:organizer|organiser|host|presented\s+by)?"
+    r"\s*[：:︰/／｜|]\s*([^\r\n]{{2,60}})".format(labels="|".join(ORGANIZER_LABELS)),
+    re.IGNORECASE,
+)
+_SHOW_DATE_RE = re.compile(r"(\d{4})/(\d{1,2})/(\d{1,2})\([^)]*\)\s*(\d{1,2}):(\d{2})")
+
+
+def _parse_ibon_datetime(raw: Any) -> datetime | None:
+    """ibon 的時間字串一律是台北時間，轉成 UTC 後才進 domain。"""
+    if not isinstance(raw, str) or not raw.strip():
+        return None
+    text = raw.strip()
+    for fmt in ("%Y-%m-%dT%H:%M:%S", "%Y/%m/%d %H:%M:%S", "%Y/%m/%d %H:%M", "%Y/%m/%d"):
+        try:
+            parsed = datetime.strptime(text[: len(fmt) + 4].strip(), fmt)
+        except ValueError:
+            continue
+        return parsed.replace(tzinfo=TAIPEI_TZ).astimezone(timezone.utc)
+    with contextlib.suppress(ValueError):
+        parsed = datetime.fromisoformat(text)
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=TAIPEI_TZ)
+        return parsed.astimezone(timezone.utc)
+    return None
+
+
+def _parse_show_sale_date(raw: Any) -> datetime | None:
+    """``ShowSaleDate`` 長成 ``2026/10/18(日) 19:00``，沒有現成的 ISO 可用。"""
+    if not isinstance(raw, str):
+        return None
+    match = _SHOW_DATE_RE.search(raw)
+    if match is None:
+        return None
+    year, month, day, hour, minute = (int(g) for g in match.groups())
+    with contextlib.suppress(ValueError):
+        return datetime(
+            year, month, day, hour, minute, tzinfo=TAIPEI_TZ
+        ).astimezone(timezone.utc)
+    return None
+
+
+def _html_to_paragraphs(raw: str | None) -> list[str]:
+    if not raw:
+        return []
+    soup = BeautifulSoup(raw, "html.parser")
+    text = soup.get_text("\n")
+    return [line.strip() for line in text.splitlines() if line.strip()]
+
+
+def _extract_ibon_description(item: dict[str, Any]) -> str | None:
+    """活動說明：跳過全站公告段落，取第一段真的在講這場活動的文字。"""
+    short = str(item.get("ActivityDes") or "").strip()
+    paragraphs = _html_to_paragraphs(str(item.get("ActivityContent") or ""))
+    meaningful = [
+        line
+        for line in paragraphs
+        if len(line) >= 12
+        and not _DATE_ONLY_RE.match(line)
+        and not any(marker in line for marker in BOILERPLATE_MARKERS)
+    ]
+    body = " ".join(meaningful[:4]).strip()
+    if short and body:
+        return f"{short} {body}" if short not in body else body
+    return body or short or None
 
 
 def _extract_ibon_organizer(item: dict[str, Any]) -> str | None:
-    """從 ibon 資料或內容中解析真實主辦單位。"""
-    # 1. 優先檢查 ActivityHost 欄位
+    """主辦單位：先看 ``ActivityHost``，沒有就從活動說明裡的「主辦單位｜…」撈。"""
     host = str(item.get("ActivityHost") or "").strip()
-    if host and host.lower() not in ("none", "null", ""):
+    if host and host.lower() not in ("none", "null"):
         return host
 
-    # 2. 從 ActivityContent / BuyTicketNotice / NoticeMatters 解析
-    content = (
-        str(item.get("ActivityContent") or "")
-        + " "
-        + str(item.get("BuyTicketNotice") or "")
-        + " "
-        + str(item.get("NoticeMatters") or "")
+    haystack = "\n".join(
+        _html_to_paragraphs(
+            " ".join(
+                str(item.get(key) or "")
+                for key in ("ActivityContent", "BuyTicketNotice", "NoticeMatters")
+            )
+        )
     )
-    if content.strip():
-        soup = BeautifulSoup(content, "html.parser")
-        text = soup.get_text("\n")
-        for pattern in (
-            r"(?:主辦[單位]*|指導[單位]*)[：:｜\|\s]+([^\r\n<，。]{2,50})",
-            r"主辦[：:｜\|\s]+([^\r\n<，。]{2,50})",
-        ):
-            m = re.search(pattern, text)
-            if m:
-                val = m.group(1).strip()
-                if not any(
-                    v in val
-                    for v in (
-                        "保有",
-                        "保留",
-                        "得",
-                        "有權",
-                        "規定",
-                        "公告",
-                        "權利",
-                        "變更",
-                        "沒收",
-                    )
-                ):
-                    return val
-
-    # 3. 標題中的【主辦單位】
-    title = str(item.get("ActivityName", "")).strip()
-    m = re.search(r"【([^】]+)】", title)
-    if m:
-        tag = m.group(1).strip()
-        if any(
-            k in tag
-            for k in ("娛樂", "音樂", "文化", "製作", "演藝", "協會", "農會", "公司")
-        ):
-            return tag
-
-    # 4. 常見知名主辦單位與樂園/展覽主辦比對
-    title_lower = title.lower()
-    for kw, full_name in KNOWN_IBON_PROMOTERS:
-        if kw.lower() in title_lower:
-            return full_name
-
+    for match in _ORGANIZER_RE.finditer(haystack):
+        value = _clean_organizer(match.group(1))
+        if value is None:
+            continue
+        return value
     return None
+
+
+#: 中英並列的標題（「主辦單位/Organizer：…」）會把英文標籤一起帶進來。
+_ORGANIZER_LABEL_PREFIX_RE = re.compile(
+    r"^(?:organizer|organiser|presented\s+by|host)\s*[：:︰/／｜|]\s*", re.IGNORECASE
+)
+
+
+def _clean_organizer(raw: str) -> str | None:
+    value = _ORGANIZER_LABEL_PREFIX_RE.sub("", raw.strip(" 　:：/｜|"))
+    value = re.split(r"[。；;]", value)[0].strip(" 　:：/｜|")
+    if len(value) < 2:
+        return None
+    if any(word in value for word in ORGANIZER_REJECT_WORDS):
+        return None
+    return value[:60]
+
+
+def _ibon_status(
+    detail: dict[str, Any],
+    sessions: list[dict[str, Any]],
+    *,
+    now: datetime | None = None,
+) -> EventStatus:
+    """開賣狀態一律由場次的可購買旗標決定，售票時間只在沒有場次時當備援。"""
+    if sessions:
+        if any(s.get("can_buy") for s in sessions):
+            return EventStatus.ON_SALE
+        if all(s.get("sold_out") for s in sessions):
+            return EventStatus.SOLD_OUT
+
+    current = now or datetime.now(timezone.utc)
+    sale_start = _parse_ibon_datetime(detail.get("ActivityTicketSDate"))
+    sale_end = _parse_ibon_datetime(detail.get("ActivityTicketEDate"))
+    if sale_end is not None and current > sale_end:
+        return EventStatus.CLOSED
+    if sale_start is not None and current < sale_start:
+        return EventStatus.ANNOUNCED
+    if sale_start is not None:
+        return EventStatus.ON_SALE
+    return EventStatus.UNKNOWN
 
 
 class IbonResolveError(ResolveError):
@@ -129,147 +232,173 @@ class IbonEventResolver(EventResolver):
     def _get_client(self) -> httpx.AsyncClient:
         return self._client if self._client is not None else httpx.AsyncClient()
 
+    def _event_url(self, activity_id: str) -> str:
+        return urljoin(self._base_url, f"/ActivityInfo/Details/{activity_id}")
+
     async def search(self, query: str, *, limit: int = 10) -> list[EventCandidate]:
-        """呼叫 POST /api/ActivityInfo/GetIndexData 並解析 JSON，不解析 Angular SPA 空 HTML。"""
+        """呼叫 ``POST /api/ActivityInfo/GetIndexData`` 取全站活動清單後比對關鍵字。"""
         client = self._get_client()
         url = urljoin(self._base_url, "/api/ActivityInfo/GetIndexData")
 
-        all_items: list[dict[str, Any]] = []
         try:
-            resp = await client.post(url, data={"pattern": "entertainment"}, timeout=10.0)
+            resp = await client.post(
+                url, data={"pattern": "entertainment"}, timeout=10.0
+            )
             resp.raise_for_status()
             payload = resp.json()
-            items = (
-                payload.get("Item", {}).get("List", [])
-                if isinstance(payload.get("Item"), dict)
-                else payload.get("Data", [])
-            )
-            if isinstance(items, list):
-                all_items.extend(items)
         except Exception as exc:
             raise IbonResolveError(f"Failed to post {url}: {exc}") from exc
 
+        item = payload.get("Item")
+        items = item.get("List", []) if isinstance(item, dict) else payload.get("Data", [])
+        if not isinstance(items, list):
+            items = []
+
         candidates: list[EventCandidate] = []
         seen_ids: set[str] = set()
-
-        for item in all_items:
-            if not isinstance(item, dict):
+        for entry in items:
+            if not isinstance(entry, dict):
                 continue
-            activity_id = str(item.get("ActivityID") or item.get("ActivityId") or "").strip()
-            title = str(item.get("ActivityName", "")).strip()
+            activity_id = str(
+                entry.get("ActivityID") or entry.get("ActivityId") or ""
+            ).strip()
+            title = str(entry.get("ActivityName", "")).strip()
             if not activity_id or not title or activity_id in seen_ids:
                 continue
             seen_ids.add(activity_id)
 
-            event_url = urljoin(self._base_url, f"/ActivityInfo/Details/{activity_id}")
-            score = fuzz.partial_ratio(query.lower(), title.lower()) / 100.0 if query else 1.0
-
-            published: datetime | None = None
-            date_str = item.get("StartDate")
-            if isinstance(date_str, str):
-                try:
-                    published = datetime.strptime(date_str.split()[0], "%Y/%m/%d").replace(tzinfo=timezone.utc)
-                except (ValueError, TypeError):
-                    published = None
-
-            organizer = _extract_ibon_organizer(item)
+            score = (
+                fuzz.partial_ratio(query.lower(), title.lower()) / 100.0 if query else 1.0
+            )
+            event_start = _parse_ibon_datetime(
+                entry.get("GameStartDateMin") or entry.get("ActivitySDate")
+            )
+            summary = str(entry.get("ActivityDes") or "").strip() or None
             candidates.append(
                 EventCandidate(
                     title=title,
-                    url=event_url,
-                    organizer=organizer or "ibon",
+                    url=self._event_url(activity_id),
+                    organizer="ibon",
                     score=score,
-                    published=published,
-                    summary=item.get("Location"),
-                    raw=item,
+                    published=event_start,
+                    summary=summary,
+                    raw={
+                        "activity_id": activity_id,
+                        "event_start_at": event_start.isoformat() if event_start else None,
+                        "sale_end_at": (
+                            dt.isoformat()
+                            if (dt := _parse_ibon_datetime(entry.get("ActivityEDate")))
+                            else None
+                        ),
+                        "image_url": entry.get("ActivityImage"),
+                        "category": entry.get("ActivityCategoryCode"),
+                    },
                 )
             )
 
         candidates.sort(key=lambda c: c.score, reverse=True)
         return candidates[:limit]
 
-    async def fetch_event_metadata(self, event_url: str) -> Event:
-        """優先呼叫 /api/ActivityInfo/GetDetailData 取得活動資訊，退回解析 HTML 與 JSON-LD。"""
+    async def _fetch_detail(self, activity_id: str) -> dict[str, Any]:
         client = self._get_client()
-        activity_id = urlsplit(event_url).path.split("/")[-1]
+        url = urljoin(self._base_url, "/api/ActivityInfo/GetDetailData")
+        resp = await client.post(url, data={"id": activity_id}, timeout=10.0)
+        resp.raise_for_status()
+        payload = resp.json()
+        item = payload.get("Item") if isinstance(payload, dict) else None
+        return item if isinstance(item, dict) else {}
+
+    async def fetch_sessions(self, activity_id: str) -> list[dict[str, Any]]:
+        """場次清單。``hasDeadline`` 少給就拿不到 ``Href``，開賣狀態也會全錯。"""
+        client = self._get_client()
+        url = urljoin(self._base_url, "/api/ActivityInfo/GetGameInfoList")
+        try:
+            numeric_id: int | str = int(activity_id)
+        except ValueError:
+            numeric_id = activity_id
+        try:
+            resp = await client.post(
+                url,
+                json={"id": numeric_id, "hasDeadline": True, "SystemBrowseType": 0},
+                timeout=10.0,
+            )
+            resp.raise_for_status()
+            payload = resp.json()
+        except Exception as exc:
+            logger.debug("ibon_get_game_info_list_failed: %s (%s)", activity_id, exc)
+            return []
+
+        item = payload.get("Item") if isinstance(payload, dict) else None
+        rows = item.get("GIHtmls") if isinstance(item, dict) else None
+        if not isinstance(rows, list):
+            return []
+
+        sessions: list[dict[str, Any]] = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            starts_at = _parse_show_sale_date(row.get("ShowSaleDate"))
+            sessions.append(
+                {
+                    "name": str(row.get("GameInfoName") or "").strip(),
+                    "venue": str(row.get("VenueRegion") or "").strip() or None,
+                    "display_date": str(row.get("ShowSaleDate") or "").strip(),
+                    "starts_at": starts_at.isoformat() if starts_at else None,
+                    "can_buy": bool(row.get("CanBuy")),
+                    "sold_out": bool(row.get("SoldOut")),
+                    "purchase_url": _absolute_go_ticket_url(row.get("Href")),
+                }
+            )
+        return sessions
+
+    async def fetch_event_metadata(self, event_url: str) -> Event:
+        activity_id = urlsplit(event_url).path.rstrip("/").split("/")[-1]
         event_id = Event.make_id(PlatformEnum.IBON, "ibon", activity_id)
 
-        # 優先透過 API 取得詳情
-        detail_url = urljoin(self._base_url, "/api/ActivityInfo/GetDetailData")
         try:
-            resp = await client.post(detail_url, data={"id": activity_id}, timeout=10.0)
-            if resp.status_code == 200:
-                payload = resp.json()
-                item = payload.get("Item", {}) if isinstance(payload, dict) else {}
-                title = str(item.get("ActivityName", "")).strip()
-                if title:
-                    start_date: datetime | None = None
-                    date_str = item.get("StartDate")
-                    if isinstance(date_str, str):
-                        try:
-                            start_date = datetime.strptime(date_str.split()[0], "%Y/%m/%d").replace(tzinfo=timezone.utc)
-                        except (ValueError, TypeError):
-                            start_date = None
-                    organizer_display = _extract_ibon_organizer(item)
-                    raw_meta: dict[str, Any] = (
-                        {"organizer_display": organizer_display}
-                        if organizer_display
-                        else {}
-                    )
-                    return Event(
-                        id=event_id,
-                        platform=PlatformEnum.IBON,
-                        organizer="ibon",
-                        event_slug=activity_id,
-                        title=title,
-                        canonical_url=event_url,
-                        status=EventStatus.ON_SALE,
-                        sale_start_at=start_date,
-                        ticket_types=[],
-                        raw_metadata=raw_meta,
-                    )
+            detail = await self._fetch_detail(activity_id)
         except Exception as exc:
-            logger.debug("ibon_get_detail_data_failed: %s (%s)", activity_id, exc)
+            raise IbonResolveError(
+                f"Failed to fetch ibon activity {activity_id}: {exc}"
+            ) from exc
 
-        # 退回直接抓取 HTML 解析
-        try:
-            resp = await client.get(event_url, timeout=10.0)
-            resp.raise_for_status()
-        except Exception as exc:
-            raise IbonResolveError(f"Failed to fetch event metadata from {event_url}") from exc
-
-        soup = BeautifulSoup(resp.text, "html.parser")
-        title = ""
-        start_date: datetime | None = None
-
-        # 優先解析 JSON-LD
-        json_ld = soup.select_one("script[type='application/ld+json']")
-        if json_ld and json_ld.string:
-            try:
-                data = json.loads(json_ld.string)
-            except (ValueError, TypeError):
-                data = None
-            if isinstance(data, dict):
-                title = str(data.get("name", ""))
-                if "startDate" in data:
-                    try:
-                        parsed_dt = datetime.fromisoformat(data["startDate"])
-                        start_date = parsed_dt.replace(tzinfo=timezone.utc) if parsed_dt.tzinfo is None else parsed_dt.astimezone(timezone.utc)
-                    except (ValueError, TypeError):
-                        start_date = None
-
+        title = str(detail.get("ActivityName", "")).strip()
         if not title:
-            title_el = soup.select_one(".activity-info h1, h1, title")
-            title = title_el.get_text(strip=True) if title_el else f"ibon 活動 {activity_id}"
+            raise IbonParseError(
+                f"ibon activity {activity_id} returned no activity name"
+            )
 
-        organizer_display = _extract_ibon_organizer(
-            {"ActivityContent": resp.text, "ActivityName": title}
+        sessions = await self.fetch_sessions(activity_id)
+
+        venue = str(detail.get("ActivityLocation") or "").strip() or None
+        if venue is None:
+            venue = next((s["venue"] for s in sessions if s.get("venue")), None)
+
+        session_starts = [
+            dt
+            for s in sessions
+            if (dt := _parse_ibon_datetime(s.get("starts_at"))) is not None
+        ]
+        event_start_at = (
+            min(session_starts)
+            if session_starts
+            else _parse_ibon_datetime(detail.get("ActivitySDate"))
         )
-        raw_meta: dict[str, Any] = (
-            {"organizer_display": organizer_display}
-            if organizer_display
-            else {}
-        )
+
+        raw_metadata: dict[str, Any] = {"detail_source": "ibon_api"}
+        description = _extract_ibon_description(detail)
+        if description:
+            raw_metadata["description"] = description
+        organizer_display = _extract_ibon_organizer(detail)
+        if organizer_display:
+            raw_metadata["organizer_display"] = organizer_display
+        if venue:
+            raw_metadata["venue"] = venue
+        if sessions:
+            raw_metadata["sessions"] = sessions
+        image = str(detail.get("ActivityImageURL") or "").strip()
+        if image:
+            raw_metadata["image_url"] = image
 
         return Event(
             id=event_id,
@@ -277,31 +406,19 @@ class IbonEventResolver(EventResolver):
             organizer="ibon",
             event_slug=activity_id,
             title=title,
-            canonical_url=event_url,
-            status=EventStatus.ON_SALE,
-            sale_start_at=start_date,
+            canonical_url=self._event_url(activity_id),
+            status=_ibon_status(detail, sessions),
+            sale_start_at=_parse_ibon_datetime(detail.get("ActivityTicketSDate")),
+            sale_end_at=_parse_ibon_datetime(detail.get("ActivityTicketEDate")),
+            event_start_at=event_start_at,
             ticket_types=[],
-            raw_metadata=raw_meta,
+            raw_metadata=raw_metadata,
         )
 
     async def resolve(self, query: str) -> ResolveResult:
         if query.startswith(("http://", "https://")):
             try:
                 ev = await self.fetch_event_metadata(query)
-                return ResolveResult(
-                    query=query,
-                    auto_selected=True,
-                    event=ev,
-                    candidates=[
-                        EventCandidate(
-                            title=ev.title,
-                            url=ev.canonical_url,
-                            organizer=ev.organizer,
-                            score=1.0,
-                        )
-                    ],
-                    threshold=self._threshold,
-                )
             except Exception:
                 return ResolveResult(
                     query=query,
@@ -310,6 +427,20 @@ class IbonEventResolver(EventResolver):
                     candidates=[],
                     threshold=self._threshold,
                 )
+            return ResolveResult(
+                query=query,
+                auto_selected=True,
+                event=ev,
+                candidates=[
+                    EventCandidate(
+                        title=ev.title,
+                        url=ev.canonical_url,
+                        organizer=ev.organizer,
+                        score=1.0,
+                    )
+                ],
+                threshold=self._threshold,
+            )
 
         candidates = await self.search(query, limit=5)
         top = candidates[0] if candidates else None
@@ -331,3 +462,19 @@ class IbonEventResolver(EventResolver):
             candidates=candidates,
             threshold=self._threshold,
         )
+
+
+def _absolute_go_ticket_url(href: Any) -> str | None:
+    """``Href`` 是 ``/ActivityInfo/GoTicketURL?GoUrl=<訂購頁>``，直接取出訂購頁。"""
+    if not isinstance(href, str) or not href.strip():
+        return None
+    from urllib.parse import parse_qs, unquote
+
+    if "GoUrl=" in href:
+        query = urlsplit(href).query
+        target = parse_qs(query).get("GoUrl", [""])[0]
+        if target:
+            return unquote(target)
+    if href.startswith("http"):
+        return href
+    return urljoin("https://ticket.ibon.com.tw", href)

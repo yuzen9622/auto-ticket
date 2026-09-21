@@ -14,7 +14,9 @@ from adapters.payment.base import PaymentOutcome, PaymentProvider, PaymentResult
 from adapters.ticketing.base import TicketingAdapter
 from adapters.ticketing.dom import (
     contains_cloudflare_challenge,
+    first_present_visible,
     first_visible,
+    present_count,
     page_text,
     try_solve_cloudflare_turnstile,
 )
@@ -44,14 +46,28 @@ else:
     Page = Any
 
 PRICE_RE = re.compile(r"(\d[\d,]*)")
-OLD_URL_RE = re.compile(r"UTK0202_[^.]*\.aspx", re.IGNORECASE)
+
+#: 座位圖每一區的 href：`javascript:Send('0202','PERF_ID','AREA_ID','GROUP_ID');`
+AREA_SEND_RE = re.compile(
+    r"Send\(\s*'([^']+)'\s*,\s*'([^']+)'\s*,\s*'([^']+)'\s*,\s*'([^']*)'\s*\)"
+)
+#: `票區:2M樓VIP1區6000 票價：6000 尚餘：熱賣中`
+AREA_TITLE_RE = re.compile(
+    r"票區[:：]\s*(?P<name>.*?)\s*票價[:：]\s*(?P<price>[\d,]+)"
+    r"(?:\s*尚餘[:：]\s*(?P<remaining>\S+))?"
+)
+
+#: 張數頁：電腦配位走 UTK0202_，自行選位走 UTK0205_／UTK0201_001。
+QUANTITY_PAGE_MARKERS = ("utk0202_", "utk0205_", "utk0201_001.aspx")
+#: 購票確認與付款；`UTK0207_` 是刷卡，抵達即代表已經走到付款。
+PAYMENT_PAGE_MARKERS = ("utk0206_", "utk0207_", "/payment")
+
+#: 等開賣時的輪詢間隔。開著就立刻回，這個值只決定「還沒開」時多久再問一次。
+SALE_PROBE_POLL_S = 0.1
 
 
 def normalize_ibon_url(url: str) -> str:
-    """轉換舊版 ibon 網址：UTK0202_... 轉為 UTK0201_000.aspx。"""
-    if "UTK0202" in url.upper() and "PERFORMANCE_PRICE_AREA_ID" in url.upper():
-        # 將舊區域網址替換為標準區域選擇頁
-        return OLD_URL_RE.sub("UTK0201_000.aspx", url)
+    """ibon 的訂購網址不需要改寫；保留函式是因為呼叫端與測試都在用。"""
     return url
 
 
@@ -114,11 +130,15 @@ class IbonAdapter(TicketingAdapter):
         if "/activityinfo/details/" in curr_url:
             return PageKind.EVENT
 
-        if any(seg in curr_url for seg in ("utk0201_0.aspx", "utk0201_000.aspx", "utk0201_001.aspx")):
-            return PageKind.REGISTRATION
-
-        if any(seg in curr_url for seg in ("utk0201_002.aspx", "utk0201_003.aspx", "/order")):
+        # 訂購頁的網域本身就叫 orders.ibon.com.tw，用 "/order" 比對會把票區頁
+        # 也判成訂單頁；只認訂單查詢頁與付款流程的實際頁碼。
+        if any(seg in curr_url for seg in PAYMENT_PAGE_MARKERS) or "/web/orders" in curr_url:
             return PageKind.ORDER
+
+        if "utk0201_0.aspx" in curr_url or "utk0201_000.aspx" in curr_url or any(
+            seg in curr_url for seg in QUANTITY_PAGE_MARKERS
+        ):
+            return PageKind.REGISTRATION
 
         return PageKind.UNKNOWN
 
@@ -135,47 +155,70 @@ class IbonAdapter(TicketingAdapter):
             raise CloudflareChallengeError("偵測到人機驗證挑戰；一律 fail-closed 中止")
 
         # 3. 售完或錯誤彈窗
-        failure_loc = await first_visible(
-            page,
-            IbonSelectors.FAILURE_MODAL,
-            timeout_ms=self.probe_timeout_ms,
-            telemetry=self.telemetry,
-            field="failure_modal",
-        )
+        # 「現在有沒有彈窗」是問句：用會等待的探測問，每一輪判頁都要多付一次逾時。
+        failure_loc = await first_present_visible(page, IbonSelectors.FAILURE_MODAL)
         if failure_loc is not None:
             modal_text = await page_text(page)
             if any(marker in modal_text for marker in IbonSelectors.SOLD_OUT_TEXTS):
                 return PageState.FAILURE_MODAL
 
-        # 4. 特權碼／資格審查
+        # 4. 被踢回登入頁：會員 session 過期時 ibon 會導到 huiwan 單一登入。
+        if "loginhuiwan" in curr_url or "/login" in curr_url:
+            return PageState.GUEST_MODAL
+
+        # 5. 特權碼／資格審查
         if "utk0201_0.aspx" in curr_url:
             return PageState.QUALIFICATION_CODE
 
-        # 5. 區域選擇頁
+        # 5. 完成頁要排在付款頁前面判，否則訂購完成也會被當成還要付款
+        if "complete" in curr_url or "success" in curr_url:
+            return PageState.COMPLETED
+
+        # 6. 購票確認／付款（UTK0206_、UTK0207_）
+        if any(seg in curr_url for seg in PAYMENT_PAGE_MARKERS):
+            return PageState.PAYMENT_REQUIRED
+
+        # 7. 選擇票區（座位圖）
         if "utk0201_000.aspx" in curr_url:
             return PageState.TICKET_SELECTION
 
-        # 6. 張數與驗證頁
-        if "utk0201_001.aspx" in curr_url:
+        # 8. 張數頁
+        if any(seg in curr_url for seg in QUANTITY_PAGE_MARKERS):
             return PageState.FORM_FILLING
-
-        # 7. 付款與完成
-        if any(seg in curr_url for seg in ("utk0201_002.aspx", "utk0201_003.aspx", "/payment")):
-            return PageState.PAYMENT_REQUIRED
-
-        if "complete" in curr_url or "success" in curr_url:
-            return PageState.COMPLETED
 
         return PageState.UNKNOWN
 
     async def detect_sale_opened(self, page: Page, timeout_ms: int) -> bool:
-        btn = await first_visible(
+        """票區出現就算開賣。
+
+        票區是座位圖上的 `<area>`，零尺寸，Playwright 的可見性判定對它永遠是
+        False——拿「可不可見」問，不只每次都等滿逾時，拿到的答案還一定是「沒開賣」。
+        改成輪詢「在不在 DOM 裡」，開著就立刻回，沒開才等到逾時。
+        """
+        return await self._poll_until_present(
             page,
-            (IbonSelectors.ZONE_BUY_BUTTONS, IbonSelectors.ACTIVITY_DETAILS_BUY_BTN),
+            present_selectors=IbonSelectors.ZONE_ROWS,
+            visible_selectors=IbonSelectors.ACTIVITY_DETAILS_BUY_BTN,
             timeout_ms=timeout_ms,
-            telemetry=self.telemetry,
         )
-        return btn is not None
+
+    async def _poll_until_present(
+        self,
+        page: Page,
+        *,
+        present_selectors: str,
+        visible_selectors: str,
+        timeout_ms: int,
+    ) -> bool:
+        deadline = asyncio.get_running_loop().time() + max(timeout_ms, 0) / 1000.0
+        while True:
+            if await present_count(page, present_selectors) > 0:
+                return True
+            if await first_present_visible(page, visible_selectors) is not None:
+                return True
+            if asyncio.get_running_loop().time() >= deadline:
+                return False
+            await asyncio.sleep(SALE_PROBE_POLL_S)
 
     # ---------------------------------------------------------------- 票券與區域
 
@@ -185,32 +228,19 @@ class IbonAdapter(TicketingAdapter):
         curr_url = getattr(page, "url", "").lower()
 
         if "utk0201_000.aspx" in curr_url:
-            rows = await page.locator(IbonSelectors.ZONE_ROWS).all()
-            for idx, row in enumerate(rows):
-                row_text = (await row.inner_text()).strip()
-                match = PRICE_RE.search(row_text)
-                price = 0
-                if match:
-                    try:
-                        price = int(match.group(1).replace(",", ""))
-                    except (TypeError, ValueError):
-                        price = 0
-
-                is_sold_out = any(m in row_text for m in IbonSelectors.SOLD_OUT_TEXTS)
-                cols = row_text.split()
-                name = cols[0] if cols else f"區域 {idx + 1}"
+            for idx, area in enumerate(await self._read_zone_areas(page)):
                 options.append(
                     TicketOption(
                         index=idx,
-                        name=name,
-                        price=price,
-                        available=not is_sold_out,
-                        remaining=None,
-                        status_text=row_text,
+                        name=area["name"],
+                        price=area["price"],
+                        available=area["available"],
+                        remaining=area["remaining"],
+                        status_text=area["title"],
                     )
                 )
 
-        elif "utk0201_001.aspx" in curr_url:
+        elif any(seg in curr_url for seg in QUANTITY_PAGE_MARKERS):
             selects = await page.locator(IbonSelectors.TICKET_SELECTS).all()
             for idx, sel in enumerate(selects):
                 sel_id = await sel.get_attribute("id") or ""
@@ -226,6 +256,47 @@ class IbonAdapter(TicketingAdapter):
                 )
 
         return options
+
+    async def _read_zone_areas(self, page: Page) -> list[dict[str, Any]]:
+        """讀座位圖上的票區。
+
+        `<area>` 是零尺寸元素，可見性判斷與 `inner_text()` 都對它無效，只能讀
+        屬性。`title` 同時帶了區名、票價與剩餘量，是這一頁唯一的庫存來源。
+        """
+        areas: list[dict[str, Any]] = []
+        for el in await page.locator(IbonSelectors.ZONE_ROWS).all():
+            title = (await el.get_attribute("title")) or ""
+            href = (await el.get_attribute("href")) or ""
+            matched = AREA_TITLE_RE.search(title)
+            if matched is None:
+                continue
+
+            try:
+                price = int(matched.group("price").replace(",", ""))
+            except (TypeError, ValueError):
+                price = 0
+
+            remaining_text = (matched.group("remaining") or "").strip()
+            remaining: int | None = None
+            if remaining_text.isdigit():
+                remaining = int(remaining_text)
+            # 「熱賣中」代表有票但不公布剩餘量；只有明確的 0 才是售完。
+            available = remaining != 0 and not any(
+                marker in title for marker in IbonSelectors.SOLD_OUT_TEXTS
+            )
+
+            send = AREA_SEND_RE.search(href)
+            areas.append(
+                {
+                    "name": matched.group("name").strip() or title,
+                    "price": price,
+                    "remaining": remaining,
+                    "available": available,
+                    "title": title,
+                    "send_args": list(send.groups()) if send else None,
+                }
+            )
+        return areas
 
     async def select_tickets(
         self, page: Page, preference: TicketPreference
@@ -261,14 +332,26 @@ class IbonAdapter(TicketingAdapter):
 
         curr_url = getattr(page, "url", "").lower()
         if "utk0201_000.aspx" in curr_url:
-            buttons = await page.locator(IbonSelectors.ZONE_BUY_BUTTONS).all()
-            if decision.option.index >= len(buttons):
+            areas = await self._read_zone_areas(page)
+            if decision.option.index >= len(areas):
                 return False, REASON_SOLD_OUT
 
-            target_btn = buttons[decision.option.index]
-            await target_btn.click()
+            send_args = areas[decision.option.index].get("send_args")
+            if not send_args:
+                return False, REASON_SOLD_OUT
+
+            # `<area>` 點不動（零尺寸），而且 Send() 自己會擋未開賣的場次並依
+            # 「自行選位／電腦配位」決定下一頁，照呼叫比自己拼網址安全。
+            await page.evaluate(
+                "args => window.Send(args[0], args[1], args[2], args[3])", send_args
+            )
             with contextlib.suppress(Exception):
-                await page.wait_for_url("**/UTK0201_001.aspx*", timeout=self.timeout_ms)
+                await page.wait_for_url(
+                    lambda url: any(
+                        marker in url.lower() for marker in QUANTITY_PAGE_MARKERS
+                    ),
+                    timeout=self.timeout_ms,
+                )
 
         return True, REASON_SELECTED
 
@@ -291,7 +374,7 @@ class IbonAdapter(TicketingAdapter):
             await btn.click()
 
         curr_url = getattr(page, "url", "").lower()
-        if "utk0201_001.aspx" in curr_url:
+        if any(seg in curr_url for seg in QUANTITY_PAGE_MARKERS):
             with contextlib.suppress(Exception):
                 await page.go_back()
                 await page.wait_for_url("**/UTK0201_000.aspx*", timeout=self.timeout_ms)
@@ -333,37 +416,22 @@ class IbonAdapter(TicketingAdapter):
             await select_loc.select_option(str(quantity))
 
         # 非相鄰座位勾選
-        chk_seat = await first_visible(
-            page,
-            IbonSelectors.NON_ADJACENT_SEAT_CHECKBOX,
-            timeout_ms=self.probe_timeout_ms,
-            telemetry=self.telemetry,
-            field="non_adjacent_seat_checkbox",
+        # 非相鄰座位與同意條款都是「有就勾」的選配欄位，多數場次根本沒有這兩格。
+        chk_seat = await first_present_visible(
+            page, IbonSelectors.NON_ADJACENT_SEAT_CHECKBOX
         )
         if chk_seat is not None and not await chk_seat.is_checked():
             await chk_seat.check()
 
         # 同意規則勾選
-        agree_loc = await first_visible(
-            page,
-            IbonSelectors.AGREE_CHECKBOX,
-            timeout_ms=self.probe_timeout_ms,
-            telemetry=self.telemetry,
-            field="agree_checkbox",
-        )
+        agree_loc = await first_present_visible(page, IbonSelectors.AGREE_CHECKBOX)
         if agree_loc is not None and not await agree_loc.is_checked():
             await agree_loc.check()
 
         return True
 
     async def detect_verification(self, page: Page) -> bool:
-        img = await first_visible(
-            page,
-            IbonSelectors.CAPTCHA_IMAGE,
-            timeout_ms=self.probe_timeout_ms,
-            telemetry=self.telemetry,
-            field="captcha_image",
-        )
+        img = await first_present_visible(page, IbonSelectors.CAPTCHA_IMAGE)
         return img is not None
 
     async def handle_verification(self, page: Page) -> bool:
@@ -671,23 +739,64 @@ class IbonAdapter(TicketingAdapter):
     async def navigate_to_event(
         self, page: Page, event_url: str, session_preference: str | None = None
     ) -> bool:
+        """從活動頁走到選擇票區頁。
+
+        活動頁是 Angular SPA，場次清單由 `GetGameInfoList` 撐起來，而且在活動的
+        顯示期間之外根本不渲染；靠點畫面上的購票鈕會在開賣前後都撲空。改成直接
+        向同一支 API 要場次的訂購網址再導頁，開賣瞬間也少掉一次渲染等待。
+        """
         target_url = normalize_ibon_url(event_url)
+        if "/activityinfo/details/" in target_url.lower():
+            purchase_url = await self._resolve_session_url(
+                target_url, session_preference
+            )
+            if purchase_url is not None:
+                target_url = purchase_url
+
         await page.goto(target_url, wait_until="domcontentloaded")
         curr_url = getattr(page, "url", "").lower()
 
         if "/activityinfo/details/" in curr_url:
+            # API 沒給網址（例如還沒開放）時，退回頁面上的購票鈕。
             buy_btn = await first_visible(
                 page,
                 IbonSelectors.ACTIVITY_DETAILS_BUY_BTN,
                 timeout_ms=self.timeout_ms,
                 telemetry=self.telemetry,
             )
-            if buy_btn is not None:
-                await buy_btn.click()
-                with contextlib.suppress(Exception):
-                    await page.wait_for_url("**/UTK0201_000.aspx*", timeout=self.timeout_ms)
+            if buy_btn is None:
+                return False
+            await buy_btn.click()
+            with contextlib.suppress(Exception):
+                await page.wait_for_url("**/UTK0201_000.aspx*", timeout=self.timeout_ms)
 
         return True
+
+    async def _resolve_session_url(
+        self, event_url: str, session_preference: str | None
+    ) -> str | None:
+        from adapters.ticketing.ibon.resolver import IbonEventResolver
+
+        activity_id = urlsplit(event_url).path.rstrip("/").split("/")[-1]
+        resolver = IbonEventResolver()
+        try:
+            sessions = await resolver.fetch_sessions(activity_id)
+        except Exception:
+            return None
+
+        buyable = [
+            s
+            for s in sessions
+            if s.get("purchase_url") and s.get("can_buy") and not s.get("sold_out")
+        ]
+        if not buyable:
+            return None
+        if session_preference:
+            for session in buyable:
+                haystack = f"{session.get('name') or ''} {session.get('display_date') or ''}"
+                if session_preference in haystack:
+                    return str(session["purchase_url"])
+        return str(buyable[0]["purchase_url"])
 
     async def execute_payment(
         self, page: Page, payment_profile: CreditCardProfile | None

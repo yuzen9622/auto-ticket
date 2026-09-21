@@ -1,24 +1,51 @@
 {
-  "Code": 0,
-  "Message": "Success",
-  "Data": [
-    {
-      "ActivityId": "38001",
-      "ActivityName": "2026 ibon 音樂盛宴",
-      "StartDate": "2026/11/20",
-      "EndDate": "2026/11/20",
-      "Location": "高雄巨蛋",
-      "ImageUrl": "https://ticket.ibon.com.tw/images/38001.jpg",
-      "PriceRange": "2500 - 4500"
-    },
-    {
-      "ActivityId": "38002",
-      "ActivityName": "2026 搖滾世代 巡迴演出",
-      "StartDate": "2026/12/10",
-      "EndDate": "2026/12/12",
-      "Location": "台北小巨蛋",
-      "ImageUrl": "https://ticket.ibon.com.tw/images/38002.jpg",
-      "PriceRange": "1800 - 3800"
-    }
+ "StatusCode": 0,
+ "Message": "",
+ "Item": {
+  "Pattern": "entertainment",
+  "ATAP": null,
+  "List": [
+   {
+    "ActivityID": 38001,
+    "ActivityName": "ibon 音樂盛宴 2026",
+    "ActivityImage": "https://ticket.ibon.com.tw/image/WEB/38001.jpg",
+    "ActivityDes": "跨世代的聲音再次相遇",
+    "ActivitySDate": "2026-11-20T00:00:00",
+    "ActivityEDate": "2026-11-20T23:59:59",
+    "ActivityCategoryCode": "entertainment",
+    "ActivitySubCategoryCode": "",
+    "ActivityFrom": "qware",
+    "ImgUrlorUploadSet": 0,
+    "ActivityOrder": 0,
+    "CreateTime": "2026-08-01T10:00:00",
+    "PageCount": 1,
+    "GameStartDateMin": "2026-11-20T19:30:00",
+    "GameEndDateMax": "2026-11-20T22:00:00",
+    "GameTicketURL": "/ActivityInfo/Details?id=38001&pattern=entertainment",
+    "IsTraffic": false,
+    "Date": ""
+   },
+   {
+    "ActivityID": 38002,
+    "ActivityName": "城市劇場：夜行者",
+    "ActivityImage": "https://ticket.ibon.com.tw/image/WEB/38002.jpg",
+    "ActivityDes": "",
+    "ActivitySDate": "2026-12-05T00:00:00",
+    "ActivityEDate": "2026-12-06T23:59:59",
+    "ActivityCategoryCode": "drama",
+    "ActivitySubCategoryCode": "",
+    "ActivityFrom": "qware",
+    "ImgUrlorUploadSet": 0,
+    "ActivityOrder": 0,
+    "CreateTime": "2026-08-10T10:00:00",
+    "PageCount": 1,
+    "GameStartDateMin": "2026-12-05T19:30:00",
+    "GameEndDateMax": "2026-12-06T22:00:00",
+    "GameTicketURL": "/ActivityInfo/Details?id=38002&pattern=drama",
+    "IsTraffic": false,
+    "Date": ""
+   }
   ]
+ },
+ "Total": 2
 }

@@ -1,0 +1,27 @@
+{
+ "StatusCode": 0,
+ "Message": "",
+ "Item": {
+  "GIHtmls": [
+   {
+    "ShowSaleDate": "2026/11/20(五) 19:30\r\n",
+    "GameInfoName": "ibon 音樂盛宴 2026",
+    "VenueRegion": "高雄巨蛋",
+    "StartDT": "2026-09-20T12:00:00",
+    "EndDT": "2026-11-20T18:00:00",
+    "NowDT": "2026-09-21T13:00:00",
+    "Href": "/ActivityInfo/GoTicketURL?GoUrl=https%3A%2F%2Forders.ibon.com.tw%2Fapplication%2FUTK02%2FUTK0201_000.aspx%3FPERFORMANCE_ID%3DB0AAA001%26PRODUCT_ID%3DB0AAA000",
+    "SoldOut": false,
+    "CanBuy": true,
+    "CanChange": false,
+    "Rush": 0,
+    "PreQueueTime": null,
+    "PreQueue": 0,
+    "GameLoginRequired": 1
+   }
+  ],
+  "Enable": true,
+  "SystemBrowseType": 0
+ },
+ "Total": 0
+}

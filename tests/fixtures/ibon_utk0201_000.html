@@ -1,47 +1,21 @@
 <!DOCTYPE html>
 <html lang="zh-TW">
-<head>
-    <meta charset="UTF-8">
-    <title>選擇票券區域 - ibon 售票系統</title>
-</head>
+<head><meta charset="UTF-8"><title>ibon售票系統</title></head>
 <body>
-    <div id="ctl00_ContentPlaceHolder1_divArea">
-        <table class="table table-striped" id="ctl00_ContentPlaceHolder1_DataGrid1">
-            <thead>
-                <tr>
-                    <th>票種區域</th>
-                    <th>票價</th>
-                    <th>狀態</th>
-                    <th>選購</th>
-                </tr>
-            </thead>
-            <tbody>
-                <tr>
-                    <td>VIP特區</td>
-                    <td>4500</td>
-                    <td>熱賣中</td>
-                    <td>
-                        <a id="ctl00_ContentPlaceHolder1_DataGrid1_ctl02_btnBuy" class="btn btn-primary" href="UTK0201_001.aspx?PERFORMANCE_PRICE_AREA_ID=A01">選購</a>
-                    </td>
-                </tr>
-                <tr>
-                    <td>搖滾A區</td>
-                    <td>3500</td>
-                    <td>已售完</td>
-                    <td>
-                        <span class="btn btn-default disabled">已售完</span>
-                    </td>
-                </tr>
-                <tr>
-                    <td>二樓看台區</td>
-                    <td>2500</td>
-                    <td>尚有空位</td>
-                    <td>
-                        <a id="ctl00_ContentPlaceHolder1_DataGrid1_ctl04_btnBuy" class="btn btn-primary" href="UTK0201_001.aspx?PERFORMANCE_PRICE_AREA_ID=A03">選購</a>
-                    </td>
-                </tr>
-            </tbody>
-        </table>
-    </div>
+<input id="ctl00_ContentPlaceHolder1_chooseType" type="hidden" value="2" />
+<span id="action"></span>
+<img src="/seatmap.png" usemap="#areaMap" />
+<map name="areaMap">
+<area coords="130,122,162,122,162,186,106,186,106,178,114,178,114,170,122,170,122,162,130,162,130,122" href="javascript:Send('0205', 'B0C5S5JH', 'B0C5ST51', '0');" id="a0" rel="s0" shape="poly" style="cursor: default;" title="票區:2M樓VIP1區6000 票價：6000 尚餘：0"/>
+<area coords="498,122,530,122,530,162,538,162,538,170,546,170,546,178,554,178,554,186,498,186,498,122" href="javascript:Send('0205', 'B0C5S5JH', 'B0C5ST4R', '1');" id="a1" rel="s1" shape="poly" style="cursor: default;" title="票區:2M樓VIP5區6000 票價：6000 尚餘：0"/>
+<area coords="210,90,274,90,274,194,178,194,178,98,210,98,210,90" href="javascript:Send('0205', 'B0C5S5JH', 'B0C5ST5G', '2');" id="a2" rel="s2" shape="poly" style="cursor: default;" title="票區:2M樓VIP2區6000 票價：6000 尚餘：0"/>
+<area coords="298,90,354,90,354,98,370,98,370,194,290,194,290,98,298,98,298,90" href="javascript:Send('0205', 'B0C5S5JH', 'B0C5ST4C', '3');" id="a3" rel="s3" shape="poly" style="cursor: default;" title="票區:2M樓VIP3區6000 票價：6000 尚餘：0"/>
+</map>
+<script>
+function Send(page_name, performance_id, area_id, group_id) {
+  top.location.href = 'UTK' + page_name + '_.aspx?PERFORMANCE_ID=' + performance_id +
+    '&GROUP_ID=' + group_id + '&PERFORMANCE_PRICE_AREA_ID=' + area_id;
+}
+</script>
 </body>
 </html>
