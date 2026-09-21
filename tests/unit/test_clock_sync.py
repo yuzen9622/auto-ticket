@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import dataclasses
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 from typing import Any
 
 import httpx
@@ -17,6 +18,7 @@ from scheduler.clock_sync import (
     ClockSource,
     ClockSyncError,
     ClockSynchronizer,
+    NTP_FAILURE_LIMIT,
     NtpClockSync,
     ServerHeaderClockSync,
     TimeReference,
@@ -292,3 +294,53 @@ def test_clock_offset_update_is_exported_from_package_root() -> None:
     from scheduler import ClockOffsetUpdate as Exported
 
     assert Exported is ClockOffsetUpdate
+
+
+@pytest.mark.asyncio
+async def test_ntp_track_disables_itself_after_repeated_failures() -> None:
+    """NTP 打不通時不該每個預熱階段都再賠一次逾時。
+
+    實測一次搶票跑了兩個 resync 階段，兩次都等滿 3 秒才回 no_samples，等於白白
+    吃掉 6 秒預熱時間，而且拿到的 offset 還是 0。
+    """
+
+    class AlwaysFailingClient:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def request(self, host: str, timeout: float = 0.0) -> Any:
+            self.calls += 1
+            raise OSError("timed out")
+
+    client = AlwaysFailingClient()
+    ntp = NtpClockSync(ntp_client=client)
+
+    for _ in range(NTP_FAILURE_LIMIT):
+        with pytest.raises(ClockSyncError):
+            await ntp.sample("ntp.example.com")
+
+    assert ntp.disabled is True
+    with pytest.raises(ClockSyncError):
+        await ntp.sample("ntp.example.com")
+    # 停用之後不得再真的發包。
+    assert client.calls == NTP_FAILURE_LIMIT
+
+
+@pytest.mark.asyncio
+async def test_ntp_success_resets_failure_counter() -> None:
+    class FlakyClient:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def request(self, host: str, timeout: float = 0.0) -> Any:
+            self.calls += 1
+            if self.calls == 1:
+                raise OSError("timed out")
+            return SimpleNamespace(offset=0.004, delay=0.012, stratum=2)
+
+    ntp = NtpClockSync(ntp_client=FlakyClient())
+    with pytest.raises(ClockSyncError):
+        await ntp.sample("ntp.example.com")
+    sample = await ntp.sample("ntp.example.com")
+    assert sample.source is ClockSource.NTP
+    assert ntp.disabled is False

@@ -79,11 +79,28 @@ class ClockSynchronizerLike(Protocol):
     async def refresh(self) -> TimeReference: ...
 
 
+#: NTP 成功時實測 15~30ms；3 秒不是「成功要多久」而是「失敗要賠多久」。
+#: 這個探測跑在預熱階段上，賠掉的每一秒都直接壓縮開賣前的準備時間。
+DEFAULT_NTP_TIMEOUT_S = 0.8
+#: 連續失敗幾次之後停用 NTP 軌。
+NTP_FAILURE_LIMIT = 2
+
+
 class NtpClockSync:
+    """NTP 取樣。連續失敗就停用本軌，不再每個階段重賠一次逾時。"""
+
     def __init__(self, *, ntp_client: Any = None) -> None:
         self._client = ntp_client
+        self._consecutive_failures = 0
 
-    async def sample(self, host: str, timeout: float = 3.0) -> ClockSample:
+    @property
+    def disabled(self) -> bool:
+        """連錯這麼多次就別再試了：同一個 task 的網路狀況不會在幾秒內變好。"""
+        return self._consecutive_failures >= NTP_FAILURE_LIMIT
+
+    async def sample(
+        self, host: str, timeout: float = DEFAULT_NTP_TIMEOUT_S
+    ) -> ClockSample:
         def _call() -> ClockSample:
             try:
                 if self._client is not None:
@@ -104,7 +121,15 @@ class NtpClockSync:
                     raise
                 raise ClockSyncError(f"NTP sample failed for {host}: {exc}") from exc
 
-        return await asyncio.to_thread(_call)
+        if self.disabled:
+            raise ClockSyncError(f"NTP disabled after repeated failures ({host})")
+        try:
+            sample = await asyncio.to_thread(_call)
+        except Exception:
+            self._consecutive_failures += 1
+            raise
+        self._consecutive_failures = 0
+        return sample
 
 
 class ServerHeaderClockSync:
