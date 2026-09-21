@@ -16,12 +16,12 @@ import contextlib
 import hashlib
 import re
 from collections.abc import Awaitable, Callable, Sequence
-from enum import Enum
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, ClassVar
 from urllib.parse import urlsplit
 
 from adapters.payment.base import PaymentOutcome, PaymentProvider, PaymentResult
 from adapters.ticketing.base import TicketingAdapter
+from adapters.ticketing.dom import try_solve_cloudflare_turnstile
 from adapters.ticketing.kktix.captcha_selectors import CaptchaSelectors
 from adapters.ticketing.kktix.dom import (
     DEFAULT_OPTIONAL_PROBE_MS,
@@ -33,11 +33,37 @@ from adapters.ticketing.kktix.dom import (
     read_input_value,
 )
 from adapters.ticketing.kktix.selectors import KKTIXSelectors
+from adapters.ticketing.page_state import (
+    ALL_TICKET_REASONS,
+    CLOUDFLARE_MARK,
+    FAILURE_MODAL_MARK,
+    FAILURE_MODAL_MISSING_MARK,
+    KKTIXPageKind,
+    PageKind,
+    PageState,
+    REASON_CLOUDFLARE,
+    REASON_NO_TICKET_UNITS,
+    REASON_NOT_REGISTRATION_PAGE,
+    REASON_PLUS_BUTTON_MISSING,
+    REASON_QUANTITY_MISMATCH,
+    REASON_SELECTED,
+    REASON_SOLD_OUT,
+    REASON_TERMS_NOT_ACCEPTED,
+    REASON_VERIFICATION_REQUIRED,
+    RESET_MARK,
+    RESET_REASON_MINUS_MISSING,
+    RESET_REASON_NO_QUANTITY_FIELD,
+    RESET_REASON_NOT_ZERO,
+    RESET_REASON_UNREADABLE,
+    ZERO_QUANTITY,
+    CloudflareChallengeError,
+)
 from adapters.verification.base import (
     ChallengeKind,
     VerificationChallenge,
     VerificationProvider,
 )
+from domain.event import PlatformEnum
 from domain.preference import SeatPreference, TicketPreference
 from domain.task import AttendeeProfile, CreditCardProfile, UserContactProfile
 from strategy.seat_strategy import DOWNGRADE_MARK, SeatAction, decide_seat_action
@@ -50,40 +76,33 @@ else:
     Locator = Any
     Page = Any
 
-# select_tickets 的理由碼；協調器依此對應 FSM 事件。
-REASON_SELECTED = "SELECTED"
-REASON_SOLD_OUT = "SOLD_OUT"
-REASON_NO_TICKET_UNITS = "NO_TICKET_UNITS"
-REASON_PLUS_BUTTON_MISSING = "PLUS_BUTTON_MISSING"
-REASON_QUANTITY_MISMATCH = "QUANTITY_MISMATCH"
-REASON_TERMS_NOT_ACCEPTED = "TERMS_NOT_ACCEPTED"
-REASON_CLOUDFLARE = "CLOUDFLARE_CHALLENGE"
-REASON_NOT_REGISTRATION_PAGE = "NOT_REGISTRATION_PAGE"
-
-ALL_TICKET_REASONS = frozenset(
-    {
-        REASON_SELECTED,
-        REASON_SOLD_OUT,
-        REASON_NO_TICKET_UNITS,
-        REASON_PLUS_BUTTON_MISSING,
-        REASON_QUANTITY_MISMATCH,
-        REASON_TERMS_NOT_ACCEPTED,
-        REASON_NOT_REGISTRATION_PAGE,
-    }
-)
-
-CLOUDFLARE_MARK = "cloudflare_challenge"
-FAILURE_MODAL_MARK = "failure_modal_dismissed"
-FAILURE_MODAL_MISSING_MARK = "failure_modal_dismiss_missing"
-RESET_MARK = "ticket_quantities_reset"
-
-# 歸零失敗的細分理由：只進 timeline，**不**併入 `ALL_TICKET_REASONS`——
-# 那份清單與 FSM 事件表一一對應，混進沒有事件的理由碼會讓對應關係失效。
-RESET_REASON_NO_QUANTITY_FIELD = "NO_QUANTITY_FIELD"
-RESET_REASON_MINUS_MISSING = "MINUS_BUTTON_MISSING"
-RESET_REASON_UNREADABLE = "QUANTITY_UNREADABLE"
-RESET_REASON_NOT_ZERO = "QUANTITY_NOT_ZERO"
-ZERO_QUANTITY = "0"
+__all__ = [
+    "ALL_TICKET_REASONS",
+    "CLOUDFLARE_MARK",
+    "CloudflareChallengeError",
+    "FAILURE_MODAL_MARK",
+    "FAILURE_MODAL_MISSING_MARK",
+    "KKTIXAdapter",
+    "KKTIXPageKind",
+    "PageKind",
+    "PageState",
+    "REASON_CLOUDFLARE",
+    "REASON_NO_TICKET_UNITS",
+    "REASON_NOT_REGISTRATION_PAGE",
+    "REASON_PLUS_BUTTON_MISSING",
+    "REASON_QUANTITY_MISMATCH",
+    "REASON_SELECTED",
+    "REASON_SOLD_OUT",
+    "REASON_TERMS_NOT_ACCEPTED",
+    "REASON_VERIFICATION_REQUIRED",
+    "RESET_MARK",
+    "RESET_REASON_MINUS_MISSING",
+    "RESET_REASON_NO_QUANTITY_FIELD",
+    "RESET_REASON_NOT_ZERO",
+    "RESET_REASON_UNREADABLE",
+    "ZERO_QUANTITY",
+    "to_registration_url",
+]
 
 # 頁面狀態的 URL 物理特徵。訂單完成與付款頁共用 `/orders/` 前綴，
 # 唯一的差別就是後綴有沒有 `/payment`——判定順序因此不可調換。
@@ -144,60 +163,12 @@ def to_registration_url(event_url: str) -> str:
     return f"{REGISTRATION_ORIGIN}/events/{match.group('slug')}/registrations/new"
 
 
-class KKTIXPageKind(str, Enum):
-    """目前停在哪一種頁面。票種的讀法在兩種頁面上完全不同，不得混用。"""
 
-    EVENT = "EVENT"
-    """公開活動主頁：票種是一張表格，只看得到售賣時段，看不到可購買數量。"""
-    REGISTRATION = "REGISTRATION"
-    """購票登記頁：票種是可加減數量的單元，這裡才下得了單。"""
-    ORDER = "ORDER"
-    """劃位與訂單填寫頁：已經有訂單了，這裡填聯絡人與參加人。"""
-    LOGIN = "LOGIN"
-    """被導到登入頁：需要人自己登入，本專案不自動填任何憑證。"""
-    CHALLENGE = "CHALLENGE"
-    """人機驗證挑戰頁：只偵測與回報，不繞過；需要人自己在瀏覽器裡通過。"""
-    UNKNOWN = "UNKNOWN"
-    """以上皆非——多半是被導去登入頁或錯誤頁。"""
-
-
-class PageState(str, Enum):
-    """搶票迴圈每一輪實際看到的頁面狀態。
-
-    與 `KKTIXPageKind`（「這是哪一類網址」）刻意分離：這裡描述的是「現在該做哪個
-    動作」，粒度細到彈窗與局部區塊。**絕不**包含 `SOLD_OUT`——售罄是策略層看完
-    票種快照後的結論，不是頁面上讀得到的物理特徵，在這一層臆造它就是汙染研究資料。
-    """
-
-    FAILURE_MODAL = "FAILURE_MODAL"
-    """「別人搶先一步」「已無可配座位」——這一輪搶輸了，得換票種。"""
-    GUEST_MODAL = "GUEST_MODAL"
-    """未登入訪客彈窗：KKTIX 勸你先成為會員。"""
-    QUEUE = "QUEUE"
-    """排隊等候室。**嚴禁 reload**：重整會被丟回隊伍尾端。"""
-    COMPLETED = "COMPLETED"
-    """訂單完成頁（未付款保留訂單亦算抵達）。"""
-    PAYMENT_REQUIRED = "PAYMENT_REQUIRED"
-    """付款頁。"""
-    QUALIFICATION_CODE = "QUALIFICATION_CODE"
-    """專屬會員碼／邀請碼的資格審查區塊。"""
-    FORM_FILLING = "FORM_FILLING"
-    """聯絡人與動態同意條款表單；問答題同屬這張表單，故優先於局部驗證題。"""
-    VERIFICATION_CHALLENGE = "VERIFICATION_CHALLENGE"
-    """只有題幹與答案欄、沒有表單欄位的獨立驗證題。"""
-    SEAT_SELECTION = "SEAT_SELECTION"
-    """登記頁且**已選數量 > 0**：該按配位或下一步了。"""
-    TICKET_SELECTION = "TICKET_SELECTION"
-    """登記頁且**已選數量 == 0**：還沒選票。"""
-    UNKNOWN = "UNKNOWN"
-    """過渡暫態。呼叫端只能微等待後重判，逾時即 fail-closed。"""
-
-
-class CloudflareChallengeError(RuntimeError):
-    """偵測到人機驗證挑戰；一律 fail-closed 中止，不嘗試繞過。"""
 
 
 class KKTIXAdapter(TicketingAdapter):
+    platform: ClassVar[PlatformEnum] = PlatformEnum.KKTIX
+
     def __init__(
         self,
         *,
@@ -205,6 +176,7 @@ class KKTIXAdapter(TicketingAdapter):
         payment: PaymentProvider,
         verification: VerificationProvider | None = None,
         attendees: Sequence[AttendeeProfile] = (),
+        ticket_preference: TicketPreference | None = None,
         timeout_ms: int = 5000,
         probe_timeout_ms: int | None = None,
         navigation_timeout_ms: int = DEFAULT_NAVIGATION_TIMEOUT_MS,
@@ -221,6 +193,7 @@ class KKTIXAdapter(TicketingAdapter):
         cloudflare_max_retries: int = 3,
         on_challenge_grace: Callable[[str, float, float, int], Awaitable[Any]] | None = None,
     ) -> None:
+        super().__init__(ticket_preference=ticket_preference)
         self.telemetry = telemetry
         self.payment = payment
         self.verification = verification
@@ -1092,6 +1065,7 @@ class KKTIXAdapter(TicketingAdapter):
         套用一次」，若在這裡重新決策，降級鍵路就會拿到第二份不同的決策而反覆
         選到已經搶輸的同一張票。
         """
+        self._target_quantity = decision.quantity
         self.last_ticket_decision = decision
         self.telemetry.record(
             TimelineEventType.MARK,
@@ -1760,3 +1734,41 @@ class KKTIXAdapter(TicketingAdapter):
                 provider=result.provider,
             )
         return result
+
+    async def submit_qualification_code(self, page: Page, code: str) -> bool:
+        """填入並送出特權碼／資格碼。"""
+        field_locator = await self._locate(
+            page,
+            KKTIXSelectors.MEMBER_CODE_INPUT,
+            "member_code_input",
+        )
+        if field_locator is None:
+            return False
+        await ng_fill(page, field_locator, code)
+        button = await self._locate(
+            page,
+            KKTIXSelectors.MEMBER_CODE_VERIFY_BTN,
+            "member_code_verify_btn",
+        )
+        if button is None:
+            return False
+        await ng_click(page, button, telemetry=self.telemetry)
+        return True
+
+    async def detect_verification_error(self, page: Page) -> bool:
+        """偵測驗證題作答是否有錯誤提示。"""
+        alert = await first_visible(
+            page,
+            KKTIXSelectors.CAPTCHA_ERROR_ALERT,
+            timeout_ms=self.probe_timeout_ms,
+            telemetry=self.telemetry,
+            field="captcha_error_alert",
+        )
+        return alert is not None
+
+    async def handle_cloudflare(self, page: Page) -> bool:
+        """單次探測並嘗試受控解決 Cloudflare / Turnstile 挑戰。"""
+        async def is_active() -> bool:
+            return contains_cloudflare_challenge(await page_text(page)) is not None
+
+        return await try_solve_cloudflare_turnstile(page, is_challenge_active=is_active)

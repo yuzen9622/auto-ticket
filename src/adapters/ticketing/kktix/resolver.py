@@ -16,7 +16,7 @@ from bs4 import BeautifulSoup, XMLParsedAsHTMLWarning
 from bs4.element import Tag
 from rapidfuzz import fuzz
 
-from adapters.ticketing.base import EventResolver
+from adapters.ticketing.base import EventResolver, ResolveError
 from adapters.ticketing.kktix.selectors import (
     KKTIX_EVENT_URL_RE,
     KKTIXSelectors,
@@ -74,7 +74,7 @@ _DATETIME_FORMATS = (
 )
 
 
-class KKTIXResolveError(Exception):
+class KKTIXResolveError(ResolveError):
     """Raised when the KKTIX feed or event page cannot be retrieved / interpreted."""
 
 
