@@ -84,6 +84,10 @@ export function SessionJobWatcher({
     queryKey: ["account-job", jobId],
     queryFn: () => getAccountJob(jobId as string),
     enabled: jobId !== null,
+    // 自動／手動登入會把使用者帶去另一個瀏覽器視窗。背景分頁的
+    // timer 可能被 Chrome 節流，因此背景仍輪詢，切回設定頁時也強制補抓。
+    refetchIntervalInBackground: true,
+    refetchOnWindowFocus: "always",
     refetchInterval: (query) =>
       query.state.data && isTerminalJobState(query.state.data.state)
         ? false

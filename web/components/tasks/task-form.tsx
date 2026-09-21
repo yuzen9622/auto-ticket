@@ -128,16 +128,20 @@ export function TaskForm({ eventId }: { eventId: string }) {
         : defaultTicketingTimeLocal(event.sale_start_at, Date.now()),
       // 票價是完全相等比對，預設值 0 會把所有票排除掉。活動票種已經抓回來了，
       // 就用它預填，讓表單一打開就是「照票面價買」而不是一個買不到任何票的設定。
+      //
+      // 拓元與 ibon 的票價要進到票區頁才看得到，搜尋階段拿不到票種；這時唯一
+      // 買得到票的設定就是接受其他票種，否則送出的必然是一個買不到任何票的任務。
       ticket_preference: event.ticket_types.length
         ? {
             ...prev.ticket_preference,
+            fallback_to_any: false,
             priorities: event.ticket_types.map((ticket, index) => ({
               price: ticket.price,
               ticket_name_pattern: ticket.name,
               priority: index + 1,
             })),
           }
-        : prev.ticket_preference,
+        : { ...prev.ticket_preference, fallback_to_any: true },
     }))
   }, [event])
 

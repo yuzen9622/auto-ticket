@@ -19,6 +19,7 @@ const huninn = Huninn({
   subsets: ["latin"],
   variable: "--font-huninn",
   display: "swap",
+  adjustFontFallback: false,
 })
 
 const geistMono = Geist_Mono({
