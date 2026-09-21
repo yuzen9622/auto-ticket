@@ -11,7 +11,7 @@ from collections.abc import Mapping
 from types import MappingProxyType
 from typing import Any
 
-from adapters.ticketing.kktix.adapter import (
+from adapters.ticketing.page_state import (
     REASON_NO_TICKET_UNITS,
     REASON_NOT_REGISTRATION_PAGE,
     REASON_PLUS_BUTTON_MISSING,
@@ -19,6 +19,7 @@ from adapters.ticketing.kktix.adapter import (
     REASON_SELECTED,
     REASON_SOLD_OUT,
     REASON_TERMS_NOT_ACCEPTED,
+    CloudflareChallengeError,
 )
 
 EVENT_TICKET_RESERVED = "ticket_reserved"
@@ -55,6 +56,17 @@ class PurchaseStepError(RuntimeError):
         super().__init__(f"{step} failed: {reason}")
         self.step = step
         self.reason = reason
+
+
+class CloudflareStepError(PurchaseStepError, CloudflareChallengeError):
+    """兼具 PurchaseStepError 與 CloudflareChallengeError 的挑戰逾時例外。"""
+
+    def __init__(
+        self,
+        step: str = "check_session",
+        reason: str = "page not ready before sale: CHALLENGE",
+    ) -> None:
+        super().__init__(step, reason)
 
 
 def ticket_event_for(reason: str) -> str:

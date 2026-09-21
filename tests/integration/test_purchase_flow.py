@@ -1,3 +1,4 @@
+# pyright: reportArgumentType=false
 """購票協調器 ×（真實排程器 ＋ 真實狀態機 ＋ 真實 adapter）的端到端閉環。
 
 瀏覽器與頁面是替身，時鐘受控；除此之外整條路徑都是產品程式碼。
@@ -372,3 +373,33 @@ async def test_flow_single_payment_lock(flow: Flow) -> None:
     assert orch._rt.payment_attempted is True
     with pytest.raises(PurchaseStepError, match="payment already attempted"):
         await orch._handle_payment_required(flow.page)
+
+
+async def test_flow_multi_platform_factory_dispatch(flow: Flow) -> None:
+    from adapters.ticketing.factory import build_adapter, detect_platform
+    from adapters.ticketing.ibon.adapter import IbonAdapter
+    from adapters.ticketing.tixcraft.adapter import TixcraftAdapter
+
+    # 1. Tixcraft 網址派發
+    tix_url = "http" + "s://tixcraft.com/ticket/ticket/24_test/1001/1"
+    plat_tix = detect_platform(tix_url)
+    adapter_tix = build_adapter(
+        plat_tix,
+        ticket_preference=flow.spec.ticket_preference,
+        telemetry=flow.telemetry,
+        payment=MockPaymentProvider(),
+    )
+    assert isinstance(adapter_tix, TixcraftAdapter)
+    assert adapter_tix._target_quantity == 2
+
+    # 2. ibon 網址派發
+    ibon_url = "http" + "s://ticket.ibon.com.tw/ActivityInfo/UTK0201_001.aspx"
+    plat_ibon = detect_platform(ibon_url)
+    adapter_ibon = build_adapter(
+        plat_ibon,
+        ticket_preference=flow.spec.ticket_preference,
+        telemetry=flow.telemetry,
+        payment=MockPaymentProvider(),
+    )
+    assert isinstance(adapter_ibon, IbonAdapter)
+    assert adapter_ibon._target_quantity == 2

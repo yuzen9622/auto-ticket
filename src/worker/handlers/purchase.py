@@ -5,8 +5,10 @@ import contextlib
 import uuid
 from typing import Any
 
+from accounts.models import CredentialKind
+from accounts.vault import EncryptedFileVault
 from adapters.payment import select_payment_provider
-from adapters.ticketing.kktix.adapter import KKTIXAdapter
+from adapters.ticketing.factory import build_adapter, detect_platform
 from adapters.verification.ddddocr_provider import DdddOcrProvider
 from adapters.verification.manual import ManualVerificationProvider
 from adapters.verification.routing import RoutingVerificationProvider
@@ -16,6 +18,7 @@ from broker.broker import SqliteTaskBroker
 from broker.jobs import JobRecord
 from broker.outbox import OutboxWriter
 from browser.context_factory import BrowserProfile
+from browser.cookies import inject_platform_cookies
 from browser.system_chrome import SystemChromeError, ensure_system_chrome
 from domain.task import TaskStatus
 from purchase.orchestrator import PurchaseOrchestrator
@@ -30,7 +33,7 @@ from ..spec_codec import rehydrate_spec
 from ..telemetry_bridge import ClockTicker, StreamingTimelineRecorder
 
 GATE_HINTS = {
-    "CHALLENGE": "自動處理失敗，請在 Chrome 完成驗證（本程式不會代為繞過）",
+    "CHALLENGE": "自動處理未通過，請接手完成驗證（本程式不會代為繞過）",
     "VERIFICATION": "已自動填入辨識結果，請在瀏覽器確認後自行送出",
     "LOGIN": "被導到登入頁，請在瀏覽器裡自行登入",
     "EVENT": "目前停在活動主頁，請自行點進購票登記頁",
@@ -187,7 +190,10 @@ async def execute_purchase(
             ephemeral=False,
         )
 
-    adapter = KKTIXAdapter(
+    platform = detect_platform(spec.event_url)
+    adapter = build_adapter(
+        platform,
+        ticket_preference=spec.ticket_preference,
         telemetry=telemetry,
         payment=payment,
         verification=verification,
@@ -201,6 +207,13 @@ async def execute_purchase(
         on_ocr_progress=announce_ocr_progress,
         on_verification_done=announce_verification_done,
     )
+
+    vault = EncryptedFileVault.from_env(settings.vault_root)
+    record = vault.load_record(platform.value) if vault else None
+
+    async def on_page_created(page: Any) -> None:
+        if record is not None and record.kind == CredentialKind.COOKIE:
+            await inject_platform_cookies(page.context, record)
 
     control_state = ControlState()
     scheduler = ControllableScheduler(telemetry, control=control_state)
@@ -244,6 +257,7 @@ async def execute_purchase(
         cloudflare_max_retries=spec.cloudflare_max_retries,
         auto_submit_verification=spec.auto_submit_verification,
         challenge_gate=announce_challenge_grace,
+        on_page_created=on_page_created,
     )
 
     ticker = ClockTicker(

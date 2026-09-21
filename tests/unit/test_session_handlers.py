@@ -187,10 +187,16 @@ async def test_execute_auto_login_vault_decrypt_error_fallback_to_env(
     mock_browser.stop = AsyncMock()
     mock_page = MagicMock()
     mock_page.url = "https://kktix.test/users/sign_in"
-    mock_page.context.cookies = AsyncMock(side_effect=[
-        [],  # 登入前無登入 cookie
-        [{"domain": "kktix.com", "name": "user_id_v2", "value": "5507559"}],  # 登入後取得 user_id_v2
-    ])
+    logged_in_cookies = [
+        {"domain": "kktix.com", "name": "user_id_v2", "value": "5507559"}
+    ]
+    mock_page.context.cookies = AsyncMock(
+        side_effect=[
+            [],  # 登入前無登入 cookie
+            logged_in_cookies,  # 登入後取得 user_id_v2
+            logged_in_cookies,  # 最終登入狀態確認
+        ]
+    )
     mock_browser.new_page = AsyncMock(return_value=mock_page)
 
     monkeypatch.setattr("worker.handlers.session.PlaywrightManager", lambda *args, **kwargs: mock_browser)
@@ -209,7 +215,7 @@ async def test_execute_auto_login_vault_decrypt_error_fallback_to_env(
         KKTIXPageKind.UNKNOWN,
     ])
     mock_adapter.login = AsyncMock(return_value=True)
-    monkeypatch.setattr("worker.handlers.session.KKTIXAdapter", lambda *args, **kwargs: mock_adapter)
+    monkeypatch.setattr("worker.handlers.session.build_adapter", lambda *args, **kwargs: mock_adapter)
 
     mock_broker = MagicMock()
     mock_broker.mark_running = AsyncMock()
@@ -310,3 +316,100 @@ async def test_wait_for_turnstile_not_present() -> None:
 
     ok = await adapter._wait_for_turnstile(mock_page, timeout_ms=1000)
     assert ok is True
+
+
+@pytest.mark.asyncio
+async def test_auto_login_cookie_does_not_call_adapter_login(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from accounts.models import CredentialKind, CredentialRecord
+    from adapters.ticketing.page_state import PageKind
+
+    # 模擬 Vault 存有 COOKIE 憑證
+    mock_vault = MagicMock()
+    mock_vault.available.return_value = True
+    cookie_record = CredentialRecord(
+        platform="tixcraft",
+        kind=CredentialKind.COOKIE,
+        account="TIXUISID",
+        access_key="",
+        cookies={"TIXUISID": "test_tix_cookie_val"},
+    )
+    mock_vault.load_record.return_value = cookie_record
+    monkeypatch.setattr("worker.handlers.session.EncryptedFileVault.from_env", lambda root: mock_vault)
+
+    mock_browser = MagicMock()
+    mock_browser.start = AsyncMock()
+    mock_browser.stop = AsyncMock()
+    mock_page = MagicMock()
+    mock_page.url = "https://tixcraft.com/user/changePassword"
+    mock_page.context.cookies = AsyncMock(return_value=[
+        {"domain": ".tixcraft.com", "name": "TIXUISID", "value": "test_tix_cookie_val"}
+    ])
+    mock_browser.new_page = AsyncMock(return_value=mock_page)
+
+    monkeypatch.setattr("worker.handlers.session.PlaywrightManager", lambda *args, **kwargs: mock_browser)
+    monkeypatch.setattr("worker.handlers.session._ensure_browser_endpoint", AsyncMock(return_value=None))
+
+    mock_inject = AsyncMock(return_value=1)
+    monkeypatch.setattr("worker.handlers.session.inject_platform_cookies", mock_inject)
+
+    mock_adapter = MagicMock()
+    mock_adapter.probe_page = AsyncMock(return_value=PageKind.REGISTRATION)
+    mock_adapter.login = AsyncMock()
+    monkeypatch.setattr("worker.handlers.session.build_adapter", lambda *args, **kwargs: mock_adapter)
+
+    mock_broker = MagicMock()
+    mock_broker.mark_running = AsyncMock()
+    mock_broker.complete = AsyncMock()
+
+    job = _make_job_record("test_job_cookie", payload={"platform": "tixcraft"})
+    mock_settings = MagicMock()
+    mock_settings.vault_root = tmp_path / "vault"
+    mock_settings.headless = True
+    mock_settings.screenshot_dir = tmp_path / "screenshots"
+
+    await execute_auto_login(
+        job,
+        worker_id="worker_test",
+        db=MagicMock(),
+        broker=mock_broker,
+        outbox=MagicMock(),
+        settings=mock_settings,
+    )
+
+    # 1. COOKIE 必須在導航／probe 前注入
+    mock_inject.assert_awaited_once_with(mock_page.context, cookie_record)
+    # 2. COOKIE 流程絕對不得呼叫 adapter.login
+    assert mock_adapter.login.call_count == 0
+    # 3. 成功完成
+    mock_broker.complete.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_probe_login_state_three_platforms() -> None:
+    from adapters.ticketing.page_state import PageKind
+
+    mock_adapter = MagicMock()
+    mock_adapter.probe_page = AsyncMock(return_value=PageKind.REGISTRATION)
+    mock_page = MagicMock()
+    mock_page.url = "https://example.com"
+
+    # KKTIX
+    kktix_cookies = [{"domain": "kktix.com", "name": "user_id_v2", "value": "12345"}]
+    state = await probe_login_state(mock_adapter, mock_page, cookies=kktix_cookies, platform="kktix")
+    assert state == LoginState.LOGGED_IN
+
+    # Tixcraft
+    tix_cookies = [{"domain": ".tixcraft.com", "name": "TIXUISID", "value": "abcde"}]
+    state = await probe_login_state(mock_adapter, mock_page, cookies=tix_cookies, platform="tixcraft")
+    assert state == LoginState.LOGGED_IN
+
+    # ibon
+    ibon_cookies = [{"domain": ".ibon.com.tw", "name": "ibonqware", "value": "xyz"}]
+    state = await probe_login_state(mock_adapter, mock_page, cookies=ibon_cookies, platform="ibon")
+    assert state == LoginState.LOGGED_IN
+
+    # Empty -> LOGGED_OUT
+    state = await probe_login_state(mock_adapter, mock_page, cookies=[], platform="tixcraft")
+    assert state == LoginState.LOGGED_OUT

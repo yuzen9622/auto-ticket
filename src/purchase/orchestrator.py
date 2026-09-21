@@ -16,10 +16,9 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Any
 
+from accounts.vault import get_env_credentials
 from adapters.payment.base import PaymentOutcome, PaymentProvider, PaymentResult
-from adapters.ticketing.kktix.adapter import KKTIXPageKind, PageState
-from adapters.ticketing.kktix.dom import first_visible, ng_click, ng_fill
-from adapters.ticketing.kktix.selectors import KKTIXSelectors
+from adapters.ticketing.page_state import CloudflareChallengeError, PageKind, PageState
 from adapters.verification.base import VerificationProvider
 from browser.context_factory import sanitize_path_component
 from browser.manager import PlaywrightManager
@@ -34,6 +33,7 @@ from purchase.handlers import (
     EVENT_SUBMIT_PAYMENT,
     EVENT_TICKET_RESERVED,
     EVENT_VERIFICATION_PASSED,
+    CloudflareStepError,
     PurchaseStepError,
     seat_event_for,
     verification_event_for,
@@ -101,10 +101,8 @@ PAGE_STATE_FSM_SYNC: Mapping[PageState, tuple[str, str]] = MappingProxyType(
 
 # 憑證只從環境變數取得。常數名刻意避開 PASSWORD 字樣：識別子一旦帶上該關鍵字，
 # 靜態掃描就分不出「環境變數的名字」與「真的密碼」。
-ENV_LOGIN_USER = "AUTO_TICKET_KKTIX_USERNAME"
-ENV_LOGIN_KEY = "AUTO_TICKET_KKTIX_PASSWORD"
 ENV_MEMBER_CODE = "AUTO_TICKET_MEMBER_CODE"
-MEMBER_CODE_PROMPT = "請輸入 KKTIX 會員/專屬邀請碼> "
+MEMBER_CODE_PROMPT = "請輸入會員/專屬邀請碼> "
 MEMBER_CODE_PROMPT_TIMEOUT_S = 15.0
 
 
@@ -165,6 +163,7 @@ class PurchaseOrchestrator:
         queue_poll_s: float = 0.5,
         micro_wait_s: float = 0.05,
         optional_probe_ms: int = 500,
+        on_page_created: Callable[[Any], Awaitable[None]] | None = None,
     ) -> None:
         self.spec = spec
         self.browser = browser
@@ -214,6 +213,7 @@ class PurchaseOrchestrator:
         self.queue_poll_s = queue_poll_s
         self.micro_wait_s = micro_wait_s
         self.optional_probe_ms = optional_probe_ms
+        self.on_page_created = on_page_created
         self.fsm: PurchaseWorkflow | None = None
         self._rt = _Runtime()
 
@@ -279,15 +279,15 @@ class PurchaseOrchestrator:
         if self._rt.auto_login_attempted:
             return False
         self._rt.auto_login_attempted = True
-        username = os.environ.get(ENV_LOGIN_USER, "").strip()
-        secret_token = os.environ.get(ENV_LOGIN_KEY, "").strip()
-        if not (username and secret_token):
+        creds = get_env_credentials(self.adapter.platform)
+        if creds is None:
             self.telemetry.record(
                 TimelineEventType.MARK,
                 "auto_login_unavailable",
                 requested=bool(self.spec.auto_login),
             )
             return False
+        username, secret_token = creds
         saved_hook = self._rt.screenshot_hook
         self._rt.screenshot_hook = None
         try:
@@ -310,12 +310,9 @@ class PurchaseOrchestrator:
         """開賣前的就緒閘門專用：只有真的配了憑證才試，否則一律等人。"""
         if self._rt.auto_login_attempted:
             return False
-        if not (
-            os.environ.get(ENV_LOGIN_USER, "").strip()
-            and os.environ.get(ENV_LOGIN_KEY, "").strip()
-        ):
+        if not get_env_credentials(self.adapter.platform):
             return False
-        if kind is KKTIXPageKind.LOGIN:
+        if kind is PageKind.LOGIN:
             return await self._handle_guest_modal(page, is_guest_modal=False)
         state = await self.adapter.detect_page_state(page)
         if state is PageState.GUEST_MODAL:
@@ -337,6 +334,58 @@ class PurchaseOrchestrator:
             self.spec.task_id, page
         )
         await self.browser.attach_cdp(page)
+        if self.on_page_created is not None:
+            await self.on_page_created(page)
+
+    async def _try_handle_cloudflare(
+        self,
+        page: Any,
+        *,
+        deadline: float,
+        challenge_started_at: float,
+        challenge_rounds: int,
+    ) -> tuple[bool, int]:
+        """開賣前主動探測並嘗試解決 Cloudflare / Turnstile 挑戰。
+
+        遵守凍結決策：
+        - spec.auto_cloudflare=False 或 cloudflare_max_retries == 0 或 challenge_grace_s <= 0：不點擊，立即回 False。
+        - 所有嘗試共用單一 challenge_grace_s deadline = min(session_deadline, started + challenge_grace_s)。
+        - 在 deadline 前最多呼叫 adapter.handle_cloudflare cloudflare_max_retries 次。
+        - 每次都透過 challenge_gate 回報 elapsed/budget/attempt。
+        - 成功回 True；失敗回 False。
+        """
+        if (
+            not self.spec.auto_cloudflare
+            or self.cloudflare_max_retries <= 0
+            or self.challenge_grace_s <= 0
+        ):
+            return False, challenge_rounds
+
+        challenge_deadline = min(
+            deadline, challenge_started_at + self.challenge_grace_s
+        )
+
+        handle_fn = getattr(self.adapter, "handle_cloudflare", None)
+        if handle_fn is None:
+            return False, challenge_rounds
+
+        while (
+            challenge_rounds < self.cloudflare_max_retries
+            and self._loop_time() < challenge_deadline
+        ):
+            challenge_rounds += 1
+            waited = self._loop_time() - challenge_started_at
+            if self.challenge_gate is not None:
+                await self.challenge_gate(
+                    "CHALLENGE", waited, self.challenge_grace_s, challenge_rounds
+                )
+            solved = bool(await handle_fn(page))
+            if solved:
+                return True, challenge_rounds
+            if challenge_rounds < self.cloudflare_max_retries:
+                await asyncio.sleep(self.challenge_poll_s)
+
+        return False, challenge_rounds
 
     async def _check_session(self, ctx: WarmupContext) -> None:
         """開賣前的就緒閘門：確認真的停在可下單的登記頁。
@@ -379,7 +428,7 @@ class PurchaseOrchestrator:
                 kind=str(getattr(kind, "value", kind)),
                 attempt=attempt,
             )
-            if kind is KKTIXPageKind.REGISTRATION:
+            if kind is PageKind.REGISTRATION:
                 if challenge_seen_at is not None:
                     self.telemetry.record(
                         TimelineEventType.MARK,
@@ -402,14 +451,14 @@ class PurchaseOrchestrator:
             # 這件事一定要在開賣前做完——開賣後才去找場次就來不及了。
             # 被人機驗證或登入頁擋住時不要導航——那會把人剛處理好的現場狀態敲掉。
             # 其餘「不是可下單登記頁」的情況都可能是多場次活動的母頁，值得試著選進場次。
-            if kind in (KKTIXPageKind.EVENT, KKTIXPageKind.UNKNOWN):
+            if kind in (PageKind.EVENT, PageKind.UNKNOWN):
                 await self.adapter.navigate_to_event(
                     page,
                     self.spec.event_url,
                     session_preference=self.spec.session_preference,
                 )
                 kind = await self.adapter.probe_page(page)
-                if kind is KKTIXPageKind.REGISTRATION:
+                if kind is PageKind.REGISTRATION:
                     attempt += 1
                     continue
             blocked_reason = self._gate_blocker(kind)
@@ -417,6 +466,10 @@ class PurchaseOrchestrator:
                 kind_value = str(getattr(kind, "value", kind))
                 if blocked_reason is not None:
                     raise PurchaseStepError("check_session", blocked_reason)
+                if kind is PageKind.CHALLENGE:
+                    raise CloudflareStepError(
+                        "check_session", f"page not ready before sale: {kind_value}"
+                    )
                 raise PurchaseStepError(
                     "check_session",
                     f"page not ready before sale: {kind_value}",
@@ -426,7 +479,7 @@ class PurchaseOrchestrator:
             # 等人去點東西就隔久一點，等 Angular 把登記頁編譯完就該馬上再看一次。
             needs_human = self._needs_a_human(kind)
             in_grace = False
-            if kind is KKTIXPageKind.CHALLENGE and self.challenge_grace_s > 0:
+            if kind is PageKind.CHALLENGE:
                 if challenge_seen_at is None:
                     challenge_seen_at = self._loop_time()
                     challenge_rounds += 1
@@ -438,9 +491,43 @@ class PurchaseOrchestrator:
                         round=challenge_rounds,
                         max_rounds=self.cloudflare_max_retries,
                     )
+
+                # 主動嘗試解決 Cloudflare
+                if (
+                    self.spec.auto_cloudflare
+                    and self.challenge_grace_s > 0
+                    and challenge_rounds <= self.cloudflare_max_retries
+                    and (self._loop_time() - challenge_seen_at) < self.challenge_grace_s
+                ):
+                    solved, challenge_rounds = await self._try_handle_cloudflare(
+                        page,
+                        deadline=deadline,
+                        challenge_started_at=challenge_seen_at,
+                        challenge_rounds=challenge_rounds,
+                    )
+                    if solved:
+                        self.telemetry.record(
+                            TimelineEventType.MARK,
+                            "challenge_grace_cleared",
+                            waited_s=self._loop_time() - challenge_seen_at,
+                            round=challenge_rounds,
+                        )
+                        challenge_seen_at = None
+                        kind = await self.adapter.probe_page(page)
+                        attempt += 1
+                        continue
+                    else:
+                        self.telemetry.record(
+                            TimelineEventType.MARK,
+                            "challenge_auto_failed",
+                            attempt=attempt,
+                            round=challenge_rounds,
+                        )
+
                 waited = self._loop_time() - challenge_seen_at
                 in_grace = (
-                    waited < self.challenge_grace_s
+                    self.challenge_grace_s > 0
+                    and waited < self.challenge_grace_s
                     and challenge_rounds <= self.cloudflare_max_retries
                 )
                 if in_grace and self.challenge_gate is not None:
@@ -455,7 +542,7 @@ class PurchaseOrchestrator:
                         attempt=attempt,
                         round=challenge_rounds,
                     )
-            elif kind is not KKTIXPageKind.CHALLENGE and challenge_seen_at is not None:
+            elif kind is not PageKind.CHALLENGE and challenge_seen_at is not None:
                 self.telemetry.record(
                     TimelineEventType.MARK,
                     "challenge_grace_cleared",
@@ -494,7 +581,7 @@ class PurchaseOrchestrator:
         登入與人機驗證非人不可，隔久一點再看才合理；其餘情況（含判不出來的
         `UNKNOWN`）多半是頁面還在編譯，重讀一次本地 DOM 既免費又立刻有答案。
         """
-        return kind in (KKTIXPageKind.LOGIN, KKTIXPageKind.CHALLENGE)
+        return kind in (PageKind.LOGIN, PageKind.CHALLENGE)
 
     def _gate_budget_cap(self) -> float | None:
         """就緒閘門最多還能花多少秒，None 代表不受開賣時間限制。
@@ -781,14 +868,8 @@ class PurchaseOrchestrator:
         fsm = self.fsm
         if fsm is None:
             raise PurchaseStepError("fsm", "workflow not initialised")
-        alert = await first_visible(
-            page,
-            KKTIXSelectors.CAPTCHA_ERROR_ALERT,
-            timeout_ms=self.optional_probe_ms,
-            telemetry=self.telemetry,
-            field="captcha_error_alert",
-        )
-        if alert is None:
+        has_error = await self.adapter.detect_verification_error(page)
+        if not has_error:
             await asyncio.sleep(self.micro_wait_s)
             return
         self._rt.form_submitted = False
@@ -827,26 +908,9 @@ class PurchaseOrchestrator:
             await asyncio.sleep(self.micro_wait_s)
             return
         code = await self._resolve_qualification_code()
-        field_locator = await first_visible(
-            page,
-            KKTIXSelectors.MEMBER_CODE_INPUT,
-            timeout_ms=self.detect_timeout_ms,
-            telemetry=self.telemetry,
-            field="member_code_input",
-        )
-        if field_locator is None:
-            raise PurchaseStepError("qualification", "member code input not reachable")
-        await ng_fill(page, field_locator, code)
-        button = await first_visible(
-            page,
-            KKTIXSelectors.MEMBER_CODE_VERIFY_BTN,
-            timeout_ms=self.detect_timeout_ms,
-            telemetry=self.telemetry,
-            field="member_code_verify_btn",
-        )
-        if button is None:
-            raise PurchaseStepError("qualification", "member code button not reachable")
-        await ng_click(page, button, telemetry=self.telemetry)
+        ok = await self.adapter.submit_qualification_code(page, code)
+        if not ok:
+            raise PurchaseStepError("qualification", "member code submission failed")
         self._rt.qualification_handled = True
         self.telemetry.record(TimelineEventType.MARK, "qualification_code_submitted")
 

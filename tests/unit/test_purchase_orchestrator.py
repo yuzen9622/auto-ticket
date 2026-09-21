@@ -25,6 +25,7 @@ from adapters.ticketing.kktix.adapter import (
     KKTIXPageKind,
     PageState,
 )
+from domain.event import PlatformEnum
 from domain.preference import SeatPreference, TicketPreference, TicketPriority
 from domain.task import PurchaseTaskSpec, UserContactProfile
 from fsm.machine import PurchaseWorkflow
@@ -117,6 +118,7 @@ class StubScheduler:
 
 class StubAdapter:
     name = "stub"
+    platform: PlatformEnum = PlatformEnum.KKTIX
 
     def __init__(
         self,
@@ -262,6 +264,22 @@ class StubAdapter:
     async def submit_order(self, page: Any) -> bool:
         self.calls.append("submit_order")
         return self.submit_ok
+
+    async def submit_qualification_code(self, page: Any, code: str) -> bool:
+        self.calls.append("qualification")
+        if hasattr(page, "locator"):
+            loc = page.locator("div.code-input input[type='text']").first
+            if hasattr(loc, "fill"):
+                await loc.fill(code)
+        return True
+
+    async def detect_verification_error(self, page: Any) -> bool:
+        self.calls.append("detect_verification_error")
+        return False
+
+    async def handle_cloudflare(self, page: Any) -> bool:
+        self.calls.append("handle_cloudflare")
+        return False
 
     async def execute_payment(self, page: Any, profile: Any) -> PaymentResult:
         self.calls.append("payment")
