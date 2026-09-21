@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <title>活動場次 - 拓元售票系統</title>
+</head>
+<body>
+    <div id="gameList">
+        <table class="table">
+            <thead>
+                <tr>
+                    <th>演出時間</th>
+                    <th>場次名稱</th>
+                    <th>購票</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr data-url="/ticket/area/24_test/1001">
+                    <td>2026/10/01 19:30</td>
+                    <td>2026 巡迴演唱會 台北場 第一場</td>
+                    <td>
+                        <input type="button" class="btn btn-primary" value="立即購票" onclick="location.href='/ticket/area/24_test/1001'">
+                    </td>
+                </tr>
+                <tr data-url="/ticket/area/24_test/1002">
+                    <td>2026/10/02 19:30</td>
+                    <td>2026 巡迴演唱會 台北場 第二場</td>
+                    <td>
+                        <input type="button" class="btn btn-primary" value="立即購票" onclick="location.href='/ticket/area/24_test/1002'">
+                    </td>
+                </tr>
+            </tbody>
+        </table>
+    </div>
+</body>
+</html>

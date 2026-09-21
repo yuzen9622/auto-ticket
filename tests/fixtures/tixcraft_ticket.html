@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <title>選擇張數 - 拓元售票系統</title>
+</head>
+<body>
+    <form id="form-ticket-ticket" action="/ticket/check" method="post">
+        <div class="ticket-price-select">
+            <label for="TicketForm_ticketPrice_01">特A區 4800</label>
+            <select id="TicketForm_ticketPrice_01" name="TicketForm[ticketPrice][01]">
+                <option value="0" selected="selected">0</option>
+                <option value="1">1</option>
+                <option value="2">2</option>
+                <option value="3">3</option>
+                <option value="4">4</option>
+            </select>
+        </div>
+
+        <div class="verify-code">
+            <label for="TicketForm_verifyCode">驗證碼</label>
+            <img id="TicketForm_verifyCode-image" src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==" alt="驗證碼">
+            <input type="text" id="TicketForm_verifyCode" name="TicketForm[verifyCode]" maxlength="4">
+        </div>
+
+        <div class="agreement">
+            <input type="checkbox" id="TicketForm_agree" name="TicketForm[agree]" value="1">
+            <label for="TicketForm_agree">我已詳細閱讀並同意售票條款</label>
+        </div>
+
+        <div class="submit-btn">
+            <button type="submit" class="btn btn-primary">確認張數</button>
+        </div>
+    </form>
+
+    <!-- 售完 Modal (預設隱藏) -->
+    <div id="msg-modal" class="modal fade" role="dialog" style="display: none;">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-body">
+                    此區已售完，請重新選擇區域
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-primary close" data-dismiss="modal">確定</button>
+                </div>
+            </div>
+        </div>
+    </div>
+</body>
+</html>
