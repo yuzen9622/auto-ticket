@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import hashlib
-import re
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any, ClassVar
 from urllib.parse import urljoin
@@ -29,6 +28,12 @@ from adapters.ticketing.page_state import (
     PageState,
 )
 from adapters.ticketing.tixcraft.pages import BASE_URL as TIXCRAFT_BASE_URL
+from adapters.ticketing.tixcraft.pages import (
+    TicketRow,
+    ZoneRow,
+    parse_ticket_rows,
+    parse_zone_rows,
+)
 from adapters.ticketing.tixcraft.selectors import TixcraftSelectors
 from adapters.verification.base import (
     ChallengeKind,
@@ -38,8 +43,8 @@ from adapters.verification.base import (
 from domain.event import PlatformEnum
 from domain.preference import SeatPreference, TicketPreference
 from domain.task import CreditCardProfile, UserContactProfile
-from strategy.ticket_strategy import TicketDecision, TicketOption
-from telemetry.timeline import TimelineRecorder
+from strategy.ticket_strategy import TicketDecision, TicketOption, decide_ticket
+from telemetry.timeline import TimelineEventType, TimelineRecorder
 
 if TYPE_CHECKING:
     from playwright.async_api import Locator, Page
@@ -47,10 +52,45 @@ else:
     Locator = Any
     Page = Any
 
-PRICE_RE = re.compile(r"(\d[\d,]*)\s*元?")
-
 #: 等開賣時的輪詢間隔。開著就立刻回，這個值只決定「還沒開」時多久再問一次。
 SALE_PROBE_POLL_S = 0.1
+
+
+def _ticket_row_options(rows: list[TicketRow]) -> list[TicketOption]:
+    """張數頁的票種列轉成決策層看得懂的快照。
+
+    `index` 用的是列在表格裡的位置，決策回來之後要靠它找回同一列的張數下拉。
+    """
+    return [
+        TicketOption(
+            index=row.index,
+            name=row.name,
+            price=row.price,
+            available=row.available,
+            remaining=None,
+            status_text=row.status_text,
+        )
+        for row in rows
+    ]
+
+
+def _zone_options(rows: list[ZoneRow]) -> list[TicketOption]:
+    """票區列轉成決策層看得懂的快照。
+
+    票區頁是拓元少數會把剩餘張數印出來的地方，讀得到就帶上——`remaining` 一旦
+    有值，`is_selectable` 就會把「只剩 1 張卻要買 2 張」的區擋在決策之外。
+    """
+    return [
+        TicketOption(
+            index=row.index,
+            name=row.name,
+            price=row.price,
+            available=not row.sold_out,
+            remaining=row.remaining,
+            status_text=row.status_text,
+        )
+        for row in rows
+    ]
 
 
 class TixcraftAdapter(TicketingAdapter):
@@ -205,43 +245,10 @@ class TixcraftAdapter(TicketingAdapter):
         curr_url = getattr(page, "url", "").lower()
 
         if "/ticket/area" in curr_url or "/ticket/game" in curr_url:
-            elements = await page.locator(TixcraftSelectors.ZONE_LINKS).all()
-            for idx, el in enumerate(elements):
-                raw_text = (await el.inner_text()).strip()
-                match = PRICE_RE.search(raw_text)
-                price = 0
-                if match:
-                    try:
-                        price = int(match.group(1).replace(",", ""))
-                    except Exception:
-                        price = 0
-
-                is_sold_out = any(m in raw_text for m in TixcraftSelectors.SOLD_OUT_TEXTS)
-                options.append(
-                    TicketOption(
-                        index=idx,
-                        name=raw_text.split("(")[0].strip() or f"區域 {idx + 1}",
-                        price=price,
-                        available=not is_sold_out,
-                        remaining=None,
-                        status_text=raw_text,
-                    )
-                )
+            options.extend(_zone_options(parse_zone_rows(await page.content())))
 
         elif "/ticket/ticket" in curr_url:
-            selects = await page.locator(TixcraftSelectors.TICKET_PRICE_SELECTS).all()
-            for idx, sel in enumerate(selects):
-                sel_id = await sel.get_attribute("id") or ""
-                options.append(
-                    TicketOption(
-                        index=idx,
-                        name=f"票種 {sel_id}",
-                        price=0,
-                        available=True,
-                        remaining=None,
-                        status_text=sel_id,
-                    )
-                )
+            options.extend(_ticket_row_options(parse_ticket_rows(await page.content())))
 
         return options
 
@@ -340,13 +347,12 @@ class TixcraftAdapter(TicketingAdapter):
         if quantity is None:
             return False
 
-        select_loc = await first_visible(
-            page,
-            TixcraftSelectors.TICKET_PRICE_SELECTS,
-            timeout_ms=self.timeout_ms,
-            telemetry=self.telemetry,
-            field="ticket_quantity_select",
-        )
+        rows = parse_ticket_rows(await page.content())
+        target_row, rejected = self._choose_ticket_row(rows)
+        if rejected:
+            return False
+
+        select_loc = await self._quantity_select(page, target_row)
         if select_loc is not None:
             await select_loc.select_option(str(quantity))
 
@@ -355,6 +361,50 @@ class TixcraftAdapter(TicketingAdapter):
             await agree_loc.check()
 
         return True
+
+    def _choose_ticket_row(
+        self, rows: list[TicketRow]
+    ) -> tuple[TicketRow | None, bool]:
+        """挑出要填張數的那一列票種；第二個回傳值是「偏好不接受這頁任何票種」。
+
+        同一個票區的張數頁可能同時列出全票、優待票與身障票。一律填第一個下拉等於
+        宣告「頁面第一個票種就是我要的」——優待票排在前面時買到的就是入場要查驗
+        證件、資格不符當場作廢的票。只有一列可買時沒什麼好決策的，維持原本行為。
+        """
+        buyable = [row for row in rows if row.available]
+        if len(buyable) < 2 or self.ticket_preference is None:
+            return (buyable[0] if buyable else None), False
+
+        decision = decide_ticket(_ticket_row_options(rows), self.ticket_preference)
+        if self.telemetry is not None:
+            self.telemetry.record(
+                TimelineEventType.MARK,
+                "tixcraft_ticket_row_decision",
+                status=decision.status,
+                ticket=decision.option.name if decision.option else "",
+                trace=list(decision.trace),
+            )
+        if decision.status != "SELECTED" or decision.option is None:
+            return None, True
+        chosen = next((row for row in rows if row.index == decision.option.index), None)
+        return chosen, False
+
+    async def _quantity_select(
+        self, page: Page, row: TicketRow | None
+    ) -> Locator | None:
+        """優先鎖定指定票種那一列的下拉；找不到才退回頁面上第一個。"""
+        if row is not None and row.select_id:
+            located = page.locator(f"#{row.select_id}")
+            with contextlib.suppress(Exception):
+                if await located.count() > 0:
+                    return located.first
+        return await first_visible(
+            page,
+            TixcraftSelectors.TICKET_PRICE_SELECTS,
+            timeout_ms=self.timeout_ms,
+            telemetry=self.telemetry,
+            field="ticket_quantity_select",
+        )
 
     async def detect_verification(self, page: Page) -> bool:
         # 驗證碼圖在張數頁是初始 HTML 的一部分，沒有「等它出現」這回事。

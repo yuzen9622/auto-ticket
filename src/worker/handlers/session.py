@@ -286,6 +286,7 @@ async def execute_session_check(
         login_state = await probe_login_state(
             adapter, page, cookies=cookies, platform=platform
         )
+
         if probe is PageKind.CHALLENGE:
             page_kind = "CHALLENGE"
         elif login_state is LoginState.LOGGED_IN:

@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
@@ -19,9 +20,9 @@ from adapters.ticketing.tixcraft.adapter import TixcraftAdapter
 from adapters.verification.base import (
     VerificationResult,
 )
-from domain.preference import TicketPreference, TicketPriority
+from domain.preference import TicketPreference, TicketPriority, TicketRule
 from domain.task import UserContactProfile
-from strategy.ticket_strategy import TicketDecision, TicketOption
+from strategy.ticket_strategy import TicketDecision, TicketOption, decide_ticket
 
 FIXTURES = Path(__file__).parent.parent / "fixtures"
 
@@ -358,3 +359,154 @@ def test_tixcraft_login_redirect_is_guest_modal() -> None:
     page = MockPage(url="https://tixcraft.com/login", html="會員登入")
     state = pytest.importorskip("asyncio").run(adapter.detect_page_state(page))
     assert state == PageState.GUEST_MODAL
+
+
+def _ticket_page_with_two_rows() -> str:
+    """把真實張數頁的票種列複製一份成「優待票排在全票前面」的版型。
+
+    手寫整頁 HTML 會讓測試綠、線上掛；這裡的兩列都是從實際抓下來的頁面複製出來
+    的同一段 markup，只換掉票種名、票價與下拉 id。
+    """
+    html = load_fixture("tixcraft_ticket.html")
+    match = re.search(r'<tr class="gridc">.*?</tr>', html, re.S)
+    assert match is not None, "fixture 不再含票種列，解析測試失去依據"
+    full_row = match.group(0)
+    concession_row = full_row.replace("全票 1,450", "優待票 725").replace(
+        "ticketPrice_01", "ticketPrice_02"
+    ).replace("ticketPrice][01]", "ticketPrice][02]")
+    return html.replace(full_row, concession_row + full_row)
+
+
+def test_tixcraft_reads_ticket_type_name_and_price_from_registration_page() -> None:
+    """張數頁讀得出「全票 1,450」；讀成 price=0 的話價格比對永遠落空。"""
+    adapter = TixcraftAdapter()
+    page = MockPage(
+        url="https://tixcraft.com/ticket/ticket/26_vashhsu/23102/1/83",
+        html=load_fixture("tixcraft_ticket.html"),
+    )
+    options = pytest.importorskip("asyncio").run(
+        adapter.read_registration_tickets(page)
+    )
+    assert [(o.name, o.price, o.available) for o in options] == [("全票", 1450, True)]
+
+
+def test_tixcraft_fills_quantity_on_the_preferred_ticket_row() -> None:
+    """優待票排在前面時不能照填第一個下拉——那是入場查證件會被擋下來的票。"""
+    adapter = TixcraftAdapter(
+        ticket_preference=TicketPreference(
+            quantity=2,
+            priorities=[TicketPriority(price=1450, ticket_name_pattern="全票")],
+        )
+    )
+    page = MockPage(
+        url="https://tixcraft.com/ticket/ticket/26_vashhsu/23102/1/83",
+        html=_ticket_page_with_two_rows(),
+    )
+    full_select = MockLocator("full_select", visible=True)
+    page.locators["#TicketForm_ticketPrice_01"] = full_select
+    page.locators["#TicketForm_ticketPrice_02"] = MockLocator(
+        "concession_select", visible=True
+    )
+    page.locators["#TicketForm_agree"] = MockLocator("agree", visible=True)
+
+    ok = pytest.importorskip("asyncio").run(
+        adapter.fill_contact_form(
+            page,
+            UserContactProfile(name="Test", phone="0912345678", email="test@example.com"),
+        )
+    )
+    assert ok is True
+    assert full_select.selected == ["2"]
+    assert page.locators["#TicketForm_ticketPrice_02"].selected == []
+
+
+def test_tixcraft_refuses_to_fill_when_no_ticket_row_matches() -> None:
+    """偏好一個都對不上時寧可讓這一輪失敗，也不要退回去買第一列。"""
+    adapter = TixcraftAdapter(
+        ticket_preference=TicketPreference(
+            quantity=2,
+            priorities=[TicketPriority(price=9999)],
+        )
+    )
+    page = MockPage(
+        url="https://tixcraft.com/ticket/ticket/26_vashhsu/23102/1/83",
+        html=_ticket_page_with_two_rows(),
+    )
+    page.locators["#TicketForm_ticketPrice_01"] = MockLocator("full", visible=True)
+    page.locators["#TicketForm_ticketPrice_02"] = MockLocator("concession", visible=True)
+
+    ok = pytest.importorskip("asyncio").run(
+        adapter.fill_contact_form(
+            page,
+            UserContactProfile(name="Test", phone="0912345678", email="test@example.com"),
+        )
+    )
+    assert ok is False
+    assert page.locators["#TicketForm_ticketPrice_01"].selected == []
+    assert page.locators["#TicketForm_ticketPrice_02"].selected == []
+
+
+def test_tixcraft_zone_price_is_not_the_floor_number() -> None:
+    """「1樓 Bubble Bay 特A區3280」的票價是 3280；抓第一個數字會讀成 1 塊錢。"""
+    adapter = TixcraftAdapter()
+    page = MockPage(
+        url="https://tixcraft.com/ticket/area/26_gboyswag/22949",
+        html=load_fixture("tixcraft_area_multi_zone.html"),
+    )
+    options = pytest.importorskip("asyncio").run(
+        adapter.read_registration_tickets(page)
+    )
+    assert options[0].name == "1樓 Bubble Bay 特A區"
+    assert options[0].price == 3280
+    assert options[0].remaining == 10
+    assert {o.price for o in options} == {3280, 2580, 1790, 1640}
+
+
+def test_tixcraft_zone_rule_respects_budget_and_exclusion() -> None:
+    """真實票區清單上，「上限 2600、貴優先、排除身障」要挑到 2580 那一區。"""
+    adapter = TixcraftAdapter()
+    page = MockPage(
+        url="https://tixcraft.com/ticket/area/26_gboyswag/22949",
+        html=load_fixture("tixcraft_area_multi_zone.html"),
+    )
+    options = pytest.importorskip("asyncio").run(
+        adapter.read_registration_tickets(page)
+    )
+    decision = decide_ticket(
+        options,
+        TicketPreference(
+            quantity=2,
+            priorities=[TicketPriority(price=10_000_000)],
+            rule=TicketRule(
+                max_price=2600,
+                exclude_name_patterns=["身障"],
+                price_order="highest",
+            ),
+        ),
+    )
+    assert decision.status == "SELECTED"
+    assert decision.option is not None
+    assert decision.option.name == "G Wave 2樓C區"
+    assert decision.option.price == 2580
+
+
+def test_tixcraft_zone_remaining_blocks_orders_that_cannot_fit() -> None:
+    """票區頁印出的「剩餘 N」讀進來之後，剩 5 張的區就不該拿來買 6 張。"""
+    adapter = TixcraftAdapter()
+    page = MockPage(
+        url="https://tixcraft.com/ticket/area/26_gboyswag/22949",
+        html=load_fixture("tixcraft_area_multi_zone.html"),
+    )
+    options = pytest.importorskip("asyncio").run(
+        adapter.read_registration_tickets(page)
+    )
+    decision = decide_ticket(
+        options,
+        TicketPreference(
+            quantity=6,
+            priorities=[TicketPriority(price=10_000_000)],
+            rule=TicketRule(prefer_name_patterns=["Bubble Bay E區"]),
+        ),
+    )
+    assert decision.option is not None
+    assert decision.option.name != "1樓身障 Bubble Bay E區"

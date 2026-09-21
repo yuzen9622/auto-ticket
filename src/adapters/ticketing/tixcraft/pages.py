@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import copy
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -14,7 +15,9 @@ from typing import Any
 from urllib.parse import urljoin, urlsplit
 from zoneinfo import ZoneInfo
 
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, Tag
+
+from adapters.ticketing.tixcraft.selectors import TixcraftSelectors
 
 TAIPEI_TZ = ZoneInfo("Asia/Taipei")
 BASE_URL = "https://tixcraft.com"
@@ -65,6 +68,12 @@ INTRO_NOISE_MARKERS = (
 _DECORATION_ONLY_RE = re.compile(
     r"^[\s\d\W_]*$|^[-=*＊※●・‧|｜]+$", re.UNICODE
 )
+
+#: 票種列的文字是「票種名 + 票價」，票價一定在尾端（`全票 1,450`）。
+_TICKET_LABEL_RE = re.compile(r"^(?P<name>.*?)[\s　]*(?P<price>\d[\d,]*)\s*元?$")
+
+#: 票區列的可售狀態寫成「剩餘 14」，是拓元少數會把庫存印在頁面上的地方。
+_REMAINING_RE = re.compile(r"剩餘\s*(\d+)")
 
 
 @dataclass(frozen=True, slots=True)
@@ -123,6 +132,40 @@ class GameSession:
             "sold_out": self.sold_out,
             "purchase_url": self.purchase_url,
         }
+
+
+@dataclass(frozen=True, slots=True)
+class ZoneRow:
+    """票區頁 `ul.area-list` 的一個票區。"""
+
+    index: int
+    """在 `ZoneSelectors.ZONE_LINKS` 找到的第幾個連結；要點哪一區就靠它。"""
+    name: str
+    price: int
+    remaining: int | None
+    sold_out: bool
+    status_text: str
+    """整列的原始文字，供事後追查。"""
+
+
+@dataclass(frozen=True, slots=True)
+class TicketRow:
+    """張數頁 `#ticketPriceList` 的一列票種。"""
+
+    index: int
+    name: str
+    price: int
+    select_id: str | None
+    """該列張數下拉的 id。沒有下拉就是這個票種當下買不到——這比字樣可靠，
+    售完的票種拓元不一定寫「已售完」，但一定不給你選張數。"""
+    status_text: str
+
+    @property
+    def available(self) -> bool:
+        lowered = self.status_text.lower()
+        if any(word.lower() in lowered for word in SOLD_OUT_TEXTS):
+            return False
+        return self.select_id is not None
 
 
 @dataclass(slots=True)
@@ -348,3 +391,103 @@ def parse_activity_detail(html: str, *, game_html: str | None = None) -> Activit
         ),
         sessions=sessions,
     )
+
+
+def split_ticket_label(text: str) -> tuple[str, int]:
+    """`全票 1,450` → `("全票", 1450)`。
+
+    票種名稱本身可能含數字（「VIP2 全票」），票價永遠寫在最後，所以從字串尾端
+    取數字，不能拿第一個出現的數字當價格。整串沒有價格就回 0，代表這一列沒印
+    價格——那是「不知道」，不是「免費」。
+    """
+    cleaned = " ".join(text.split())
+    match = _TICKET_LABEL_RE.match(cleaned)
+    if match is None:
+        return cleaned, 0
+    try:
+        price = int(match.group("price").replace(",", ""))
+    except ValueError:
+        return cleaned, 0
+    name = match.group("name").strip(" -/｜|")
+    return name or cleaned, price
+
+
+def parse_ticket_rows(html: str) -> list[TicketRow]:
+    """解析張數頁的 `#ticketPriceList`。
+
+    這張表就是拓元唯一寫出「全票／優待票／身障票」與各自票價的地方；票區頁只有
+    區名，節目介紹頁只有一串沒有票種對應的價目。
+    """
+    soup = BeautifulSoup(html, "html.parser")
+    table = soup.select_one("#ticketPriceList")
+    if table is None:
+        return []
+
+    # 表頭用 `<th>`，內容列用 `<td>`；沒有 `<tbody>` 的版型就靠這點區分。
+    body_rows = table.select("tbody tr") or [
+        tr for tr in table.select("tr") if tr.find("td")
+    ]
+
+    rows: list[TicketRow] = []
+    for idx, tr in enumerate(body_rows):
+        label_el = tr.select_one(".text-bold")
+        name, price = split_ticket_label((label_el or tr).get_text(" ", strip=True))
+        select = tr.select_one("select")
+        select_id = (
+            (str(select.get("id") or "") or None) if select is not None else None
+        )
+        if not name and select_id is None:
+            continue
+        rows.append(
+            TicketRow(
+                index=idx,
+                name=name or f"票種 {idx + 1}",
+                price=price,
+                select_id=select_id,
+                status_text=tr.get_text(" ", strip=True),
+            )
+        )
+    return rows
+
+
+def parse_zone_rows(html: str) -> list[ZoneRow]:
+    """解析票區頁 `/ticket/area/<slug>/<gameId>`。
+
+    一列長這樣（`<span>` 是色塊，`<font>` 是可售狀態）：
+
+        <a id="22949_37"><span>&nbsp;</span>1樓身障 G Island F區1790 <font>剩餘 14</font></a>
+
+    票價**黏在區名後面**、而且區名自己就以樓層數字開頭，所以「抓第一個數字當票價」
+    會把「1樓」讀成 1 塊錢；票價要從扣掉狀態字之後的尾端取。售完的票區整個沒有
+    `<a>`，連點都點不到，因此這裡看到的基本上都是還買得到的。
+
+    走 `ZONE_LINKS` 而不是自己另寫選擇器，是因為 `index` 必須和 Adapter 點擊時
+    拿到的連結順序完全一致。
+    """
+    soup = BeautifulSoup(html, "html.parser")
+    rows: list[ZoneRow] = []
+    for idx, link in enumerate(soup.select(TixcraftSelectors.ZONE_LINKS)):
+        status_text = link.get_text(" ", strip=True)
+
+        label_el = copy.copy(link)
+        if isinstance(label_el, Tag):
+            for font in label_el.find_all("font"):
+                font.extract()
+        label = label_el.get_text(" ", strip=True)
+        name, price = split_ticket_label(label)
+
+        state = link.find("font")
+        state_text = state.get_text(" ", strip=True) if isinstance(state, Tag) else ""
+        matched = _REMAINING_RE.search(state_text or status_text)
+        lowered = status_text.lower()
+        rows.append(
+            ZoneRow(
+                index=idx,
+                name=name or f"區域 {idx + 1}",
+                price=price,
+                remaining=int(matched.group(1)) if matched else None,
+                sold_out=any(word.lower() in lowered for word in SOLD_OUT_TEXTS),
+                status_text=status_text,
+            )
+        )
+    return rows
