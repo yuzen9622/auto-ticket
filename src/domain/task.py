@@ -115,9 +115,9 @@ class PurchaseTaskSpec(DomainBaseModel):
 
     # --- 自動化行為（一般設定）。舊 payload 沒有這些欄位時一律取預設值。 ---
     auto_cloudflare: bool = True
-    """偵測到 Cloudflare 人機驗證時，先安靜等一段有上限的寬限期讓它自己過。
+    """開賣前偵測到 Cloudflare 人機驗證時，主動探測 Turnstile 並嘗試受控點擊或等待自動通過。
 
-    關閉時維持「一偵測到就交還給人」的舊行為。本系統在任何情況下都不繞過 Cloudflare。"""
+    關閉時維持「一偵測到就交還給人」的人工接手行為。自動嘗試受 cloudflare_max_retries 與 challenge_grace_s 雙重上限約束。"""
     auto_ocr: bool = True
     """圖片驗證碼交給 OCR 辨識。關閉時圖片題直接回報未解出，走人工路徑。"""
     auto_submit_verification: bool = True
@@ -130,7 +130,7 @@ class PurchaseTaskSpec(DomainBaseModel):
     """單次作答內「辨識 → 點刷新換圖 → 再辨識」的最大次數。與 FSM 的 max_retries 是兩回事：
     後者算的是送出後被判定答錯的重答次數。"""
     cloudflare_max_retries: int = Field(default=3, ge=0, le=20)
-    """允許開啟幾次被動寬限窗；每次窗內會重複 probe 頁面直到通過或該次逾時。用罄後立即 fail-closed。"""
+    """開賣前自動處理 Cloudflare / Turnstile 的最大嘗試次數。所有嘗試共用單一 challenge_grace_s deadline；用罄後交還人工接手。"""
     debug_screenshots_and_logs: bool = False
     """每次 OCR 嘗試與每輪寬限 probe 額外截圖並記錄；排查用，平時關閉以免拖慢開賣瞬間。"""
 
