@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <title>選擇張數與驗證 - ibon 售票系統</title>
+</head>
+<body>
+    <form id="form1" action="UTK0201_001.aspx" method="post">
+        <table class="table">
+            <tr>
+                <th>票種</th>
+                <th>票價</th>
+                <th>張數</th>
+            </tr>
+            <tr>
+                <td>全票</td>
+                <td>4500</td>
+                <td>
+                    <select id="ctl00_ContentPlaceHolder1_ddlAmount" name="ctl00$ContentPlaceHolder1$ddlAmount">
+                        <option value="0">0</option>
+                        <option value="1">1</option>
+                        <option value="2">2</option>
+                        <option value="3">3</option>
+                        <option value="4">4</option>
+                    </select>
+                </td>
+            </tr>
+        </table>
+
+        <div class="seat-option">
+            <input type="checkbox" id="ctl00_ContentPlaceHolder1_chkSeat" name="ctl00$ContentPlaceHolder1$chkSeat">
+            <label for="ctl00_ContentPlaceHolder1_chkSeat">接受非相鄰座位</label>
+        </div>
+
+        <div class="captcha-container">
+            <img id="ctl00_ContentPlaceHolder1_imgVerify" src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==" alt="驗證碼">
+            <input type="text" id="ctl00_ContentPlaceHolder1_txtVerify" name="ctl00$ContentPlaceHolder1$txtVerify" maxlength="4">
+        </div>
+
+        <div class="agreement">
+            <input type="checkbox" id="ctl00_ContentPlaceHolder1_chkAgree" name="ctl00$ContentPlaceHolder1$chkAgree">
+            <label for="ctl00_ContentPlaceHolder1_chkAgree">同意售票規則</label>
+        </div>
+
+        <input type="submit" id="ctl00_ContentPlaceHolder1_btnNext" name="ctl00$ContentPlaceHolder1$btnNext" value="下一步" class="btn btn-primary">
+    </form>
+</body>
+</html>

@@ -1,0 +1,24 @@
+{
+  "Code": 0,
+  "Message": "Success",
+  "Data": [
+    {
+      "ActivityId": "38001",
+      "ActivityName": "2026 ibon 音樂盛宴",
+      "StartDate": "2026/11/20",
+      "EndDate": "2026/11/20",
+      "Location": "高雄巨蛋",
+      "ImageUrl": "https://ticket.ibon.com.tw/images/38001.jpg",
+      "PriceRange": "2500 - 4500"
+    },
+    {
+      "ActivityId": "38002",
+      "ActivityName": "2026 搖滾世代 巡迴演出",
+      "StartDate": "2026/12/10",
+      "EndDate": "2026/12/12",
+      "Location": "台北小巨蛋",
+      "ImageUrl": "https://ticket.ibon.com.tw/images/38002.jpg",
+      "PriceRange": "1800 - 3800"
+    }
+  ]
+}
