@@ -8,13 +8,14 @@ const api = vi.hoisted(() => ({
   getAccountStatus: vi.fn(),
   storeCredentials: vi.fn(),
   eraseCredentials: vi.fn(),
+  requestLogin: vi.fn(),
 }))
 vi.mock("@/lib/api/accounts", () => ({
   getAccountStatus: api.getAccountStatus,
   storeCredentials: api.storeCredentials,
   eraseCredentials: api.eraseCredentials,
   getAccountJob: vi.fn(),
-  requestLogin: vi.fn(),
+  requestLogin: api.requestLogin,
   requestSessionCheck: vi.fn(),
   isTerminalJobState: () => true,
 }))
@@ -23,6 +24,7 @@ import { AccountCard } from "@/components/settings/account-card"
 import { CredentialForm } from "@/components/settings/credential-form"
 import { LocalProfileManager } from "@/components/settings/local-profile-manager"
 import { SessionJobWatcher } from "@/components/settings/session-job-watcher"
+import { loadContacts } from "@/lib/local-profile"
 
 describe("Settings Components", () => {
   beforeEach(() => {
@@ -33,9 +35,20 @@ describe("Settings Components", () => {
       configured: false,
       masked_account: null,
     })
+    api.requestLogin.mockResolvedValue({
+      job_id: "job-1",
+      kind: "AUTO_LOGIN",
+      state: "PENDING",
+      result: null,
+      error: null,
+    })
+    window.localStorage.clear()
   })
 
   afterEach(() => {
+    if (document.activeElement instanceof HTMLElement) {
+      document.activeElement.blur()
+    }
     document.body.style.pointerEvents = ""
   })
 
@@ -47,7 +60,7 @@ describe("Settings Components", () => {
       ).not.toBeInTheDocument()
     })
 
-    it("renders platform-specific button priorities and behaviors", async () => {
+    it("renders platform-specific button priorities and behaviors", () => {
       // KKTIX 模式
       const { unmount: unmountKktix } = renderWithProviders(
         <SessionJobWatcher platform="kktix" />
@@ -60,15 +73,12 @@ describe("Settings Components", () => {
       const { unmount: unmountTix } = renderWithProviders(
         <SessionJobWatcher platform="tixcraft" />
       )
+      expect(
+        screen.queryByRole("button", { name: "自動登入" })
+      ).not.toBeInTheDocument()
       const tixManualLogin = screen.getByRole("button", { name: "手動登入" })
       expect(tixManualLogin).toHaveAttribute("data-variant", "default")
-      const tixAutoLogin = screen.getByRole("button", { name: "自動登入" })
-      expect(tixAutoLogin).toHaveAttribute("data-variant", "outline")
 
-      // 點擊拓元自動登入時，不會呼叫 requestLogin
-      const { requestLogin } = await import("@/lib/api/accounts")
-      fireEvent.click(tixAutoLogin)
-      expect(requestLogin).not.toHaveBeenCalled()
       unmountTix()
 
       // ibon 模式
@@ -76,7 +86,11 @@ describe("Settings Components", () => {
         <SessionJobWatcher platform="ibon" />
       )
       const ibonManualLogin = screen.getByRole("button", { name: "手動登入" })
-      expect(ibonManualLogin).toHaveAttribute("data-variant", "default")
+      expect(ibonManualLogin).toHaveAttribute("data-variant", "outline")
+      expect(screen.getByRole("button", { name: "自動登入" })).toHaveAttribute(
+        "data-variant",
+        "default"
+      )
       unmountIbon()
     })
   })
@@ -135,7 +149,9 @@ describe("Settings Components", () => {
 
     it("renders dynamic labels and placeholders based on platform", () => {
       // KKTIX
-      const { unmount } = renderWithProviders(<CredentialForm platform="kktix" />)
+      const { unmount } = renderWithProviders(
+        <CredentialForm platform="kktix" />
+      )
       expect(screen.getByText("帳號（Email / 使用者名稱）")).toBeInTheDocument()
       expect(
         screen.getByPlaceholderText("請輸入 KKTIX 會員帳號或 Email")
@@ -149,13 +165,9 @@ describe("Settings Components", () => {
       const { unmount: unmountTix } = renderWithProviders(
         <CredentialForm platform="tixcraft" />
       )
-      expect(
-        screen.getByText("社群登入帳號（Email / 手機號碼）")
-      ).toBeInTheDocument()
-      expect(
-        screen.getByPlaceholderText("請輸入 Facebook 或 Google 帳號 Email")
-      ).toBeInTheDocument()
-      expect(screen.getByText("密碼（選填）")).toBeInTheDocument()
+      expect(screen.queryByText("帳號與密碼")).not.toBeInTheDocument()
+      expect(screen.queryByLabelText(/帳號/)).not.toBeInTheDocument()
+      expect(screen.queryByLabelText(/密碼/)).not.toBeInTheDocument()
       unmountTix()
 
       // ibon 售票
@@ -165,6 +177,7 @@ describe("Settings Components", () => {
         screen.getByPlaceholderText("請輸入手機號碼（09xxxxxxxx）或身分證字號")
       ).toBeInTheDocument()
       expect(screen.getByText("會員密碼")).toBeInTheDocument()
+      expect(screen.queryByText(/Cookie/)).not.toBeInTheDocument()
     })
 
     it("toggles password visibility with integrated reveal button", async () => {
@@ -189,25 +202,73 @@ describe("Settings Components", () => {
       const user = userEvent.setup()
       api.storeCredentials.mockResolvedValue(undefined)
 
-      renderWithProviders(<CredentialForm platform="tixcraft" />)
+      renderWithProviders(<CredentialForm platform="ibon" />)
 
       // 輸入帳號密碼並送出
       await user.type(
-        screen.getByPlaceholderText("請輸入 Facebook 或 Google 帳號 Email"),
-        "test@example.com"
+        screen.getByPlaceholderText("請輸入手機號碼（09xxxxxxxx）或身分證字號"),
+        "0912345678"
       )
       await user.type(
-        screen.getByPlaceholderText("請輸入社群帳號密碼（選填）"),
+        screen.getByPlaceholderText("請輸入 ibon 會員密碼"),
         "password123"
       )
 
       const submitButton = screen.getByRole("button", { name: "儲存帳號密碼" })
       await user.click(submitButton)
 
-      expect(api.storeCredentials).toHaveBeenCalledWith("tixcraft", {
-        account: "test@example.com",
+      expect(api.storeCredentials).toHaveBeenCalledWith("ibon", {
+        account: "0912345678",
         access_key: "password123",
       })
+    })
+  })
+
+  describe("SessionJobWatcher auto login", () => {
+    it("submits saved credentials for ibon", async () => {
+      const user = userEvent.setup()
+      renderWithProviders(<SessionJobWatcher platform="ibon" />)
+
+      await user.click(screen.getByRole("button", { name: "自動登入" }))
+      await waitFor(() => {
+        expect(api.requestLogin).toHaveBeenCalledWith("ibon", {
+          mode: "auto",
+          profile: "live",
+        })
+      })
+    })
+  })
+
+  describe("LocalProfileManager CRUD", () => {
+    it("can add, edit, and delete a local contact", () => {
+      renderWithProviders(<LocalProfileManager />)
+
+      fireEvent.click(screen.getByRole("button", { name: "新增聯絡人" }))
+      fireEvent.change(screen.getByLabelText("姓名"), {
+        target: { value: "Alice" },
+      })
+      fireEvent.change(screen.getByLabelText("電話"), {
+        target: { value: "0912345678" },
+      })
+      fireEvent.change(screen.getByLabelText("Email"), {
+        target: { value: "alice@example.com" },
+      })
+      fireEvent.click(screen.getByRole("button", { name: "儲存聯絡人" }))
+
+      expect(loadContacts()).toEqual([
+        { name: "Alice", phone: "0912345678", email: "alice@example.com" },
+      ])
+
+      fireEvent.click(screen.getByRole("button", { name: "編輯聯絡人 Alice" }))
+      fireEvent.change(screen.getByLabelText("姓名"), {
+        target: { value: "Bob" },
+      })
+      fireEvent.click(screen.getByRole("button", { name: "儲存聯絡人" }))
+
+      expect(loadContacts()[0].name).toBe("Bob")
+
+      fireEvent.click(screen.getByRole("button", { name: "刪除聯絡人 Bob" }))
+      expect(loadContacts()).toEqual([])
     })
   })
 })

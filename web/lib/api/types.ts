@@ -2,7 +2,7 @@
  * 鏡像 src/api/schemas/*.py 與 src/domain/*.py。
  * 欄位名逐字沿用後端 snake_case —— 刻意不轉 camelCase，避免多一層對照表。
  */
-import type { SeatStrategy } from "@/lib/contract"
+import type { SeatStrategy, TicketPriceOrder } from "@/lib/contract"
 
 /* ---------- domain / preference ---------- */
 
@@ -18,11 +18,26 @@ export interface SeatPreference {
   preferred_zones: string[]
 }
 
+/**
+ * 開賣前寫得出來、不需要知道票價的挑票規則。
+ * 拓元與 ibon 的票價要進到票區頁才看得到，`priorities` 在那之前填不出來。
+ */
+export interface TicketRule {
+  max_price: number | null
+  min_price: number | null
+  /** 名稱關鍵字，越前面越優先。子字串比對，不是正則。 */
+  prefer_name_patterns: string[]
+  /** 命中即完全排除，連 fallback_to_any 都繞不過去。 */
+  exclude_name_patterns: string[]
+  price_order: TicketPriceOrder
+}
+
 export interface TicketPreference {
   quantity: number
   priorities: TicketPriority[]
   seat_preference: SeatPreference
   fallback_to_any: boolean
+  rule: TicketRule | null
 }
 
 export interface UserContactProfile {

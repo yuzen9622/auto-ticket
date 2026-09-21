@@ -85,14 +85,55 @@ export function TaskConfirm({
             <Row
               label={t("priorities")}
               value={
-                <span className="flex flex-col gap-0.5">
-                  {tp.priorities.map((priority, index) => (
-                    <span key={index}>
-                      {index + 1}.{" "}
-                      {priority.ticket_name_pattern ?? t("priorityNameHint")}
+                tp.priorities.length === 0 ? (
+                  t("prioritiesNoneUseRule")
+                ) : (
+                  <span className="flex flex-col gap-0.5">
+                    {tp.priorities.map((priority, index) => (
+                      <span key={index}>
+                        {index + 1}.{" "}
+                        {priority.ticket_name_pattern ?? t("priorityNameHint")}
+                      </span>
+                    ))}
+                  </span>
+                )
+              }
+            />
+            <Row
+              label={t("rule")}
+              value={
+                tp.rule === null ? (
+                  common("none")
+                ) : (
+                  <span className="flex flex-col gap-0.5">
+                    <span>
+                      {t("ruleMaxPrice")}：
+                      {tp.rule.max_price === null
+                        ? t("ruleNoLimit")
+                        : `NT$ ${tp.rule.max_price.toLocaleString()}`}
+                      　{t("ruleMinPrice")}：
+                      {tp.rule.min_price === null
+                        ? t("ruleNoLimit")
+                        : `NT$ ${tp.rule.min_price.toLocaleString()}`}
                     </span>
-                  ))}
-                </span>
+                    <span>
+                      {t("rulePriceOrder")}：
+                      {t(`rulePriceOrder_${tp.rule.price_order}`)}
+                    </span>
+                    {tp.rule.prefer_name_patterns.length > 0 && (
+                      <span>
+                        {t("rulePrefer")}：
+                        {tp.rule.prefer_name_patterns.join("、")}
+                      </span>
+                    )}
+                    {tp.rule.exclude_name_patterns.length > 0 && (
+                      <span>
+                        {t("ruleExclude")}：
+                        {tp.rule.exclude_name_patterns.join("、")}
+                      </span>
+                    )}
+                  </span>
+                )
               }
             />
             <Row

@@ -12,6 +12,7 @@ import { AttendeeEditor } from "@/components/tasks/attendee-editor"
 import { ContactPicker } from "@/components/tasks/contact-picker"
 import { TaskConfirm } from "@/components/tasks/task-confirm"
 import { TicketPriorityEditor } from "@/components/tasks/ticket-priority-editor"
+import { TicketRuleEditor } from "@/components/tasks/ticket-rule-editor"
 import { VerificationRuleEditor } from "@/components/tasks/verification-rule-editor"
 import { EmptyState } from "@/components/terminal/empty-state"
 import { Panel } from "@/components/terminal/panel"
@@ -39,6 +40,7 @@ import { useExecutionModeLabel, useSeatStrategyLabel } from "@/lib/i18n/labels"
 import { SEAT_STRATEGY } from "@/lib/contract"
 import { DEFAULT_PROFILE, loadBrowserProfiles } from "@/lib/browser-profile"
 import {
+  createDefaultRule,
   createInitialDraft,
   FIELD_ELEMENT_ID,
   validateDraft,
@@ -129,8 +131,9 @@ export function TaskForm({ eventId }: { eventId: string }) {
       // 票價是完全相等比對，預設值 0 會把所有票排除掉。活動票種已經抓回來了，
       // 就用它預填，讓表單一打開就是「照票面價買」而不是一個買不到任何票的設定。
       //
-      // 拓元與 ibon 的票價要進到票區頁才看得到，搜尋階段拿不到票種；這時唯一
-      // 買得到票的設定就是接受其他票種，否則送出的必然是一個買不到任何票的任務。
+      // 拓元與 ibon 的票價要進到票區頁才看得到，搜尋階段拿不到票種。這時要交給
+      // 規則（預算上限、貴或便宜優先、排除優待與身障票），開賣瞬間讀到真實票種
+      // 清單再套用；退回 fallback_to_any 等於讓版面順序決定買哪張票。
       ticket_preference: event.ticket_types.length
         ? {
             ...prev.ticket_preference,
@@ -141,7 +144,12 @@ export function TaskForm({ eventId }: { eventId: string }) {
               priority: index + 1,
             })),
           }
-        : { ...prev.ticket_preference, fallback_to_any: true },
+        : {
+            ...prev.ticket_preference,
+            fallback_to_any: false,
+            priorities: [],
+            rule: prev.ticket_preference.rule ?? createDefaultRule(),
+          },
     }))
   }, [event])
 
@@ -351,6 +359,7 @@ export function TaskForm({ eventId }: { eventId: string }) {
             </div>
           </div>
 
+          {/* 版面順序對上決策順序：精確票種 → 挑票規則 → 接受其他票種。 */}
           <TicketPriorityEditor
             value={tp.priorities}
             ticketNames={ticketNames}
@@ -358,6 +367,12 @@ export function TaskForm({ eventId }: { eventId: string }) {
             onChange={(priorities) =>
               patch({ ticket_preference: { ...tp, priorities } })
             }
+          />
+
+          <TicketRuleEditor
+            value={tp.rule}
+            error={errors.rule}
+            onChange={(rule) => patch({ ticket_preference: { ...tp, rule } })}
           />
         </div>
       </Panel>

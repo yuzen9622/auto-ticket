@@ -1,6 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
-import { createInitialDraft, FIELD_ELEMENT_ID, validateDraft } from "@/lib/task-draft"
+import {
+  createDefaultRule,
+  createInitialDraft,
+  FIELD_ELEMENT_ID,
+  validateDraft,
+} from "@/lib/task-draft"
 import { defaultTicketingTimeLocal, msToLocalInput } from "@/lib/ticketing-time"
 
 const NOW_ISO = "2026-09-18T10:30:45.500Z"
@@ -92,10 +97,39 @@ describe("validateDraft", () => {
     expect(run(draft).preferredZones).toBeUndefined()
   })
 
-  it("票種優先順序不可為空", () => {
+  it("三種挑票方式全空才算錯，只留規則是合法的", () => {
     const draft = validDraft()
     draft.ticket_preference.priorities = []
-    expect(run(draft).priorities).toBe("prioritiesEmpty")
+    draft.ticket_preference.rule = null
+    draft.ticket_preference.fallback_to_any = false
+    expect(run(draft).priorities).toBe("noWayToPick")
+
+    // 開賣前拿不到票價的平台就是這個組合：沒有精確票種，只有規則。
+    draft.ticket_preference.rule = createDefaultRule()
+    expect(run(draft).priorities).toBeUndefined()
+  })
+
+  it("規則的票價視窗顛倒要擋下來", () => {
+    const draft = validDraft()
+    draft.ticket_preference.rule = {
+      ...createDefaultRule(),
+      min_price: 3000,
+      max_price: 1000,
+    }
+    expect(run(draft).rule).toBe("rulePriceWindowInverted")
+
+    draft.ticket_preference.rule = {
+      ...createDefaultRule(),
+      min_price: 1000,
+      max_price: 3000,
+    }
+    expect(run(draft).rule).toBeUndefined()
+  })
+
+  it("規則的票價不可為負", () => {
+    const draft = validDraft()
+    draft.ticket_preference.rule = { ...createDefaultRule(), max_price: -1 }
+    expect(run(draft).rule).toBe("rulePriceNegative")
   })
 
   it("驗證規則缺題目或答案時逐條標記", () => {

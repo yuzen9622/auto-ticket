@@ -47,6 +47,18 @@ function pyConstValues(source, prefix) {
   return [...source.matchAll(re)].map((x) => x[1])
 }
 
+/** 抽出 `field: Literal["a", "b"]` 的字面值。Literal 不是 Enum，前一個抽取器讀不到。 */
+function pyLiteralValues(source, className, fieldName) {
+  const start = source.indexOf(`class ${className}(`)
+  if (start === -1) throw new Error(`class not found: ${className}`)
+  const rest = source.slice(start)
+  const nextClass = rest.slice(1).search(/^class /m)
+  const body = nextClass === -1 ? rest : rest.slice(0, nextClass + 1)
+  const m = body.match(new RegExp(`${fieldName}\\s*:\\s*Literal\\[([^\\]]*)\\]`))
+  if (!m) throw new Error(`literal field not found: ${className}.${fieldName}`)
+  return [...m[1].matchAll(/"([^"]+)"/g)].map((x) => x[1])
+}
+
 /** 抽出 `export const NAME = [...] as const` 的字串字面值。 */
 function tsConstArray(source, name) {
   const m = source.match(
@@ -61,6 +73,7 @@ const task = readRepo("src/domain/task.py")
 const jobs = readRepo("src/broker/jobs.py")
 const ws = readRepo("src/api/schemas/ws.py")
 const errors = readRepo("src/api/errors.py")
+const preference = readRepo("src/domain/preference.py")
 const contract = readFileSync(resolve(webRoot, "lib/contract.ts"), "utf8")
 
 const checks = [
@@ -76,6 +89,14 @@ const checks = [
   ["CLIENT_ACTION", pyEnumValues(ws, "ClientAction")],
   ["API_ERROR_CODE", pyConstValues(errors, "CODE_")],
   ["PLATFORM", pyEnumValues(readRepo("src/domain/event.py"), "PlatformEnum")],
+  [
+    "SEAT_STRATEGY",
+    pyLiteralValues(preference, "SeatPreference", "strategy"),
+  ],
+  [
+    "TICKET_PRICE_ORDER",
+    pyLiteralValues(preference, "TicketRule", "price_order"),
+  ],
 ]
 
 let failed = false

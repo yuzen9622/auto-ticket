@@ -93,6 +93,26 @@ export function saveContact(contact: {
   return next
 }
 
+export function updateContact(
+  index: number,
+  contact: {
+    name?: unknown
+    phone?: unknown
+    email?: unknown
+  }
+): StoredContact[] {
+  const current = loadContacts()
+  if (!Number.isInteger(index) || index < 0 || index >= current.length) {
+    return current
+  }
+
+  const next = current.map((entry, i) =>
+    i === index ? toStoredContact(contact) : entry
+  )
+  write(CONTACTS_KEY, next)
+  return next
+}
+
 export function removeContact(index: number): StoredContact[] {
   const next = loadContacts().filter((_, i) => i !== index)
   write(CONTACTS_KEY, next)

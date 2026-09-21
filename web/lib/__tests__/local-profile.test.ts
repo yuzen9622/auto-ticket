@@ -11,6 +11,7 @@ import {
   saveContact,
   toStoredAttendee,
   toStoredContact,
+  updateContact,
 } from "@/lib/local-profile"
 
 function installLocalStorage() {
@@ -99,6 +100,54 @@ describe("聯絡人 CRUD", () => {
     const all = loadContacts()
     expect(all).toHaveLength(1)
     expect(all[0].email).toBe("new@x.com")
+  })
+
+  it("可更新指定索引並保留原位置，不殘留舊筆", () => {
+    saveContact({ name: "A", phone: "0911111111", email: "a@x.com" })
+    saveContact({ name: "B", phone: "0922222222", email: "b@x.com" })
+
+    expect(
+      updateContact(1, {
+        name: "A2",
+        phone: "0933333333",
+        email: "a2@x.com",
+      })
+    ).toEqual([
+      { name: "B", phone: "0922222222", email: "b@x.com" },
+      { name: "A2", phone: "0933333333", email: "a2@x.com" },
+    ])
+    expect(loadContacts().some((contact) => contact.name === "A")).toBe(false)
+  })
+
+  it("索引非整數或越界時回傳原資料且不寫入", () => {
+    saveContact({ name: "A", phone: "0911111111", email: "a@x.com" })
+    const setItem = vi.spyOn(window.localStorage, "setItem")
+    setItem.mockClear()
+    const original = loadContacts()
+
+    expect(updateContact(0.5, { name: "X" })).toEqual(original)
+    expect(updateContact(-1, { name: "X" })).toEqual(original)
+    expect(updateContact(1, { name: "X" })).toEqual(original)
+    expect(setItem).not.toHaveBeenCalled()
+  })
+
+  it("更新仍採白名單序列化，額外敏感欄位不落盤", () => {
+    saveContact({ name: "A", phone: "0911111111", email: "a@x.com" })
+
+    updateContact(0, {
+      name: "B",
+      phone: "0922222222",
+      email: "b@x.com",
+      id_number: "A123456789",
+      access_key: "super-secret",
+    } as { name: string; phone: string; email: string })
+
+    const raw = store.get(CONTACTS_KEY) ?? ""
+    expect(raw).not.toContain("A123456789")
+    expect(raw).not.toContain("super-secret")
+    expect(loadContacts()).toEqual([
+      { name: "B", phone: "0922222222", email: "b@x.com" },
+    ])
   })
 
   it("可依索引刪除", () => {

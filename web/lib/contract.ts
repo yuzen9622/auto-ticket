@@ -126,3 +126,7 @@ export const SEAT_STRATEGY = [
   "specific_zone",
 ] as const
 export type SeatStrategy = (typeof SEAT_STRATEGY)[number]
+
+/** src/domain/preference.py TicketRule.price_order */
+export const TICKET_PRICE_ORDER = ["page", "highest", "lowest"] as const
+export type TicketPriceOrder = (typeof TICKET_PRICE_ORDER)[number]

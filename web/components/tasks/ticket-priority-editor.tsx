@@ -274,7 +274,10 @@ function TicketNameCombobox({
   )
 }
 
-/** 後端要求 priorities 至少 1 筆（min_length=1），因此最後一筆不可刪。 */
+/**
+ * 精確票種比對。可以一筆都不留——開賣前拿不到票價的平台改用挑票規則，後端只要求
+ * 「精確票種、規則、接受其他票種」三者至少有一種。
+ */
 export function TicketPriorityEditor({
   value,
   onChange,
@@ -344,7 +347,7 @@ export function TicketPriorityEditor({
             {t("priorities")}
           </Label>
           <p className="text-xs text-muted-foreground">
-            {t("prioritiesHint")} 依序嘗試購買，可拖曳握把調整優先順序。
+            {t("prioritiesHint")} 可拖曳握把調整優先順序。
           </p>
         </div>
         <Button
@@ -491,7 +494,6 @@ export function TicketPriorityEditor({
                   className="h-8 w-8 text-destructive/70 hover:bg-destructive/10 hover:text-destructive"
                   aria-label={t("removePriority")}
                   title={t("removePriority")}
-                  disabled={value.length <= 1}
                   onClick={() => onChange(value.filter((_, idx) => idx !== i))}
                 >
                   <Trash2 className="size-4" />

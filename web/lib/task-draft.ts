@@ -2,6 +2,7 @@ import type {
   AttendeeProfile,
   ExecutionMode,
   TicketPreference,
+  TicketRule,
   UserContactProfile,
   VerificationRule,
 } from "@/lib/api/types"
@@ -31,17 +32,37 @@ export interface TaskDraft {
   profile: string
 }
 
+/**
+ * 預設就排除優待票與身障票。
+ *
+ * 這兩種票入場要查驗證件，資格不符當場作廢——誤買的代價不對稱，所以預設站在
+ * 「不要買到」那一邊；真的要買的人在欄位裡把關鍵字刪掉即可。
+ */
+export function createDefaultRule(): TicketRule {
+  return {
+    max_price: null,
+    min_price: null,
+    prefer_name_patterns: [],
+    exclude_name_patterns: ["優待", "身障", "愛心", "敬老"],
+    price_order: "page",
+  }
+}
+
 export function createInitialDraft(): TaskDraft {
   return {
     ticket_preference: {
       quantity: 2,
-      priorities: [{ price: 0, ticket_name_pattern: null, priority: 1 }],
+      // 開賣前多半拿不到票價（拓元、ibon 的票價要進到票區頁才看得到），所以預設
+      // 不放任何精確價格。留一筆 price 0 的佔位更糟：後端會拿它去比對「頁面沒印
+      // 價格」的票種並搶在規則前面成立，等於規則整組失效。
+      priorities: [],
       seat_preference: {
         adjacent: true,
         strategy: "best_available",
         preferred_zones: [],
       },
       fallback_to_any: false,
+      rule: createDefaultRule(),
     },
     contact_profile: { name: "", phone: "", email: "" },
     attendees: [],
@@ -88,9 +109,31 @@ export function FIELD_ELEMENT_ID(key: string): string {
       return "execution-mode"
     case "priorities":
       return "priority-order-0"
+    case "rule":
+      return "rule-max-price"
     default:
       return key
   }
+}
+
+function validateRule(
+  rule: TicketRule | null,
+  message: (key: string, values?: Record<string, string | number>) => string
+): string | null {
+  if (rule === null) return null
+  const prices = [rule.min_price, rule.max_price]
+  if (prices.some((p) => p !== null && (!Number.isFinite(p) || p < 0))) {
+    return message("rulePriceNegative")
+  }
+  // 後端 TicketRule 有同一條 model_validator；前端先擋才不會換來一個 422。
+  if (
+    rule.min_price !== null &&
+    rule.max_price !== null &&
+    rule.min_price > rule.max_price
+  ) {
+    return message("rulePriceWindowInverted")
+  }
+  return null
 }
 
 export interface ValidateOptions {
@@ -123,10 +166,21 @@ export function validateDraft(
     errors.quantity = message("quantityRange")
   }
 
-  if (tp.priorities.length === 0) {
-    errors.priorities = message("prioritiesEmpty")
+  // 精確票種、規則、退而求其次——三種挑票方式至少要有一種，否則送出去的是一個
+  // 保證買不到票的任務（後端 TicketPreference 也擋，這裡先擋是為了指到欄位）。
+  if (
+    tp.priorities.length === 0 &&
+    tp.rule === null &&
+    !tp.fallback_to_any
+  ) {
+    errors.priorities = message("noWayToPick")
   } else if (tp.priorities.some((p) => !Number.isFinite(p.price) || p.price < 0)) {
     errors.priorities = message("priorityPriceNegative")
+  }
+
+  const ruleError = validateRule(tp.rule, message)
+  if (ruleError !== null) {
+    errors.rule = ruleError
   }
 
   if (

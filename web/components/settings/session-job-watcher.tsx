@@ -69,8 +69,7 @@ export function SessionJobWatcher({
   })
 
   const manualLogin = useMutation({
-    mutationFn: () =>
-      requestLogin(platform, { mode: "manual", profile }),
+    mutationFn: () => requestLogin(platform, { mode: "manual", profile }),
     onSuccess: onAccepted,
     onError: (e) => toast.error(apiErrorMessage(e)),
   })
@@ -133,13 +132,7 @@ export function SessionJobWatcher({
       : null
   const resultRows = summarizeJobResult(job?.result ?? null, platform)
   const elapsed = startedAt === null ? null : formatElapsed(now - startedAt)
-
   const isTixcraft = platform === "tixcraft"
-  const isIbon = platform === "ibon"
-
-  const handleAutoLogin = () => {
-    autoLogin.mutate()
-  }
 
   return (
     <Panel title={t("sessionHeading")}>
@@ -158,7 +151,7 @@ export function SessionJobWatcher({
               variant="default"
               size="sm"
               disabled={busy}
-              onClick={handleAutoLogin}
+              onClick={() => autoLogin.mutate()}
             >
               {t("autoLogin")}
             </Button>
