@@ -67,6 +67,34 @@ async def test_solves_with_stubbed_engine(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_beta_color_filtered_mode_configures_engine_and_classification(monkeypatch):
+    stub_engine = MagicMock()
+    stub_engine.classification.return_value = "UPFOOA"
+    engine_requests: list[tuple[str | None, bool]] = []
+
+    async def _stub_get_ocr(model_path: str | None, *, beta: bool = False):
+        engine_requests.append((model_path, beta))
+        return stub_engine
+
+    monkeypatch.setattr("adapters.verification.ddddocr_provider._get_ocr", _stub_get_ocr)
+
+    provider = DdddOcrProvider(beta=True, color_filter_colors=("red", "blue"))
+    challenge = VerificationChallenge(
+        kind=ChallengeKind.IMAGE_CAPTCHA,
+        question="ibon 登入驗證碼",
+        image_bytes=b"grid-captcha",
+    )
+    result = await provider.solve(challenge)
+
+    assert result.solved is True
+    assert result.answer == "UPFOOA"
+    assert engine_requests == [(None, True)]
+    stub_engine.classification.assert_called_once_with(
+        b"grid-captcha", color_filter_colors=["red", "blue"]
+    )
+
+
+@pytest.mark.asyncio
 async def test_reports_unavailable_engine(monkeypatch):
     def _fail_build(model_path: str | None):
         raise ImportError("No module named ddddocr")

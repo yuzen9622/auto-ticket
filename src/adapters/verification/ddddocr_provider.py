@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
@@ -21,16 +22,16 @@ from telemetry.timeline import TimelineEventType, TimelineRecorder
 
 PROVIDER_NAME = "ddddocr"
 
-_ENGINES: dict[str | None, Any] = {}
+_ENGINES: dict[tuple[str | None, bool], Any] = {}
 _ENGINE_LOCK = asyncio.Lock()
 
 
-def _build_ocr(model_path: str | None) -> Any:
+def _build_ocr(model_path: str | None, *, beta: bool = False) -> Any:
     """載入並初始化 ddddocr 引擎（在 worker 執行緒中執行）。"""
     import ddddocr
 
     if model_path is None:
-        return ddddocr.DdddOcr(show_ad=False)
+        return ddddocr.DdddOcr(show_ad=False, beta=beta)
 
     onnx_file = Path(model_path)
     if not onnx_file.is_file():
@@ -39,20 +40,26 @@ def _build_ocr(model_path: str | None) -> Any:
     charsets = str(json_file) if json_file.is_file() else ""
     return ddddocr.DdddOcr(
         show_ad=False,
+        beta=beta,
         import_onnx_path=str(onnx_file),
         charsets_path=charsets,
     )
 
 
-async def _get_ocr(model_path: str | None) -> Any:
+async def _get_ocr(model_path: str | None, *, beta: bool = False) -> Any:
     """依模型路徑取得快取的 OCR 引擎單例。"""
-    engine = _ENGINES.get(model_path)
+    cache_key = (model_path, beta)
+    engine = _ENGINES.get(cache_key)
     if engine is not None:
         return engine
     async with _ENGINE_LOCK:
-        if model_path not in _ENGINES:
-            _ENGINES[model_path] = await asyncio.to_thread(_build_ocr, model_path)
-    return _ENGINES[model_path]
+        if cache_key not in _ENGINES:
+            if beta:
+                engine = await asyncio.to_thread(_build_ocr, model_path, beta=True)
+            else:
+                engine = await asyncio.to_thread(_build_ocr, model_path)
+            _ENGINES[cache_key] = engine
+    return _ENGINES[cache_key]
 
 
 class DdddOcrProvider:
@@ -66,10 +73,19 @@ class DdddOcrProvider:
         telemetry: TimelineRecorder | None = None,
         model_path: str | None = None,
         min_length: int = 1,
+        beta: bool = False,
+        color_filter_colors: Sequence[str] | None = None,
     ) -> None:
         self.telemetry = telemetry
         self.model_path = model_path
         self.min_length = min_length
+        self.beta = beta
+        self.color_filter_colors = tuple(color_filter_colors or ())
+
+    async def _load_engine(self, model_path: str | None) -> Any:
+        if self.beta:
+            return await _get_ocr(model_path, beta=True)
+        return await _get_ocr(model_path)
 
     async def solve(self, challenge: VerificationChallenge) -> VerificationResult:
         if challenge.kind is not ChallengeKind.IMAGE_CAPTCHA:
@@ -91,7 +107,7 @@ class DdddOcrProvider:
         ocr = None
         if self.model_path is not None:
             try:
-                ocr = await _get_ocr(self.model_path)
+                ocr = await self._load_engine(self.model_path)
             except Exception as exc:
                 if self.telemetry is not None:
                     self.telemetry.record(
@@ -104,7 +120,7 @@ class DdddOcrProvider:
 
         if ocr is None:
             try:
-                ocr = await _get_ocr(None)
+                ocr = await self._load_engine(None)
             except (ImportError, OSError) as exc:
                 if self.telemetry is not None:
                     self.telemetry.record(
@@ -141,7 +157,16 @@ class DdddOcrProvider:
                 )
 
         try:
-            raw_answer = await asyncio.to_thread(ocr.classification, challenge.image_bytes)
+            classification_kwargs: dict[str, Any] = {}
+            if self.color_filter_colors:
+                classification_kwargs["color_filter_colors"] = list(
+                    self.color_filter_colors
+                )
+            raw_answer = await asyncio.to_thread(
+                ocr.classification,
+                challenge.image_bytes,
+                **classification_kwargs,
+            )
         except Exception as exc:
             if self.telemetry is not None:
                 self.telemetry.record(
