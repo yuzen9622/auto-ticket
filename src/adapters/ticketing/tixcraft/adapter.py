@@ -8,23 +8,27 @@ import hashlib
 import re
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any, ClassVar
+from urllib.parse import urljoin
 
 from adapters.payment.base import PaymentOutcome, PaymentProvider, PaymentResult
 from adapters.ticketing.base import TicketingAdapter
 from adapters.ticketing.dom import (
     contains_cloudflare_challenge,
+    first_present_visible,
     first_visible,
+    present_count,
     page_text,
     try_solve_cloudflare_turnstile,
 )
 from adapters.ticketing.page_state import (
-    CloudflareChallengeError,
-    PageKind,
-    PageState,
     REASON_NO_TICKET_UNITS,
     REASON_SELECTED,
     REASON_SOLD_OUT,
+    CloudflareChallengeError,
+    PageKind,
+    PageState,
 )
+from adapters.ticketing.tixcraft.pages import BASE_URL as TIXCRAFT_BASE_URL
 from adapters.ticketing.tixcraft.selectors import TixcraftSelectors
 from adapters.verification.base import (
     ChallengeKind,
@@ -44,6 +48,9 @@ else:
     Page = Any
 
 PRICE_RE = re.compile(r"(\d[\d,]*)\s*元?")
+
+#: 等開賣時的輪詢間隔。開著就立刻回，這個值只決定「還沒開」時多久再問一次。
+SALE_PROBE_POLL_S = 0.1
 
 
 class TixcraftAdapter(TicketingAdapter):
@@ -102,7 +109,11 @@ class TixcraftAdapter(TicketingAdapter):
         if any(seg in curr_url for seg in ("/ticket/area", "/ticket/ticket", "/ticket/verify")):
             return PageKind.REGISTRATION
 
-        if "/ticket/order" in curr_url or "/order" in curr_url:
+        if (
+            "/ticket/checkout" in curr_url
+            or "/ticket/order" in curr_url
+            or "/order" in curr_url
+        ):
             return PageKind.ORDER
 
         return PageKind.UNKNOWN
@@ -120,19 +131,28 @@ class TixcraftAdapter(TicketingAdapter):
             raise CloudflareChallengeError("偵測到人機驗證挑戰；一律 fail-closed 中止")
 
         # 3. 售完或失敗彈窗
-        failure_loc = await first_visible(
-            page,
-            TixcraftSelectors.FAILURE_MODAL,
-            timeout_ms=self.probe_timeout_ms,
-            telemetry=self.telemetry,
-            field="failure_modal",
-        )
+        # 「現在有沒有彈窗」是問句：用會等待的探測問，每一輪判頁都要多付一次逾時。
+        failure_loc = await first_present_visible(page, TixcraftSelectors.FAILURE_MODAL)
         if failure_loc is not None:
             modal_text = await page_text(page)
             if any(marker in modal_text for marker in TixcraftSelectors.SOLD_OUT_TEXTS):
                 return PageState.FAILURE_MODAL
 
-        # 4. 特權碼／資格審查
+        # 4. 被踢回登入頁：送出張數而沒有登入時拓元就這樣回應。判成 UNKNOWN 的話
+        #    迴圈只會空轉到預算用完，最後回報「state loop budget exhausted」，
+        #    把「你沒登入」說成了一個看不懂的逾時。
+        if "/login" in curr_url:
+            return PageState.GUEST_MODAL
+
+        # 5. 購票頁但沒有登入：拓元要按下「確認張數」才會把人踢回登入頁，在那之前
+        #    選區域、選張數、填驗證碼都照走。不先認出來的話，送出被拒會被讀成
+        #    「驗證碼錯誤」，把驗證次數耗光後回報一個與真正原因無關的失敗。
+        if "/ticket/" in curr_url and not any(
+            marker in text for marker in TixcraftSelectors.LOGGED_IN_TEXTS
+        ) and any(marker in text for marker in TixcraftSelectors.LOGGED_OUT_TEXTS):
+            return PageState.GUEST_MODAL
+
+        # 6. 特權碼／資格審查
         if "/ticket/verify" in curr_url:
             return PageState.QUALIFICATION_CODE
 
@@ -145,23 +165,37 @@ class TixcraftAdapter(TicketingAdapter):
             return PageState.FORM_FILLING
 
         # 7. 付款與完成
-        if "/ticket/order" in curr_url or "/payment" in curr_url:
-            return PageState.PAYMENT_REQUIRED
-
+        #    拓元送出張數後進 `/ticket/checkout`（購票確認→付款），這是「已經
+        #    走到付款」的唯一標記；少了它整個流程會停在 UNKNOWN 直到逾時。
         if "/order/success" in curr_url or "/ticket/complete" in curr_url:
             return PageState.COMPLETED
+
+        if (
+            "/ticket/checkout" in curr_url
+            or "/ticket/order" in curr_url
+            or "/payment" in curr_url
+        ):
+            return PageState.PAYMENT_REQUIRED
 
         return PageState.UNKNOWN
 
     async def detect_sale_opened(self, page: Page, timeout_ms: int) -> bool:
-        """偵測頁面是否開賣（區域連結或購票鈕是否可見）。"""
-        btn = await first_visible(
-            page,
-            (TixcraftSelectors.ZONE_LINKS, TixcraftSelectors.SESSION_BUY_BUTTON),
-            timeout_ms=timeout_ms,
-            telemetry=self.telemetry,
+        """偵測頁面是否開賣。
+
+        售完的票區與場次連按鈕都不會渲染，所以「元素在不在」就是開賣與否；
+        已經開賣時輪詢會立刻回，不必等滿逾時才確認一件早就成立的事。
+        """
+        deadline = asyncio.get_running_loop().time() + max(timeout_ms, 0) / 1000.0
+        selectors = (
+            TixcraftSelectors.ZONE_LINKS,
+            TixcraftSelectors.SESSION_BUY_BUTTON,
         )
-        return btn is not None
+        while True:
+            if await present_count(page, selectors) > 0:
+                return True
+            if asyncio.get_running_loop().time() >= deadline:
+                return False
+            await asyncio.sleep(SALE_PROBE_POLL_S)
 
     # ---------------------------------------------------------------- 票券與區域
 
@@ -316,26 +350,15 @@ class TixcraftAdapter(TicketingAdapter):
         if select_loc is not None:
             await select_loc.select_option(str(quantity))
 
-        agree_loc = await first_visible(
-            page,
-            TixcraftSelectors.AGREE_CHECKBOX,
-            timeout_ms=self.probe_timeout_ms,
-            telemetry=self.telemetry,
-            field="agree_checkbox",
-        )
+        agree_loc = await first_present_visible(page, TixcraftSelectors.AGREE_CHECKBOX)
         if agree_loc is not None and not await agree_loc.is_checked():
             await agree_loc.check()
 
         return True
 
     async def detect_verification(self, page: Page) -> bool:
-        img = await first_visible(
-            page,
-            TixcraftSelectors.CAPTCHA_IMAGE,
-            timeout_ms=self.probe_timeout_ms,
-            telemetry=self.telemetry,
-            field="captcha_image",
-        )
+        # 驗證碼圖在張數頁是初始 HTML 的一部分，沒有「等它出現」這回事。
+        img = await first_present_visible(page, TixcraftSelectors.CAPTCHA_IMAGE)
         return img is not None
 
     async def handle_verification(self, page: Page) -> bool:
@@ -464,39 +487,65 @@ class TixcraftAdapter(TicketingAdapter):
     async def navigate_to_event(
         self, page: Page, event_url: str, session_preference: str | None = None
     ) -> bool:
+        """從節目介紹頁一路走到區域選擇頁。
+
+        節目介紹頁與場次頁只差 `/activity/detail/` → `/activity/game/`，直接換
+        網址比點按鈕可靠：介紹頁的「立即購票」是 JS 綁定，點了不一定導頁。
+        """
         await page.goto(event_url, wait_until="domcontentloaded")
-        curr_url = getattr(page, "url", "").lower()
+        curr_url = getattr(page, "url", "")
 
-        if "/activity/detail" in curr_url:
-            buy_btn = await first_visible(
-                page,
-                "a[href*='/activity/game/'], .buy a, a.btn-primary",
-                timeout_ms=self.timeout_ms,
-                telemetry=self.telemetry,
+        if "/activity/detail/" in curr_url:
+            await page.goto(
+                curr_url.replace("/activity/detail/", "/activity/game/"),
+                wait_until="domcontentloaded",
             )
-            if buy_btn is not None:
-                await buy_btn.click()
-                with contextlib.suppress(Exception):
-                    await page.wait_for_url("**/activity/game/**", timeout=self.timeout_ms)
+            curr_url = getattr(page, "url", "")
 
-        curr_url = getattr(page, "url", "").lower()
-        if "/activity/game" in curr_url:
-            rows = await page.locator(TixcraftSelectors.GAME_LIST_ROWS).all()
-            target_btn: Locator | None = None
-            for row in rows:
-                row_text = await row.inner_text()
-                if session_preference and session_preference in row_text:
-                    target_btn = row.locator(TixcraftSelectors.SESSION_BUY_BUTTON).first
-                    break
-                if target_btn is None:
-                    target_btn = row.locator(TixcraftSelectors.SESSION_BUY_BUTTON).first
+        if "/activity/game" not in curr_url.lower():
+            return True
 
-            if target_btn is not None and await target_btn.is_visible():
-                await target_btn.click()
-                with contextlib.suppress(Exception):
-                    await page.wait_for_url("**/ticket/**", timeout=self.timeout_ms)
+        with contextlib.suppress(Exception):
+            await page.wait_for_selector(
+                TixcraftSelectors.GAME_LIST_ROWS, timeout=self.timeout_ms
+            )
 
+        target_url = await self._pick_session_url(page, session_preference)
+        if target_url is None:
+            return False
+
+        await page.goto(target_url, wait_until="domcontentloaded")
         return True
+
+    async def _pick_session_url(
+        self, page: Page, session_preference: str | None
+    ) -> str | None:
+        """挑一個還買得到的場次，回傳它的區域選擇頁網址。
+
+        售完的場次那一列文字會出現「選購一空」，購票鈕仍在，點下去只會彈錯誤，
+        因此要先用該列文字濾掉。
+        """
+        rows = await page.locator(TixcraftSelectors.GAME_LIST_ROWS).all()
+        fallback: str | None = None
+        for row in rows:
+            row_text = ""
+            with contextlib.suppress(Exception):
+                row_text = await row.inner_text()
+            if any(word in row_text for word in TixcraftSelectors.SOLD_OUT_TEXTS):
+                continue
+
+            button = row.locator(TixcraftSelectors.SESSION_BUY_BUTTON).first
+            href = None
+            with contextlib.suppress(Exception):
+                href = await button.get_attribute("data-href") or await button.get_attribute("href")
+            if not href:
+                continue
+            url = urljoin(TIXCRAFT_BASE_URL, href)
+            if session_preference and session_preference in row_text:
+                return url
+            if fallback is None:
+                fallback = url
+        return fallback
 
     async def execute_payment(
         self, page: Page, payment_profile: CreditCardProfile | None

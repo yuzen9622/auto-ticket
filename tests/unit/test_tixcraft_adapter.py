@@ -64,6 +64,15 @@ class MockLocator:
                 return child
         return MockLocator(selector, visible=False)
 
+    async def count(self) -> int:
+        """零等待探測會先問「有幾個」，mock 也要能回答，否則新的探測路徑等於沒被測到。"""
+        return len(self._children) if self._children else 1
+
+    def nth(self, index: int) -> MockLocator:
+        if self._children:
+            return self._children[index]
+        return self if index == 0 else MockLocator("out-of-range", visible=False)
+
     async def all(self) -> list[MockLocator]:
         return list(self._children) if self._children else [self]
 
@@ -310,3 +319,42 @@ def test_tixcraft_handle_cloudflare() -> None:
     # Challenge absent -> returns True
     clean_page = MockPage(html="<html><body>normal content</body></html>")
     assert pytest.importorskip("asyncio").run(adapter.handle_cloudflare(clean_page)) is True
+
+
+def test_tixcraft_checkout_url_is_payment_required() -> None:
+    """送出張數後拓元導到 /ticket/checkout；少了這條判定，流程會停在 UNKNOWN 到逾時。"""
+    adapter = TixcraftAdapter()
+    page = MockPage(
+        url="https://tixcraft.com/ticket/checkout",
+        html="購票確認 付款 登出",
+    )
+    state = pytest.importorskip("asyncio").run(adapter.detect_page_state(page))
+    assert state == PageState.PAYMENT_REQUIRED
+
+
+def test_tixcraft_registration_page_without_login_is_guest_modal() -> None:
+    """未登入也走得到選張數頁，但送出必被拒；要在耗掉驗證碼次數前就認出來。"""
+    adapter = TixcraftAdapter()
+    page = MockPage(
+        url="https://tixcraft.com/ticket/ticket/26_demo/1/1/1",
+        html="首頁 節目資訊 會員登入 選擇張數 驗證碼",
+    )
+    state = pytest.importorskip("asyncio").run(adapter.detect_page_state(page))
+    assert state == PageState.GUEST_MODAL
+
+
+def test_tixcraft_registration_page_when_logged_in_is_form_filling() -> None:
+    adapter = TixcraftAdapter()
+    page = MockPage(
+        url="https://tixcraft.com/ticket/ticket/26_demo/1/1/1",
+        html="首頁 節目資訊 會員中心 登出 選擇張數 驗證碼",
+    )
+    state = pytest.importorskip("asyncio").run(adapter.detect_page_state(page))
+    assert state == PageState.FORM_FILLING
+
+
+def test_tixcraft_login_redirect_is_guest_modal() -> None:
+    adapter = TixcraftAdapter()
+    page = MockPage(url="https://tixcraft.com/login", html="會員登入")
+    state = pytest.importorskip("asyncio").run(adapter.detect_page_state(page))
+    assert state == PageState.GUEST_MODAL

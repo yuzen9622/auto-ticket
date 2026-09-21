@@ -1,50 +1,61 @@
 <!DOCTYPE html>
 <html lang="zh-TW">
-<head>
-    <meta charset="UTF-8">
-    <title>選擇張數 - 拓元售票系統</title>
-</head>
+<head><meta charset="UTF-8"><title>選擇張數: 徐暐翔《愛火山的人》專場演唱會 | tixcraft拓元售票</title></head>
 <body>
-    <form id="form-ticket-ticket" action="/ticket/check" method="post">
-        <div class="ticket-price-select">
-            <label for="TicketForm_ticketPrice_01">特A區 4800</label>
-            <select id="TicketForm_ticketPrice_01" name="TicketForm[ticketPrice][01]">
-                <option value="0" selected="selected">0</option>
-                <option value="1">1</option>
-                <option value="2">2</option>
-                <option value="3">3</option>
-                <option value="4">4</option>
-            </select>
-        </div>
-
-        <div class="verify-code">
-            <label for="TicketForm_verifyCode">驗證碼</label>
-            <img id="TicketForm_verifyCode-image" src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==" alt="驗證碼">
-            <input type="text" id="TicketForm_verifyCode" name="TicketForm[verifyCode]" maxlength="4">
-        </div>
-
-        <div class="agreement">
-            <input type="checkbox" id="TicketForm_agree" name="TicketForm[agree]" value="1">
-            <label for="TicketForm_agree">我已詳細閱讀並同意售票條款</label>
-        </div>
-
-        <div class="submit-btn">
-            <button type="submit" class="btn btn-primary">確認張數</button>
-        </div>
-    </form>
-
-    <!-- 售完 Modal (預設隱藏) -->
-    <div id="msg-modal" class="modal fade" role="dialog" style="display: none;">
-        <div class="modal-dialog">
-            <div class="modal-content">
-                <div class="modal-body">
-                    此區已售完，請重新選擇區域
-                </div>
-                <div class="modal-footer">
-                    <button type="button" class="btn btn-primary close" data-dismiss="modal">確定</button>
-                </div>
-            </div>
-        </div>
-    </div>
+<form action="/ticket/ticket/26_vashhsu/23102/1/83" id="form-ticket-ticket" method="post">
+<input name="_csrf" type="hidden" value="J5EFEVQO5nqAGmrsSNlAnEiPwFQPvcpzZ7WB2-rUOq5owFJ8Nj6tTs5bB7546CzJDOe2F3eFgEUE_OehgZxZ_Q=="/> <div class="col-md-12 col-xs-12 mg-c">
+<!-- start: Buy Ticket List -->
+<table class="table table-bordered" id="ticketPriceList">
+<thead>
+<tr align="center" valign="middle">
+<th height="40px" width="45%">
+                                        票種 / 票價(元)                                    </th>
+<th width="20%">
+                                        數量選擇                                    </th>
+<th width="35%">
+                                        備註                                    </th>
+</tr>
+</thead>
+<tbody>
+<tr class="gridc">
+<td class="fcBlue">
+<div class="text-bold">
+                                            全票 1,450                                        </div>
+</td>
+<td>
+<select class="form-select mobile-select" id="TicketForm_ticketPrice_01" name="TicketForm[ticketPrice][01]">
+<option value="0">0</option>
+<option value="1">1</option>
+<option value="2">2</option>
+<option value="3">3</option>
+<option value="4">4</option>
+</select> <input name="TicketForm[priceSize][01]" type="hidden" value="1"/> </td>
+<td class="text-start">
+<p>
+</p>
+</td>
+</tr>
+</tbody>
+</table>
+</div>
+<div class="row mgt-32 mb-2">
+<div class="col-lg-5 col-md-5 col-sm-5 col-xs-12 col-12 verify-img text-center text-sm-end mb-3 mb-sm-0"><img alt="" id="TicketForm_verifyCode-image" src="/ticket/captcha?v=6ab0bf02921434.24816470" style="cursor:pointer;"/></div><div class="col-lg-7 col-md-7 col-sm-7 col-xs-12 col-12 verify-word text-center text-sm-start"><input class="greyInput" id="TicketForm_verifyCode" name="TicketForm[verifyCode]" placeholder="請輸入驗證碼" style="width: 220px; min-height: 35px;" type="text"/>
+<p class="mgt-8 fcRed remark-word">※驗證碼請輸入英文，可點圖片刷新驗證碼</p>
+<p class="mg-0 fcRed remark-word">※請勿多視窗操作，請盡速送出以免購票失敗</p>
+</div> </div>
+<div>
+<div class="form-check col-lg-12 col-md-12 col-sm-12 col-xs-12 col-12">
+<input class="form-check-input" id="TicketForm_agree" name="TicketForm[agree]" type="checkbox" value="1"/> <label for="TicketForm_agree">我已詳細閱讀且同意<a href="https://tixcraft.com/terms-of-use" target="blank">會員服務條款</a>及節目資訊公告，並同意放棄契約審閱期，且授權貴公司於條款目的範圍內，進行本人之個人資料蒐集、處理及利用。</label> </div>
+</div>
+<div class="mgt-32 col-lg-12 col-md-12 col-sm-12 col-xs-12 col-12 text-center">
+<button class="btn btn-default btn-reselect" id="reSelect" type="button">重新選擇</button> <button class="btn btn-primary btn-green" type="submit">確認張數</button> </div>
+<hr class="hr"/>
+<div class="offset-col-lg 5 col-lg-7 col-md-7 col-sm-12 col-xs-12 col-12 mgt-16 mx-auto">
+<!-- start: Venue -->
+<p class="font20 text-center" style="display: none;">
+                            示意圖僅供參考示意                        </p>
+<img alt="" onerror='this.style.display="none"; this.previousElementSibling.style.display="none";' src="https://static.tixcraft.com/images/field/field_2872_70abb48e98f970c8a0ebbfddcf1e6d32c49270ba7878790db583fe_o.gif" style="width: 100%; padding: 0px; display: none;"/> <!-- end: Venue -->
+</div>
+</form>
 </body>
 </html>

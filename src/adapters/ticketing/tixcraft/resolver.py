@@ -1,96 +1,96 @@
-"""拓元 (Tixcraft) 活動解析器。"""
+"""拓元 (Tixcraft) 活動解析器。
+
+拓元只有 `/activity` 列表頁沒有人機驗證（走 Varnish 快取）；節目介紹頁與場次頁
+一律先回 401 的 JS 驗證頁，純 HTTP 永遠拿不到內容，得由 Worker 用真瀏覽器補。
+因此這裡的分工是：
+
+* 列表頁 → 標題、場地、演出日期、是否在最新開賣頁籤（線上即可取得）。
+* 節目介紹頁 → 活動說明、主辦單位、場次與購票網址（要瀏覽器，見
+  `worker/handlers/hydrate.py`）。
+
+任何情況下都不得用「拓元活動 <代號>」這類佔位字串當標題——寧可讓解析失敗往外
+拋，也不要把假資料寫進資料庫。
+"""
 
 from __future__ import annotations
 
 import contextlib
-import json
-import re
-from datetime import datetime, timezone
+import time
 from typing import Any
-from urllib.parse import urljoin, urlsplit
 
 import httpx
-from bs4 import BeautifulSoup
 from rapidfuzz import fuzz
 
 from adapters.ticketing.base import EventResolver, ResolveError
+from adapters.ticketing.tixcraft.pages import (
+    ActivityDetail,
+    ActivityListing,
+    detail_url,
+    game_url,
+    parse_activity_detail,
+    parse_activity_list,
+    slug_of,
+)
 from domain.event import (
     Event,
     EventCandidate,
     EventStatus,
     PlatformEnum,
     ResolveResult,
-    TicketType,
-    TicketTypeStatus,
 )
 
 DEFAULT_BROWSER_HEADERS: dict[str, str] = {
-    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+    "User-Agent": (
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
+    ),
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
     "Accept-Language": "zh-TW,zh;q=0.9,en-US;q=0.8,en;q=0.7",
 }
 
-KNOWN_TIXCRAFT_PROMOTERS = (
-    ("相信音樂", "相信音樂國際股份有限公司"),
-    ("必應創造", "必應創造股份有限公司"),
-    ("超級圓頂", "超級圓頂事業股份有限公司"),
-    ("寬宏藝術", "寬宏藝術經紀股份有限公司"),
-    ("聯成娛樂", "聯成娛樂 On Line"),
-    ("滾石", "滾石國際音樂股份有限公司"),
-    ("杰威爾", "杰威爾音樂有限公司"),
-    ("華貴娛樂", "華貴娛樂股份有限公司"),
-    ("大國文化", "大國文化集團"),
-    ("星曜製造", "星曜製造有限公司"),
-    ("好玩國際", "好玩國際事股份有限公司"),
-    ("KKLIVE", "KKLIVE Taiwan"),
-    ("遠雄創藝", "遠雄創藝事業股份有限公司"),
-    ("時藝多媒體", "時藝多媒體傳播股份有限公司"),
-    ("鼓鼓", "相信音樂國際股份有限公司"),
-    ("劉若英", "相信音樂國際股份有限公司"),
-    ("孫盛希", "滾石國際音樂股份有限公司"),
-    ("派偉俊", "杰威爾音樂有限公司"),
-    ("顏社", "顏社企業有限公司"),
+#: 全站活動列表對每次搜尋都一樣，短時間內重抓只是浪費上游頻寬。
+LISTING_TTL_S = 120.0
+_listing_cache: tuple[float, list[ActivityListing]] | None = None
+
+#: 節目介紹頁被人機驗證擋掉時，連續重試只會讓整段 IP 被加重封鎖；連錯幾次就
+#: 停手一段時間，改由 Worker 的瀏覽器補資料。
+DETAIL_FAILURE_THRESHOLD = 3
+DETAIL_BACKOFF_S = 600.0
+_detail_failures = 0
+_detail_blocked_until = 0.0
+
+#: 驗證頁的特徵字串；和 `worker/handlers/hydrate.py` 認的是同一組。
+CHALLENGE_MARKERS = (
+    "Let's Get Your Identity Verified",
+    "Your Browsing Activity Has Been Paused",
+    '{"response":"identify"}',
 )
 
 
-def _extract_tixcraft_organizer(title: str, text_or_html: str = "") -> str | None:
-    """依拓元常見主辦單位名單與活動名稱特徵推導主辦單位。"""
-    # 1. 若有內文，從內文解析「主辦單位」
-    if text_or_html:
-        soup = BeautifulSoup(text_or_html, "html.parser")
-        text = soup.get_text("\n")
-        for pattern in (
-            r"(?:主辦[單位]*|指導[單位]*)[：:｜\|\s]+([^\r\n<，。]{2,50})",
-            r"主辦[：:｜\|\s]+([^\r\n<，。]{2,50})",
-        ):
-            m = re.search(pattern, text)
-            if m:
-                val = m.group(1).strip()
-                if not any(v in val for v in ("保有", "保留", "得", "有權", "規定", "公告", "權利", "變更")):
-                    return val
+def clear_listing_cache() -> None:
+    """清掉活動列表與詳情熔斷器的快取；測試之間必須互不影響。"""
+    global _listing_cache, _detail_failures, _detail_blocked_until
+    _listing_cache = None
+    _detail_failures = 0
+    _detail_blocked_until = 0.0
 
-    # 2. 檢查標題中的明確主辦/贊助單位標籤，如【主辦單位】
-    m = re.search(r"【([^】]+)】", title)
-    if m:
-        tag = m.group(1).strip()
-        if any(k in tag for k in ("娛樂", "音樂", "文化", "製作", "演藝", "工作室", "唱片", "經紀")):
-            return tag
 
-    # 3. 國際大秀／西洋巡演（拓元上絕大多數為 Live Nation Taiwan 理想國演藝主辦）
-    title_lower = title.lower()
-    if any(k in title_lower for k in (
-        "live nation", "brunomars", "bruno mars", "westlife", "maroon 5", "maroon5",
-        "stray kids", "5 seconds of summer", "5sos", "khalid", "joji", "fkj",
-        "slowdive", "domi", "young k", "boynextdoor", "against the current"
-    )):
-        return "Live Nation Taiwan 理想國演藝"
+def _detail_fetch_allowed() -> bool:
+    return time.monotonic() >= _detail_blocked_until
 
-    # 4. 台灣知名主辦單位關鍵字比對
-    for kw, full_name in KNOWN_TIXCRAFT_PROMOTERS:
-        if kw.lower() in title_lower:
-            return full_name
 
-    return None
+def _note_detail_failure() -> None:
+    global _detail_failures, _detail_blocked_until
+    _detail_failures += 1
+    if _detail_failures >= DETAIL_FAILURE_THRESHOLD:
+        _detail_blocked_until = time.monotonic() + DETAIL_BACKOFF_S
+        _detail_failures = 0
+
+
+def _note_detail_success() -> None:
+    global _detail_failures, _detail_blocked_until
+    _detail_failures = 0
+    _detail_blocked_until = 0.0
 
 
 class TixcraftResolveError(ResolveError):
@@ -99,6 +99,76 @@ class TixcraftResolveError(ResolveError):
 
 class TixcraftParseError(TixcraftResolveError):
     """拓元頁面資料解析錯誤。"""
+
+
+def _status_from_listing(listing: ActivityListing) -> EventStatus:
+    return EventStatus.ON_SALE if listing.on_sale else EventStatus.ANNOUNCED
+
+
+def _status_from_detail(
+    detail: ActivityDetail, listing: ActivityListing | None
+) -> EventStatus:
+    if detail.sessions:
+        if any(s.buyable for s in detail.sessions):
+            return EventStatus.ON_SALE
+        if all(s.sold_out for s in detail.sessions):
+            return EventStatus.SOLD_OUT
+        return EventStatus.ANNOUNCED
+    if listing is not None:
+        return _status_from_listing(listing)
+    return EventStatus.UNKNOWN
+
+
+def build_event(
+    slug: str,
+    *,
+    listing: ActivityListing | None = None,
+    detail: ActivityDetail | None = None,
+) -> Event:
+    """把列表資料與（可選的）節目介紹資料合成一個 Event。"""
+    title = (detail.title if detail else None) or (listing.title if listing else None)
+    if not title:
+        raise TixcraftParseError(f"拓元活動 {slug} 沒有解析出標題")
+
+    venue = (detail.venue if detail else None) or (listing.venue if listing else None)
+    event_start_at = (detail.event_start_at if detail else None) or (
+        listing.event_start_at if listing else None
+    )
+
+    raw_metadata: dict[str, Any] = {
+        "detail_source": "tixcraft_detail_page" if detail else "tixcraft_activity_list"
+    }
+    # 活動說明與主辦單位只存在於要瀏覽器才打得開的節目介紹頁。這個旗標得明確
+    # 寫 False，否則合併舊 metadata 時會把上一輪的 True 留下來，補完了還顯示缺資料。
+    raw_metadata["needs_browser_detail"] = detail is None
+    if venue:
+        raw_metadata["venue"] = venue
+    if listing is not None and listing.image_url:
+        raw_metadata["image_url"] = listing.image_url
+    if listing is not None and listing.date_text:
+        raw_metadata["date_text"] = listing.date_text
+    if detail is not None:
+        if detail.description:
+            raw_metadata["description"] = detail.description
+        if detail.organizer:
+            raw_metadata["organizer_display"] = detail.organizer
+        if detail.sessions:
+            raw_metadata["sessions"] = [s.to_dict() for s in detail.sessions]
+
+    return Event(
+        id=Event.make_id(PlatformEnum.TIXCRAFT, "tixcraft", slug),
+        platform=PlatformEnum.TIXCRAFT,
+        organizer="tixcraft",
+        event_slug=slug,
+        title=title,
+        canonical_url=detail_url(slug),
+        status=_status_from_detail(detail, listing)
+        if detail is not None
+        else (_status_from_listing(listing) if listing else EventStatus.UNKNOWN),
+        event_start_at=event_start_at,
+        ticket_types=[],
+        raw_metadata=raw_metadata,
+    )
 
 
 class TixcraftEventResolver(EventResolver):
@@ -118,180 +188,118 @@ class TixcraftEventResolver(EventResolver):
     def _get_client(self) -> httpx.AsyncClient:
         return self._client if self._client is not None else httpx.AsyncClient()
 
-    async def search(self, query: str, *, limit: int = 10) -> list[EventCandidate]:
-        """解析 https://tixcraft.com/activity 列表並比對關鍵字。"""
+    async def _load_listings(self) -> list[ActivityListing]:
+        global _listing_cache
+        now = time.monotonic()
+        if _listing_cache is not None and now - _listing_cache[0] < LISTING_TTL_S:
+            return _listing_cache[1]
+
         client = self._get_client()
-        url = urljoin(self._base_url, "/activity")
+        url = f"{self._base_url.rstrip('/')}/activity"
         try:
-            resp = await client.get(url, headers=DEFAULT_BROWSER_HEADERS, timeout=10.0)
-            if resp.status_code in (401, 403):
-                return []
+            resp = await client.get(url, headers=DEFAULT_BROWSER_HEADERS, timeout=15.0)
             resp.raise_for_status()
         except Exception as exc:
-            raise TixcraftResolveError(f"Failed to fetch activity list from {url}: {exc}") from exc
+            raise TixcraftResolveError(
+                f"Failed to fetch activity list from {url}: {exc}"
+            ) from exc
 
-        soup = BeautifulSoup(resp.text, "html.parser")
+        listings = parse_activity_list(resp.text)
+        _listing_cache = (now, listings)
+        return listings
+
+    async def listing_for(self, slug: str) -> ActivityListing | None:
+        with contextlib.suppress(Exception):
+            for listing in await self._load_listings():
+                if listing.slug == slug:
+                    return listing
+        return None
+
+    async def search(self, query: str, *, limit: int = 10) -> list[EventCandidate]:
+        listings = await self._load_listings()
         candidates: list[EventCandidate] = []
-        seen_urls: set[str] = set()
-
-        for link in soup.select("a[href*='/activity/detail/']"):
-            href = link.get("href", "")
-            title = link.get_text(strip=True)
-            if not title or title == "節目介紹":
-                continue
-
-            full_url = urljoin(self._base_url, str(href))
-            if full_url in seen_urls:
-                continue
-            seen_urls.add(full_url)
-
-            # 計算比對分數
-            score = fuzz.partial_ratio(query.lower(), title.lower()) / 100.0 if query else 1.0
-            organizer = _extract_tixcraft_organizer(title)
+        for listing in listings:
+            score = (
+                fuzz.partial_ratio(query.lower(), listing.title.lower()) / 100.0
+                if query
+                else 1.0
+            )
             candidates.append(
                 EventCandidate(
-                    title=title,
-                    url=full_url,
-                    organizer=organizer or "tixcraft",
+                    title=listing.title,
+                    url=listing.url,
+                    organizer="tixcraft",
                     score=score,
+                    published=listing.event_start_at,
+                    summary=None,
+                    raw={
+                        "venue": listing.venue,
+                        "date_text": listing.date_text,
+                        "event_start_at": (
+                            listing.event_start_at.isoformat()
+                            if listing.event_start_at
+                            else None
+                        ),
+                        "status": _status_from_listing(listing).value,
+                        "image_url": listing.image_url,
+                        "needs_browser_detail": True,
+                    },
                 )
             )
-
-        # 依分數排序並去重
         candidates.sort(key=lambda c: c.score, reverse=True)
         return candidates[:limit]
 
     async def fetch_event_metadata(self, event_url: str) -> Event:
-        """解析活動詳細資料；若回 401/403 則從 activity 列表快取依 slug 比對建立基本 Event。"""
+        slug = slug_of(event_url)
+        if not slug:
+            raise TixcraftResolveError(f"無法從 {event_url} 取出拓元活動代號")
+
+        listing = await self.listing_for(slug)
+        detail = await self._try_http_detail(slug)
+        if detail is None and listing is None:
+            raise TixcraftResolveError(
+                f"拓元活動 {slug} 既不在活動列表也讀不到節目介紹頁"
+            )
+        return build_event(slug, listing=listing, detail=detail)
+
+    async def _try_http_detail(self, slug: str) -> ActivityDetail | None:
+        """節目介紹頁在多數情況下會被人機驗證擋掉；擋掉就回 None，不製造假資料。"""
+        if not _detail_fetch_allowed():
+            return None
         client = self._get_client()
-        slug = urlsplit(event_url).path.split("/")[-1]
-        event_id = Event.make_id(PlatformEnum.TIXCRAFT, "tixcraft", slug)
-
         try:
-            resp = await client.get(event_url, headers=DEFAULT_BROWSER_HEADERS, timeout=10.0)
-            if resp.status_code in (401, 403):
-                # 401/403 fallback: 從列表取得基本資訊
-                candidates = await self.search(slug, limit=5)
-                matched = next((c for c in candidates if slug in c.url), None)
-                title = matched.title if matched else f"拓元活動 {slug}"
-                organizer_display = (
-                    matched.organizer
-                    if (matched and matched.organizer and matched.organizer != "tixcraft")
-                    else _extract_tixcraft_organizer(title)
+            resp = await client.get(
+                detail_url(slug), headers=DEFAULT_BROWSER_HEADERS, timeout=10.0
+            )
+        except Exception:
+            _note_detail_failure()
+            return None
+        if resp.status_code != 200 or any(
+            marker in resp.text for marker in CHALLENGE_MARKERS
+        ):
+            _note_detail_failure()
+            return None
+
+        detail = parse_activity_detail(resp.text)
+        if not detail.title:
+            _note_detail_failure()
+            return None
+        _note_detail_success()
+        if not detail.sessions:
+            with contextlib.suppress(Exception):
+                game_resp = await client.get(
+                    game_url(slug), headers=DEFAULT_BROWSER_HEADERS, timeout=10.0
                 )
-                raw_meta: dict[str, Any] = (
-                    {"organizer_display": organizer_display}
-                    if organizer_display
-                    else {}
-                )
-                return Event(
-                    id=event_id,
-                    platform=PlatformEnum.TIXCRAFT,
-                    organizer="tixcraft",
-                    event_slug=slug,
-                    title=title,
-                    canonical_url=event_url,
-                    status=EventStatus.ANNOUNCED,
-                    ticket_types=[],
-                    raw_metadata=raw_meta,
-                )
-            resp.raise_for_status()
-        except httpx.HTTPStatusError as exc:
-            raise TixcraftResolveError(f"HTTP error fetching event metadata: {exc}") from exc
-        except Exception as exc:
-            raise TixcraftResolveError(f"Failed to fetch event metadata from {event_url}") from exc
-
-        soup = BeautifulSoup(resp.text, "html.parser")
-        title = ""
-        start_date: datetime | None = None
-        ticket_types: list[TicketType] = []
-
-        # 優先解析 JSON-LD
-        json_ld = soup.select_one("script[type='application/ld+json']")
-        if json_ld and json_ld.string:
-            try:
-                data = json.loads(json_ld.string)
-            except (ValueError, TypeError):
-                data = None
-            if isinstance(data, dict):
-                title = str(data.get("name", ""))
-                if "startDate" in data:
-                    try:
-                        parsed_dt = datetime.fromisoformat(data["startDate"])
-                        start_date = parsed_dt.replace(tzinfo=timezone.utc) if parsed_dt.tzinfo is None else parsed_dt.astimezone(timezone.utc)
-                    except (ValueError, TypeError):
-                        start_date = None
-                offers = data.get("offers", {})
-                if isinstance(offers, dict) and "lowPrice" in offers:
-                    try:
-                        low_p = int(offers["lowPrice"])
-                        high_p = int(offers.get("highPrice", low_p))
-                    except (ValueError, TypeError):
-                        low_p = 0
-                        high_p = 0
-                    if low_p > 0:
-                        ticket_types.append(
-                            TicketType(
-                                id=TicketType.make_id(event_id, "offer_low"),
-                                event_id=event_id,
-                                name="最低票價",
-                                price=low_p,
-                                status=TicketTypeStatus.AVAILABLE,
-                            )
-                        )
-                        if high_p != low_p:
-                            ticket_types.append(
-                                TicketType(
-                                    id=TicketType.make_id(event_id, "offer_high"),
-                                    event_id=event_id,
-                                    name="最高票價",
-                                    price=high_p,
-                                    status=TicketTypeStatus.AVAILABLE,
-                                )
-                            )
-
-        if not title:
-            title_el = soup.select_one(".activity-title, h1, title")
-            title = title_el.get_text(strip=True) if title_el else f"拓元活動 {slug}"
-
-        organizer_display = _extract_tixcraft_organizer(title, resp.text)
-        raw_meta: dict[str, Any] = (
-            {"organizer_display": organizer_display}
-            if organizer_display
-            else {}
-        )
-
-        return Event(
-            id=event_id,
-            platform=PlatformEnum.TIXCRAFT,
-            organizer="tixcraft",
-            event_slug=slug,
-            title=title,
-            canonical_url=event_url,
-            status=EventStatus.ON_SALE,
-            sale_start_at=start_date,
-            ticket_types=ticket_types,
-            raw_metadata=raw_meta,
-        )
+                if game_resp.status_code == 200:
+                    detail = parse_activity_detail(
+                        resp.text, game_html=game_resp.text
+                    )
+        return detail
 
     async def resolve(self, query: str) -> ResolveResult:
         if query.startswith(("http://", "https://")):
             try:
                 ev = await self.fetch_event_metadata(query)
-                return ResolveResult(
-                    query=query,
-                    auto_selected=True,
-                    event=ev,
-                    candidates=[
-                        EventCandidate(
-                            title=ev.title,
-                            url=ev.canonical_url,
-                            organizer=ev.organizer,
-                            score=1.0,
-                        )
-                    ],
-                    threshold=self._threshold,
-                )
             except Exception:
                 return ResolveResult(
                     query=query,
@@ -300,6 +308,20 @@ class TixcraftEventResolver(EventResolver):
                     candidates=[],
                     threshold=self._threshold,
                 )
+            return ResolveResult(
+                query=query,
+                auto_selected=True,
+                event=ev,
+                candidates=[
+                    EventCandidate(
+                        title=ev.title,
+                        url=ev.canonical_url,
+                        organizer=ev.organizer,
+                        score=1.0,
+                    )
+                ],
+                threshold=self._threshold,
+            )
 
         candidates = await self.search(query, limit=5)
         top = candidates[0] if candidates else None

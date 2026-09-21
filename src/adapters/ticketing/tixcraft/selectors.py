@@ -10,7 +10,9 @@ class TixcraftSelectors:
     # 活動主頁與場次
     GAME_LIST_ROWS = "#gameList > table > tbody > tr"
     GAME_LIST_TABLE = "#gameList table"
-    SESSION_BUY_BUTTON = "input[type='button'][value*='立即購票'], button[value*='立即購票'], .btn-primary"
+    # 場次列的購票鈕沒有 href，網址掛在 data-href（賣完的場次則整顆鈕都不在）。
+    SESSION_BUY_BUTTON = "button[data-href], a[href*='/ticket/area/']"
+    ACTIVITY_DETAIL_BUY_LINK = "a[href*='/activity/game/']"
 
     # 區域選擇頁 (/ticket/area)
     ZONE_LINKS = ".zone a, ul.area-list a"
@@ -29,6 +31,11 @@ class TixcraftSelectors:
     PROMO_BOX = "#promoBox, .zone-verify"
     PROMO_INPUT = "#promoBox input[type='text'], .zone-verify input[type='text'], #checkCode"
     PROMO_SUBMIT = "#promoBox button, .zone-verify button, #submitVerifyCode"
+
+    # 登入狀態：拓元未登入也走得完選區域與選張數，直到按下「確認張數」才被踢回
+    # 登入頁。頁首同時只會出現其中一組字樣，據此在燒掉驗證碼次數前就認出來。
+    LOGGED_OUT_TEXTS = ("會員登入",)
+    LOGGED_IN_TEXTS = ("登出", "會員中心")
 
     # 售完與錯誤提示
     FAILURE_MODAL = ".modal.in, .bootbox.modal, .modal.show, #msg-modal"
