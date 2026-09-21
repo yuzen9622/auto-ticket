@@ -13,7 +13,12 @@ from domain.execution import (
     coerce_execution_mode,
     provider_allowed,
 )
-from domain.preference import SeatPreference, TicketPreference, TicketPriority
+from domain.preference import (
+    SeatPreference,
+    TicketPreference,
+    TicketPriority,
+    TicketRule,
+)
 from domain.task import (
     CreditCardProfile,
     PaymentMethod,
@@ -42,6 +47,7 @@ __all__ = [
     "TaskStatus",
     "TicketPreference",
     "TicketPriority",
+    "TicketRule",
     "TicketType",
     "TicketTypeStatus",
     "UserContactProfile",

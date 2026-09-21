@@ -76,6 +76,7 @@ GUARDED_TEST_FILES = (
     "tests/integration/test_scheduler_to_fsm.py",
     "tests/fake_page.py",
     "tests/unit/test_ticket_strategy.py",
+    "tests/unit/test_ticket_preference.py",
     "tests/unit/test_seat_strategy.py",
     "tests/unit/test_verification.py",
     "tests/unit/test_payment.py",
