@@ -7,6 +7,7 @@ from datetime import UTC, datetime, timedelta
 from fastapi import APIRouter, Depends, Query, Response, status
 
 from accounts.service import AccountService
+from adapters.ticketing.factory import UnsupportedPlatformError, detect_platform
 from broker.broker import SqliteTaskBroker
 from broker.jobs import JobKind
 from domain.execution import ExecutionMode
@@ -33,7 +34,20 @@ from ..schemas.tasks import (
 router = APIRouter(prefix="/api/v1/tasks", tags=["tasks"])
 
 #: 目前只有 kktix 有 resolver 與帳號流程；正式模式的前置檢查對準這個平台。
-LIVE_PLATFORM = "kktix"
+#: 活動網址判不出平台時的退路；正式模式檢查的是這場活動所屬平台的帳號。
+FALLBACK_LIVE_PLATFORM = "kktix"
+
+
+def live_platform_for(event_url: str) -> str:
+    """正式模式要檢查的是哪個平台的帳號。
+
+    先前寫死 kktix，導致建立拓元／ibon 任務時檢查的是完全不相干的帳號：
+    kktix 有登入就放行，真正要用的帳號沒設定也照樣送進 worker。
+    """
+    try:
+        return detect_platform(event_url).value
+    except UnsupportedPlatformError:
+        return FALLBACK_LIVE_PLATFORM
 
 
 def _resolve_start_timing(
@@ -72,12 +86,13 @@ async def create_task(
             "the execution mode decides the payment adapter"
         )
 
+    live_platform = live_platform_for(req.event_url)
     if req.execution_mode is ExecutionMode.LIVE and not accounts.status(
-        LIVE_PLATFORM
+        live_platform
     ).configured:
         raise InvalidRequestError(
             "live execution requires a configured ticketing account",
-            details={"reason": "account_not_configured", "platform": LIVE_PLATFORM},
+            details={"reason": "account_not_configured", "platform": live_platform},
         )
 
     task_id = uuid.uuid4().hex[:16]
