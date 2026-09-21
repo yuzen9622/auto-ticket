@@ -313,3 +313,120 @@ async def test_search_events_filters_out_closed_events(db: Database) -> None:
         assert direct_resp.json()["results"] == []
 
 
+async def test_search_events_multi_platform(db: Database) -> None:
+    """關鍵字搜尋並行呼叫各平台 resolver；亦支援單一平台篩選。"""
+    import json
+
+    tixcraft_index = """<!DOCTYPE html><html><body>
+    <div class="thumbnail">
+        <a href="/activity/detail/24_tix"><img alt="拓元好聲音演唱會"></a>
+        <div class="caption"><h3><a href="/activity/detail/24_tix">拓元好聲音演唱會</a></h3></div>
+    </div>
+    </body></html>"""
+
+    ibon_index = json.dumps({
+        "Code": 0,
+        "Message": "Success",
+        "Data": [
+            {
+                "ActivityId": "38999",
+                "ActivityName": "ibon 音樂嘉年華",
+                "StartDate": "2026/11/20",
+                "EndDate": "2026/11/20",
+                "Location": "高雄巨蛋",
+            }
+        ],
+    })
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "tixcraft.com" and request.url.path == "/activity":
+            return httpx.Response(200, text=tixcraft_index)
+        if (
+            request.url.host == "ticket.ibon.com.tw"
+            and request.url.path == "/api/ActivityInfo/GetIndexData"
+        ):
+            return httpx.Response(200, text=ibon_index)
+        if request.url.host == "kktix.com" and request.url.path == "/events.atom":
+            return httpx.Response(
+                200,
+                text="""<?xml version="1.0" encoding="UTF-8"?><feed xmlns="http://www.w3.org/2005/Atom"></feed>""",
+            )
+        return httpx.Response(404)
+
+    mock_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    settings = ApiSettings(db_path=db.db_path, resolver_orgs=())
+    app = create_app(settings, db=db, http_client=mock_client)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://test",
+    ) as client:
+        # 1. 無 platform 參數：並行搜尋三平台，結果包含拓元與 ibon 活動
+        resp = await client.get("/api/v1/events/search", params={"q": "音樂"})
+        assert resp.status_code == 200
+        results = resp.json()["results"]
+        assert len(results) >= 1
+        assert any("ibon" in r["title"].lower() or "拓元" in r["title"] for r in results)
+
+        # 2. 指定 platform=tixcraft
+        tix_resp = await client.get(
+            "/api/v1/events/search",
+            params={"q": "演唱會", "platform": "tixcraft"},
+        )
+        assert tix_resp.status_code == 200
+        tix_results = tix_resp.json()["results"]
+        assert len(tix_results) >= 1
+        assert "拓元" in tix_results[0]["title"]
+
+
+async def test_get_event_hydrates_by_event_platform(db: Database) -> None:
+    """get_event 依據 ev.platform 動態派發對應 resolver 進行 hydration。"""
+    from domain.event import Event, EventStatus, PlatformEnum
+    from storage.repositories.event_repository import EventRepository
+
+    detail_html = """<!DOCTYPE html><html><head>
+    <script type="application/ld+json">
+    {"@context": "https://schema.org", "@type": "Event", "name": "ibon 巨星演唱會", "offers": {"@type": "AggregateOffer", "lowPrice": "1200", "highPrice": "3600"}}
+    </script>
+    </head><body><h1>ibon 巨星演唱會</h1></body></html>"""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if (
+            request.url.host == "ticket.ibon.com.tw"
+            and "/ActivityInfo/Details/38111" in request.url.path
+        ):
+            return httpx.Response(200, text=detail_html)
+        return httpx.Response(404)
+
+    mock_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    settings = ApiSettings(db_path=db.db_path, resolver_orgs=())
+    app = create_app(settings, db=db, http_client=mock_client)
+
+    # 在 DB 寫入一筆未補齊 (ticket_types=[]) 的 ibon 活動
+    event_id = Event.make_id(PlatformEnum.IBON, "ibon", "38111")
+    shallow_event = Event(
+        id=event_id,
+        platform=PlatformEnum.IBON,
+        organizer="ibon",
+        event_slug="38111",
+        title="淺資料",
+        canonical_url="https://ticket.ibon.com.tw/ActivityInfo/Details/38111",
+        status=EventStatus.ON_SALE,
+        ticket_types=[],
+    )
+    async with db.session() as session:
+        await EventRepository(session).upsert_event(shallow_event)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://test",
+    ) as client:
+        resp = await client.get(f"/api/v1/events/{event_id}")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["id"] == event_id
+        assert data["title"] == "ibon 巨星演唱會"
+        assert data["platform"] == "ibon"
+
+
+

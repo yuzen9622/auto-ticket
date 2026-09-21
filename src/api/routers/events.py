@@ -3,14 +3,20 @@ from __future__ import annotations
 import asyncio
 import re
 from typing import Any
+from urllib.parse import urlsplit
 
 import httpx
 from fastapi import APIRouter, Depends, Query, Request
 
+from adapters.ticketing.base import ResolveError
+from adapters.ticketing.factory import (
+    UnsupportedPlatformError,
+    build_resolver,
+    detect_platform,
+)
 from adapters.ticketing.kktix.resolver import (
     MAX_ORGS_PER_SEARCH,
     KKTIXEventResolver,
-    KKTIXResolveError,
     match_score,
 )
 from adapters.ticketing.kktix.selectors import KKTIX_EVENT_URL_RE
@@ -67,8 +73,18 @@ def _clean_description(raw: str | None) -> str | None:
 def _organizer_display(ev: Event) -> str | None:
     meta = ev.raw_metadata or {}
     display = meta.get("organizer_display")
-    if isinstance(display, str) and display.strip():
+    if (
+        isinstance(display, str)
+        and display.strip()
+        and display.strip().lower() not in ("kktix", "tixcraft", "ibon")
+    ):
         return display.strip()
+    if ev.organizer and ev.organizer.lower() not in ("kktix", "tixcraft", "ibon"):
+        return ev.organizer
+    if ev.platform == PlatformEnum.TIXCRAFT:
+        return "拓元合作主辦單位"
+    if ev.platform == PlatformEnum.IBON:
+        return "ibon 合作主辦單位"
     return ev.organizer or None
 
 
@@ -154,11 +170,29 @@ def _event_to_search_result(ev: Event) -> EventSearchResultOut:
 
 
 def _candidate_to_event(candidate: EventCandidate) -> Event | None:
-    """把 feed 候選轉成淺 Event；活動識別碼由網址的主辦＋代稱決定，因此穩定。"""
-    match = KKTIX_EVENT_URL_RE.match(candidate.url.strip())
-    if match is None:
+    """把 feed 候選轉成淺 Event；活動識別碼由平台的組織與代稱決定，因此穩定。"""
+    try:
+        platform = detect_platform(candidate.url.strip())
+    except UnsupportedPlatformError:
         return None
-    org, slug = match.group("org"), match.group("slug")
+
+    if platform == PlatformEnum.KKTIX:
+        match = KKTIX_EVENT_URL_RE.match(candidate.url.strip())
+        if match is None:
+            return None
+        org, slug = match.group("org"), match.group("slug")
+        canonical_url = f"https://{org}.kktix.cc/events/{slug}"
+    elif platform == PlatformEnum.TIXCRAFT:
+        org = candidate.organizer or "tixcraft"
+        slug = urlsplit(candidate.url.strip()).path.split("/")[-1]
+        canonical_url = candidate.url.strip()
+    elif platform == PlatformEnum.IBON:
+        org = candidate.organizer or "ibon"
+        slug = urlsplit(candidate.url.strip()).path.split("/")[-1]
+        canonical_url = candidate.url.strip()
+    else:
+        return None
+
     raw_metadata: dict[str, Any] = {}
     summary = _clean_description(candidate.summary)
     if summary:
@@ -166,12 +200,12 @@ def _candidate_to_event(candidate: EventCandidate) -> Event | None:
     if candidate.organizer:
         raw_metadata["organizer_display"] = candidate.organizer
     return Event(
-        id=Event.make_id(PlatformEnum.KKTIX, org, slug),
-        platform=PlatformEnum.KKTIX,
+        id=Event.make_id(platform, org, slug),
+        platform=platform,
         organizer=org,
         event_slug=slug,
         title=candidate.title,
-        canonical_url=f"https://{org}.kktix.cc/events/{slug}",
+        canonical_url=canonical_url,
         status=EventStatus.UNKNOWN,
         raw_metadata=raw_metadata,
     )
@@ -206,30 +240,29 @@ def _match_known_events(known: list[Event], query: str, limit: int) -> list[Even
 async def search_events(
     request: Request,
     q: str = Query(min_length=1),
+    platform: str | None = Query(default=None),
     limit: int = Query(default=SEARCH_RESULT_LIMIT, ge=1, le=100),
     db: Database = Depends(get_db),
     settings: ApiSettings = Depends(get_settings),
     default_resolver: KKTIXEventResolver = Depends(get_resolver),
 ) -> EventSearchResponse:
-    """依關鍵字或活動網址搜尋活動。
-
-    使用者只送查詢字串；票商 feed 需要的主辦範圍一律由後端決定，不向使用者索取。
-    """
+    """依關鍵字或活動網址搜尋活動。支援單一平台篩選或三平台並行搜尋。"""
     query = q.strip()
     if not query:
         raise InvalidRequestError("query must not be empty")
 
-    async with db.session() as session:
-        known = await EventRepository(session).list_by_platform(PlatformEnum.KKTIX)
-    local = _match_known_events(known, query, limit)
-    scope = _search_scope(known, settings, query)
+    client = getattr(request.app.state, "http_client", None)
 
-    # 網址查詢直接落到該場活動，不必掃 feed。
-    direct = KKTIX_EVENT_URL_RE.match(query)
-    if direct is not None:
+    # 1. 網址查詢：直接依網址判讀平台並抓取該場活動
+    if query.startswith(("http://", "https://")):
         try:
-            event = await default_resolver.fetch_event_metadata(query)
-        except KKTIXResolveError as exc:
+            url_platform = detect_platform(query)
+        except UnsupportedPlatformError as exc:
+            raise InvalidRequestError(str(exc)) from exc
+        resolver = build_resolver(url_platform, client=client)
+        try:
+            event = await resolver.fetch_event_metadata(query)
+        except ResolveError as exc:
             raise UpstreamFailedError(str(exc)) from exc
         except Exception as exc:
             raise UpstreamFailedError(str(exc)) from exc
@@ -250,29 +283,55 @@ async def search_events(
         )
         return EventSearchResponse(query=query, results=results)
 
-    resolver = default_resolver
-    client = getattr(request.app.state, "http_client", None)
-    if isinstance(client, httpx.AsyncClient):
-        resolver = KKTIXEventResolver(client, orgs=scope)
+    # 2. 本地已同步活動
+    known: list[Event] = []
+    async with db.session() as session:
+        repo = EventRepository(session)
+        if platform:
+            try:
+                p_enum = PlatformEnum(platform.lower())
+                known = await repo.list_by_platform(p_enum)
+            except ValueError as exc:
+                raise UnsupportedError(f"Platform {platform} is not supported") from exc
+        else:
+            for p_enum in (PlatformEnum.KKTIX, PlatformEnum.TIXCRAFT, PlatformEnum.IBON):
+                known.extend(await repo.list_by_platform(p_enum))
 
+    local = _match_known_events(known, query, limit)
+    scope = _search_scope(known, settings, query)
+
+    # 3. 搜尋上游平台
     search_coros = []
-    if scope:
-        search_coros.append(resolver.search(query, orgs=scope, limit=limit))
-    search_coros.append(resolver.search_global(query, limit=limit))
+    target_platforms: list[PlatformEnum] = []
+    if platform:
+        target_platforms = [PlatformEnum(platform.lower())]
+    else:
+        target_platforms = [PlatformEnum.KKTIX, PlatformEnum.TIXCRAFT, PlatformEnum.IBON]
+
+    for p in target_platforms:
+        res = build_resolver(p, client=client)
+        if p == PlatformEnum.KKTIX:
+            kktix_res = KKTIXEventResolver(client, orgs=scope) if isinstance(client, httpx.AsyncClient) else default_resolver
+            if scope:
+                search_coros.append(kktix_res.search(query, orgs=scope, limit=limit))
+            search_coros.append(kktix_res.search_global(query, limit=limit))
+        else:
+            search_coros.append(res.search(query, limit=limit))
 
     search_results = await asyncio.gather(*search_coros, return_exceptions=True)
     remote: list[EventCandidate] = []
-    scope_error: Exception | None = None
-    for res in search_results:
-        if isinstance(res, list):
-            remote.extend(res)
-        elif isinstance(res, Exception):
-            scope_error = res
+    scope_errors: list[Exception] = []
+    for r in search_results:
+        if isinstance(r, list):
+            remote.extend(r)
+        elif isinstance(r, Exception):
+            scope_errors.append(r)
 
-    if scope and not remote and not local and scope_error is not None:
-        if isinstance(scope_error, KKTIXResolveError):
-            raise UpstreamFailedError(str(scope_error)) from scope_error
-        raise UpstreamFailedError(str(scope_error)) from scope_error
+    # 若全數失敗且無本地結果，記錄警告並回傳空結果，避免 502 中斷前端 UI
+    if not remote and not local and scope_errors and len(scope_errors) == len(search_coros):
+        first_err = scope_errors[0]
+        logger.warning("all_upstream_search_failed", query=query, error=str(first_err))
+        return EventSearchResponse(query=query, results=[])
 
     scored: dict[str, tuple[float, Event]] = {}
     for ev in local:
@@ -295,7 +354,8 @@ async def search_events(
         if _is_detail_loaded(ev):
             return ev
         try:
-            hydrated = await resolver.fetch_event_metadata(ev.canonical_url)
+            ev_resolver = build_resolver(ev.platform, client=client)
+            hydrated = await ev_resolver.fetch_event_metadata(ev.canonical_url)
             merged_meta = {**(ev.raw_metadata or {}), **(hydrated.raw_metadata or {})}
             return hydrated.model_copy(update={"raw_metadata": merged_meta})
         except Exception:
@@ -332,15 +392,21 @@ async def resolve_event(
     db: Database = Depends(get_db),
     default_resolver: KKTIXEventResolver = Depends(get_resolver),
 ) -> ResolveEventResponse:
-    resolver = default_resolver
-    if req.orgs is not None:
-        client = getattr(request.app.state, "http_client", None)
-        if isinstance(client, httpx.AsyncClient):
-            resolver = KKTIXEventResolver(client, orgs=req.orgs)
+    client = getattr(request.app.state, "http_client", None)
+    if req.query.startswith(("http://", "https://")):
+        try:
+            url_platform = detect_platform(req.query)
+            resolver = build_resolver(url_platform, client=client)
+        except UnsupportedPlatformError:
+            resolver = default_resolver
+    elif req.orgs is not None:
+        resolver = KKTIXEventResolver(client, orgs=req.orgs) if isinstance(client, httpx.AsyncClient) else default_resolver
+    else:
+        resolver = default_resolver
 
     try:
         res = await resolver.resolve(req.query)
-    except KKTIXResolveError as exc:
+    except ResolveError as exc:
         if "organizer feed scope required" in str(exc).lower():
             raise InvalidRequestError(str(exc)) from exc
         raise UpstreamFailedError(str(exc)) from exc
@@ -372,8 +438,8 @@ async def resolve_event(
 @router.get("/{event_id}", response_model=EventOut)
 async def get_event(
     event_id: str,
+    request: Request,
     db: Database = Depends(get_db),
-    default_resolver: KKTIXEventResolver = Depends(get_resolver),
 ) -> EventOut:
     async with db.session() as session:
         ev = await EventRepository(session).get_by_id(event_id)
@@ -383,11 +449,12 @@ async def get_event(
     if _is_detail_loaded(ev):
         return _event_to_out(ev)
 
-    # 搜尋只留下淺資料；票種與開賣時間在真的需要時才去活動頁補。
+    # 依活動的平台動態建構 resolver 進行 hydration
+    client = getattr(request.app.state, "http_client", None)
+    resolver = build_resolver(ev.platform, client=client)
     try:
-        hydrated = await default_resolver.fetch_event_metadata(ev.canonical_url)
+        hydrated = await resolver.fetch_event_metadata(ev.canonical_url)
     except Exception:
-        # 補不到就照原樣回，由前端提示資料不完整——不要讓整個頁面變成錯誤。
         return _event_to_out(ev)
 
     merged_metadata = {**(ev.raw_metadata or {}), **(hydrated.raw_metadata or {})}
