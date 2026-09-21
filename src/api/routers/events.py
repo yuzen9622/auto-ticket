@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import re
+from datetime import datetime
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -38,6 +40,8 @@ from api.schemas.events import (
     TicketTypeOut,
 )
 from api.settings import ApiSettings
+from broker.broker import SqliteTaskBroker
+from broker.jobs import JobKind, JobState
 from domain.event import Event, EventCandidate, EventStatus, PlatformEnum
 from storage.database import Database
 from storage.repositories.event_repository import EventRepository
@@ -48,6 +52,11 @@ logger = get_logger("api.events")
 
 PROVIDER_NAMES = {"kktix": "KKTIX", "tixcraft": "拓元售票", "ibon": "ibon 售票"}
 SEARCH_RESULT_LIMIT = 30
+#: 只補前幾筆的詳情，而且限制同時打上游的數量。
+SEARCH_HYDRATE_LIMIT = 12
+SEARCH_HYDRATE_CONCURRENCY = 4
+#: 已經排過瀏覽器補資料的活動；避免每次搜尋都重排同一批 job。
+_hydration_requested: set[str] = set()
 DESCRIPTION_MAX_CHARS = 300
 
 _TAG_RE = re.compile(r"<[^>]+>")
@@ -81,11 +90,9 @@ def _organizer_display(ev: Event) -> str | None:
         return display.strip()
     if ev.organizer and ev.organizer.lower() not in ("kktix", "tixcraft", "ibon"):
         return ev.organizer
-    if ev.platform == PlatformEnum.TIXCRAFT:
-        return "拓元合作主辦單位"
-    if ev.platform == PlatformEnum.IBON:
-        return "ibon 合作主辦單位"
-    return ev.organizer or None
+    # 平台代號不是主辦單位。抓不到就誠實留空，讓前端顯示「未知」，
+    # 不要用「拓元合作主辦單位」這種看起來有資料、其實是編的字串充數。
+    return None
 
 
 def _event_description(ev: Event) -> str | None:
@@ -114,7 +121,17 @@ def _providers_for(ev: Event) -> list[TicketingProviderOut]:
 
 
 def _is_detail_loaded(ev: Event) -> bool:
-    """淺資料只有搜尋層能給的欄位；票種或開賣時間出現過才算補齊。"""
+    """是否已經向平台要過詳情。
+
+    早期版本用「有票種或有開賣時間」推論，但拓元的活動兩者都不在詳情頁上，
+    於是永遠被判成沒補齊，前端就一直掛著「部分資料尚未取得」。改成由解析器
+    在成功抓完詳情時自己標記，推論不到的欄位不再被當成補齊與否的證據。
+    """
+    meta = ev.raw_metadata or {}
+    if meta.get("needs_browser_detail"):
+        return False
+    if meta.get("detail_source"):
+        return True
     return bool(ev.ticket_types) or ev.sale_start_at is not None
 
 
@@ -197,8 +214,28 @@ def _candidate_to_event(candidate: EventCandidate) -> Event | None:
     summary = _clean_description(candidate.summary)
     if summary:
         raw_metadata["summary"] = summary
-    if candidate.organizer:
+    if candidate.organizer and candidate.organizer.lower() not in (
+        "kktix",
+        "tixcraft",
+        "ibon",
+    ):
         raw_metadata["organizer_display"] = candidate.organizer
+
+    # 搜尋層拿得到的欄位就地帶進來，別讓卡片為了場地與日期再去打一次詳情。
+    extras = candidate.raw or {}
+    for key in ("venue", "date_text", "image_url"):
+        value = extras.get(key)
+        if isinstance(value, str) and value.strip():
+            raw_metadata[key] = value.strip()
+    if extras.get("needs_browser_detail"):
+        raw_metadata["needs_browser_detail"] = True
+
+    status = EventStatus.UNKNOWN
+    raw_status = extras.get("status")
+    if isinstance(raw_status, str):
+        with contextlib.suppress(ValueError):
+            status = EventStatus(raw_status)
+
     return Event(
         id=Event.make_id(platform, org, slug),
         platform=platform,
@@ -206,8 +243,43 @@ def _candidate_to_event(candidate: EventCandidate) -> Event | None:
         event_slug=slug,
         title=candidate.title,
         canonical_url=canonical_url,
-        status=EventStatus.UNKNOWN,
+        status=status,
+        event_start_at=_iso_to_datetime(extras.get("event_start_at"))
+        or candidate.published,
+        sale_end_at=_iso_to_datetime(extras.get("sale_end_at")),
         raw_metadata=raw_metadata,
+    )
+
+
+def _iso_to_datetime(value: Any) -> datetime | None:
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        return datetime.fromisoformat(value)
+    except ValueError:
+        return None
+
+
+def _keep_stored_detail(ev: Event, stored: Event | None) -> Event:
+    """別讓搜尋層的淺資料蓋掉已經補齊的詳情。
+
+    upsert 是整欄覆寫 `raw_metadata`，所以同一場活動只要再被搜尋一次，稍早由
+    Worker 抓回來的活動說明與主辦單位就會被列表層的淺資料洗掉，畫面上看起來
+    像是「描述又不見了」。
+    """
+    if stored is None or not _is_detail_loaded(stored):
+        return ev
+    if _is_detail_loaded(ev):
+        return ev
+    merged = {**(ev.raw_metadata or {}), **(stored.raw_metadata or {})}
+    return ev.model_copy(
+        update={
+            "raw_metadata": merged,
+            "sale_start_at": ev.sale_start_at or stored.sale_start_at,
+            "sale_end_at": ev.sale_end_at or stored.sale_end_at,
+            "event_start_at": ev.event_start_at or stored.event_start_at,
+            "ticket_types": ev.ticket_types or stored.ticket_types,
+        }
     )
 
 
@@ -350,18 +422,37 @@ async def search_events(
     ranked = sorted(scored.values(), key=lambda pair: (-pair[0], pair[1].title))
     top_events = [ev for _, ev in ranked[:limit]]
 
-    async def _hydrate(ev: Event) -> Event:
-        if _is_detail_loaded(ev):
+    # 補詳情會逐一打上游，搜尋結果一長就變成三十個請求打同一個網域。只補使用者
+    # 第一眼會看到的前幾筆，而且一次只允許少量併發。
+    hydrate_gate = asyncio.Semaphore(SEARCH_HYDRATE_CONCURRENCY)
+
+    async def _hydrate(ev: Event, *, allowed: bool) -> Event:
+        if _is_detail_loaded(ev) or not allowed:
+            return ev
+        # 需要瀏覽器才打得開的平台，在搜尋階段再試一次 HTTP 也只是被同一道
+        # 人機驗證擋掉；留給使用者點進活動時由 Worker 補。
+        if (ev.raw_metadata or {}).get("needs_browser_detail"):
             return ev
         try:
-            ev_resolver = build_resolver(ev.platform, client=client)
-            hydrated = await ev_resolver.fetch_event_metadata(ev.canonical_url)
+            async with hydrate_gate:
+                ev_resolver = build_resolver(ev.platform, client=client)
+                hydrated = await ev_resolver.fetch_event_metadata(ev.canonical_url)
             merged_meta = {**(ev.raw_metadata or {}), **(hydrated.raw_metadata or {})}
             return hydrated.model_copy(update={"raw_metadata": merged_meta})
         except Exception:
             return ev
 
-    hydrated_events = list(await asyncio.gather(*[_hydrate(ev) for ev in top_events]))
+    hydrated_events = list(
+        await asyncio.gather(
+            *[
+                _hydrate(ev, allowed=index < SEARCH_HYDRATE_LIMIT)
+                for index, ev in enumerate(top_events)
+            ]
+        )
+    )
+
+    known_by_id = {ev.id: ev for ev in known}
+    hydrated_events = [_keep_stored_detail(ev, known_by_id.get(ev.id)) for ev in hydrated_events]
 
     if hydrated_events:
         try:
@@ -379,10 +470,43 @@ async def search_events(
         != EventStatus.CLOSED.value
     ]
 
+    # 需要瀏覽器才補得到的活動，排一張背景 job 給 Worker；這一次的結果照舊先回，
+    # 下一次搜尋同一場就有活動說明了。不等它，搜尋不該為了描述卡住十幾秒。
+    broker = getattr(request.app.state, "broker", None)
+    if broker is not None:
+        await _queue_browser_hydration(
+            active_events[:SEARCH_HYDRATE_LIMIT], broker=broker, settings=settings
+        )
+
     return EventSearchResponse(
         query=query,
         results=[_event_to_search_result(ev) for ev in active_events],
     )
+
+
+async def _queue_browser_hydration(
+    events: list[Event], *, broker: SqliteTaskBroker, settings: ApiSettings
+) -> None:
+    for ev in events:
+        if not (ev.raw_metadata or {}).get("needs_browser_detail"):
+            continue
+        if ev.id in _hydration_requested:
+            continue
+        _hydration_requested.add(ev.id)
+        try:
+            await broker.enqueue(
+                kind=JobKind.EVENT_HYDRATE,
+                profile=settings.default_profile,
+                payload={
+                    "platform": ev.platform.value,
+                    "slug": ev.event_slug,
+                    "event_id": ev.id,
+                    "canonical_url": ev.canonical_url,
+                },
+            )
+        except Exception as exc:  # noqa: BLE001 — 補資料失敗不該讓搜尋失敗
+            _hydration_requested.discard(ev.id)
+            logger.warning("event_hydrate_enqueue_failed", event_id=ev.id, error=str(exc))
 
 
 @router.post("/resolve", response_model=ResolveEventResponse)
@@ -435,11 +559,52 @@ async def resolve_event(
     )
 
 
+#: 瀏覽器補資料要開頁面、等 JS 驗證跑完，30 秒是「使用者還願意等」的上限。
+BROWSER_HYDRATE_TIMEOUT_S = 30.0
+BROWSER_HYDRATE_POLL_S = 0.5
+
+
+async def _hydrate_via_worker(
+    ev: Event, *, broker: SqliteTaskBroker, db: Database, settings: ApiSettings
+) -> Event:
+    """把需要瀏覽器的詳情抓取外包給 Worker，等它寫回資料庫後再讀一次。
+
+    API Server 本身不得持有瀏覽器（G32），但「拿不到活動說明」對使用者來說
+    就是缺資料，所以這裡等一段有上限的時間，而不是讓前端拿到半套資料就算了。
+    """
+    job_id = await broker.enqueue(
+        kind=JobKind.EVENT_HYDRATE,
+        profile=settings.default_profile,
+        payload={
+            "platform": ev.platform.value,
+            "slug": ev.event_slug,
+            "event_id": ev.id,
+            "canonical_url": ev.canonical_url,
+        },
+    )
+
+    deadline = asyncio.get_running_loop().time() + BROWSER_HYDRATE_TIMEOUT_S
+    while asyncio.get_running_loop().time() < deadline:
+        await asyncio.sleep(BROWSER_HYDRATE_POLL_S)
+        job = await broker.get(job_id)
+        if job is None:
+            break
+        if job.state in (JobState.DONE, JobState.FAILED, JobState.CANCELLED):
+            break
+    else:
+        logger.warning("event_hydrate_timeout", event_id=ev.id)
+
+    async with db.session() as session:
+        refreshed = await EventRepository(session).get_by_id(ev.id)
+    return refreshed or ev
+
+
 @router.get("/{event_id}", response_model=EventOut)
 async def get_event(
     event_id: str,
     request: Request,
     db: Database = Depends(get_db),
+    settings: ApiSettings = Depends(get_settings),
 ) -> EventOut:
     async with db.session() as session:
         ev = await EventRepository(session).get_by_id(event_id)
@@ -449,18 +614,31 @@ async def get_event(
     if _is_detail_loaded(ev):
         return _event_to_out(ev)
 
-    # 依活動的平台動態建構 resolver 進行 hydration
+    # 先走純 HTTP 的解析器；ibon 三支 JSON API 這一步就補齊了。
     client = getattr(request.app.state, "http_client", None)
     resolver = build_resolver(ev.platform, client=client)
     try:
         hydrated = await resolver.fetch_event_metadata(ev.canonical_url)
-    except Exception:
-        return _event_to_out(ev)
+    except Exception as exc:
+        logger.warning("event_hydrate_failed", event_id=ev.id, error=str(exc))
+        hydrated = None
 
-    merged_metadata = {**(ev.raw_metadata or {}), **(hydrated.raw_metadata or {})}
-    hydrated = hydrated.model_copy(update={"raw_metadata": merged_metadata})
-    async with db.session() as session:
-        ev = await EventRepository(session).upsert_event(hydrated)
+    if hydrated is not None:
+        merged_metadata = {**(ev.raw_metadata or {}), **(hydrated.raw_metadata or {})}
+        hydrated = hydrated.model_copy(update={"raw_metadata": merged_metadata})
+        async with db.session() as session:
+            ev = await EventRepository(session).upsert_event(hydrated)
+
+    # 拓元的節目介紹頁擋純 HTTP，只有 Worker 的瀏覽器打得開。
+    broker = getattr(request.app.state, "broker", None)
+    if broker is not None and (ev.raw_metadata or {}).get("needs_browser_detail"):
+        try:
+            ev = await _hydrate_via_worker(
+                ev, broker=broker, db=db, settings=settings
+            )
+        except Exception as exc:
+            logger.warning("event_browser_hydrate_failed", event_id=ev.id, error=str(exc))
+
     return _event_to_out(ev)
 
 

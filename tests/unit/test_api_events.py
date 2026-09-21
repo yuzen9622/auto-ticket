@@ -317,25 +317,45 @@ async def test_search_events_multi_platform(db: Database) -> None:
     """關鍵字搜尋並行呼叫各平台 resolver；亦支援單一平台篩選。"""
     import json
 
+    # 兩邊都照實際回應的形狀：拓元是 `.eventbl` 卡片，ibon 是 Item.List。
     tixcraft_index = """<!DOCTYPE html><html><body>
-    <div class="thumbnail">
-        <a href="/activity/detail/24_tix"><img alt="拓元好聲音演唱會"></a>
-        <div class="caption"><h3><a href="/activity/detail/24_tix">拓元好聲音演唱會</a></h3></div>
+    <div class="tab-content">
+      <div class="tab-pane" id="all">
+        <div class="eventbl">
+          <div class="text-small date">2026/11/20 (五)</div>
+          <div class="text-bold"><a href="/activity/detail/24_tix">拓元好聲音演唱會</a></div>
+          <div class="text-small text-med-light">台北小巨蛋</div>
+        </div>
+      </div>
+      <div class="tab-pane" id="latest-selling">
+        <div class="eventbl">
+          <div class="text-small date">2026/11/20 (五)</div>
+          <div class="text-bold"><a href="/activity/detail/24_tix">拓元好聲音演唱會</a></div>
+          <div class="text-small text-med-light">台北小巨蛋</div>
+        </div>
+      </div>
     </div>
     </body></html>"""
 
     ibon_index = json.dumps({
-        "Code": 0,
-        "Message": "Success",
-        "Data": [
-            {
-                "ActivityId": "38999",
-                "ActivityName": "ibon 音樂嘉年華",
-                "StartDate": "2026/11/20",
-                "EndDate": "2026/11/20",
-                "Location": "高雄巨蛋",
-            }
-        ],
+        "StatusCode": 0,
+        "Message": "",
+        "Item": {
+            "Pattern": "entertainment",
+            "List": [
+                {
+                    "ActivityID": 38999,
+                    "ActivityName": "ibon 音樂嘉年華",
+                    "ActivityDes": "兩天一夜的戶外音樂節",
+                    "ActivitySDate": "2026-11-20T00:00:00",
+                    "ActivityEDate": "2026-11-20T23:59:59",
+                    "GameStartDateMin": "2026-11-20T19:00:00",
+                    "ActivityCategoryCode": "entertainment",
+                    "ActivityFrom": "qware",
+                }
+            ],
+        },
+        "Total": 1,
     })
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -376,7 +396,9 @@ async def test_search_events_multi_platform(db: Database) -> None:
         assert tix_resp.status_code == 200
         tix_results = tix_resp.json()["results"]
         assert len(tix_results) >= 1
-        assert "拓元" in tix_results[0]["title"]
+        assert tix_results[0]["title"] == "拓元好聲音演唱會"
+        # 列表頁就有販售狀態，卡片不該停在 UNKNOWN。
+        assert tix_results[0]["status"] == "ON_SALE"
 
 
 async def test_get_event_hydrates_by_event_platform(db: Database) -> None:
@@ -384,18 +406,34 @@ async def test_get_event_hydrates_by_event_platform(db: Database) -> None:
     from domain.event import Event, EventStatus, PlatformEnum
     from storage.repositories.event_repository import EventRepository
 
-    detail_html = """<!DOCTYPE html><html><head>
-    <script type="application/ld+json">
-    {"@context": "https://schema.org", "@type": "Event", "name": "ibon 巨星演唱會", "offers": {"@type": "AggregateOffer", "lowPrice": "1200", "highPrice": "3600"}}
-    </script>
-    </head><body><h1>ibon 巨星演唱會</h1></body></html>"""
+    import json
+
+    detail_json = json.dumps({
+        "StatusCode": 0,
+        "Message": "",
+        "Item": {
+            "ActivityID": 38111,
+            "ActivityName": "ibon 巨星演唱會",
+            "ActivitySDate": "2026-11-20T00:00:00",
+            "ActivityTicketSDate": "2026-09-20T12:00:00",
+            "ActivityTicketEDate": "2026-11-20T18:00:00",
+            "ActivityContent": "<p>睽違十年的巨星回歸，一夜限定。</p>",
+            "ActivityHost": "巨星娛樂股份有限公司",
+            "SalesStatus": 1,
+        },
+        "Total": 0,
+    })
 
     def handler(request: httpx.Request) -> httpx.Response:
-        if (
-            request.url.host == "ticket.ibon.com.tw"
-            and "/ActivityInfo/Details/38111" in request.url.path
-        ):
-            return httpx.Response(200, text=detail_html)
+        if request.url.host != "ticket.ibon.com.tw":
+            return httpx.Response(404)
+        if request.url.path == "/api/ActivityInfo/GetDetailData":
+            return httpx.Response(200, text=detail_json)
+        if request.url.path == "/api/ActivityInfo/GetGameInfoList":
+            return httpx.Response(
+                200,
+                text=json.dumps({"StatusCode": 0, "Item": {"GIHtmls": []}, "Total": 0}),
+            )
         return httpx.Response(404)
 
     mock_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
@@ -427,6 +465,84 @@ async def test_get_event_hydrates_by_event_platform(db: Database) -> None:
         assert data["id"] == event_id
         assert data["title"] == "ibon 巨星演唱會"
         assert data["platform"] == "ibon"
+        # 補齊之後前端就不該再顯示「部分資料尚未取得」。
+        assert data["detail_loaded"] is True
+        assert data["description"] == "睽違十年的巨星回歸，一夜限定。"
+        assert data["organizer_name"] == "巨星娛樂股份有限公司"
 
 
 
+
+
+async def test_search_does_not_wipe_stored_event_detail(db: Database) -> None:
+    """搜尋回來的淺資料不得蓋掉已經補齊的活動說明。
+
+    upsert 會整欄覆寫 raw_metadata，所以同一場活動只要再被搜尋一次，稍早補回來
+    的說明與主辦單位就會消失，畫面上看起來像是「描述又不見了」。
+    """
+    from domain.event import Event, EventStatus, PlatformEnum
+    from storage.repositories.event_repository import EventRepository
+
+    tixcraft_index = """<!DOCTYPE html><html><body>
+    <div class="tab-content">
+      <div class="tab-pane" id="all">
+        <div class="eventbl">
+          <div class="text-small date">2026/12/05 (六)</div>
+          <div class="text-bold"><a href="/activity/detail/26_demo">示範演唱會</a></div>
+          <div class="text-small text-med-light">台北小巨蛋</div>
+        </div>
+      </div>
+      <div class="tab-pane" id="latest-selling">
+        <div class="eventbl">
+          <div class="text-small date">2026/12/05 (六)</div>
+          <div class="text-bold"><a href="/activity/detail/26_demo">示範演唱會</a></div>
+          <div class="text-small text-med-light">台北小巨蛋</div>
+        </div>
+      </div>
+    </div>
+    </body></html>"""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "tixcraft.com" and request.url.path == "/activity":
+            return httpx.Response(200, text=tixcraft_index)
+        return httpx.Response(401, text='{"response":"identify"}')
+
+    mock_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    settings = ApiSettings(db_path=db.db_path, resolver_orgs=())
+    app = create_app(settings, db=db, http_client=mock_client)
+
+    event_id = Event.make_id(PlatformEnum.TIXCRAFT, "tixcraft", "26_demo")
+    async with db.session() as session:
+        await EventRepository(session).upsert_event(
+            Event(
+                id=event_id,
+                platform=PlatformEnum.TIXCRAFT,
+                organizer="tixcraft",
+                event_slug="26_demo",
+                title="示範演唱會",
+                canonical_url="https://tixcraft.com/activity/detail/26_demo",
+                status=EventStatus.ON_SALE,
+                raw_metadata={
+                    "detail_source": "tixcraft_detail_page",
+                    "needs_browser_detail": False,
+                    "description": "由瀏覽器補回來的節目介紹",
+                    "organizer_display": "示範主辦單位",
+                },
+            )
+        )
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get(
+            "/api/v1/events/search", params={"q": "示範", "platform": "tixcraft"}
+        )
+        assert resp.status_code == 200
+        result = next(r for r in resp.json()["results"] if r["id"] == event_id)
+        assert result["description"] == "由瀏覽器補回來的節目介紹"
+
+    async with db.session() as session:
+        stored = await EventRepository(session).get_by_id(event_id)
+    assert stored is not None
+    assert stored.raw_metadata["description"] == "由瀏覽器補回來的節目介紹"
+    assert stored.raw_metadata["needs_browser_detail"] is False

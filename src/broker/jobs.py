@@ -12,6 +12,7 @@ class JobKind(str, Enum):
         SESSION_CHECK = "SESSION_CHECK"
         AUTO_LOGIN = "AUTO_LOGIN"
         MANUAL_LOGIN = "MANUAL_LOGIN"
+        EVENT_HYDRATE = "EVENT_HYDRATE"
 
 
 class JobState(str, Enum):

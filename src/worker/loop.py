@@ -13,6 +13,7 @@ from broker.outbox import OutboxWriter
 from broker.schema import create_broker_schema
 from storage.database import Database
 
+from .handlers.hydrate import execute_event_hydrate
 from .handlers.purchase import execute_purchase
 from .handlers.session import execute_session_job
 from .settings import WorkerSettings
@@ -26,6 +27,7 @@ DEFAULT_HANDLERS: dict[JobKind, JobHandler] = {
     JobKind.SESSION_CHECK: execute_session_job,
     JobKind.AUTO_LOGIN: execute_session_job,
     JobKind.MANUAL_LOGIN: execute_session_job,
+    JobKind.EVENT_HYDRATE: execute_event_hydrate,
 }
 
 
