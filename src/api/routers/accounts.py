@@ -6,11 +6,12 @@ from accounts.service import AccountService, VaultNotConfiguredError
 from broker.broker import SqliteTaskBroker
 
 from ..deps import get_accounts, get_broker
-from ..errors import NotFoundError, VaultLockedError
+from ..errors import InvalidRequestError, NotFoundError, VaultLockedError
 from ..schemas.accounts import (
     AccountStatusResponse,
     JobOut,
     LoginRequest,
+    StoreCookieRequest,
     StoreCredentialsRequest,
 )
 
@@ -27,6 +28,7 @@ async def get_default_account_status(
         source=info.source,
         configured=info.configured,
         masked_account=info.masked_account,
+        credential_kind=info.credential_kind.value if info.credential_kind else None,
     )
 
 
@@ -41,6 +43,7 @@ async def get_platform_account_status(
         source=info.source,
         configured=info.configured,
         masked_account=info.masked_account,
+        credential_kind=info.credential_kind.value if info.credential_kind else None,
     )
 
 
@@ -54,6 +57,22 @@ async def store_platform_credentials(
         accounts.store(platform, req.account, req.access_key)
     except VaultNotConfiguredError as exc:
         raise VaultLockedError(str(exc)) from exc
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.post("/{platform}/cookie", status_code=status.HTTP_204_NO_CONTENT)
+@router.put("/{platform}/cookie", status_code=status.HTTP_204_NO_CONTENT)
+async def store_platform_cookies(
+    platform: str,
+    req: StoreCookieRequest,
+    accounts: AccountService = Depends(get_accounts),
+) -> Response:
+    try:
+        accounts.store_cookie(platform, req.cookies)
+    except VaultNotConfiguredError as exc:
+        raise VaultLockedError(str(exc)) from exc
+    except ValueError as exc:
+        raise InvalidRequestError(str(exc)) from exc
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 

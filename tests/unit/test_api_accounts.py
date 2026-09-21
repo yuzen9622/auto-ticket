@@ -87,3 +87,37 @@ async def test_accounts_status_and_credentials_vault(accounts_app) -> None:
         job_status_resp = await client.get(f"/api/v1/accounts/jobs/{login_job_id}")
         assert job_status_resp.status_code == 200
         assert job_status_resp.json()["job_id"] == login_job_id
+
+
+async def test_store_platform_cookie_api_204_and_no_echo(accounts_app) -> None:
+    app, _, _ = accounts_app
+    sentinel_cookie = "superSecretSentinelCookie999"
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://test",
+    ) as client:
+        # 1. 儲存 Cookie：204 No Content，無回聲
+        cookie_resp = await client.post(
+            "/api/v1/accounts/tixcraft/cookie",
+            json={"cookies": {"TIXUISID": sentinel_cookie}},
+        )
+        assert cookie_resp.status_code == 204
+        assert cookie_resp.text == ""
+
+        # 2. 查詢狀態：只顯示 credential_kind=cookie 與固定 label，絕不洩漏 sentinel
+        status_resp = await client.get("/api/v1/accounts/tixcraft/status")
+        assert status_resp.status_code == 200
+        data = status_resp.json()
+        assert data["configured"] is True
+        assert data["credential_kind"] == "cookie"
+        assert data["masked_account"] == "TIXUISID"
+        assert sentinel_cookie not in status_resp.text
+
+        # 3. 拒絕不合法 Cookie
+        bad_resp = await client.post(
+            "/api/v1/accounts/tixcraft/cookie",
+            json={"cookies": {"TIXUISID": "invalid!@#$"}},
+        )
+        assert bad_resp.status_code == 400
+

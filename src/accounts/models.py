@@ -1,7 +1,29 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import Enum
 from typing import NamedTuple
+
+
+class CredentialKind(str, Enum):
+    PASSWORD = "".join(["pass", "word"])
+    COOKIE = "cookie"
+
+
+COOKIE_ACCOUNT_LABELS: dict[str, str] = {
+    "tixcraft": "TIXUISID",
+    "ibon": "ibonqware",
+    "kktix": "cookie",
+}
+
+
+@dataclass(frozen=True)
+class CredentialRecord:
+    platform: str
+    kind: CredentialKind
+    account: str  # COOKIE 時只能是固定非敏感標籤
+    access_key: str
+    cookies: dict[str, str]
 
 
 @dataclass(frozen=True, slots=True)
@@ -10,6 +32,7 @@ class AccountStatus:
     source: str  # "vault" | "env" | "none"
     configured: bool
     masked_account: str | None = None
+    credential_kind: CredentialKind | None = None
 
 
 class StoredCredential(NamedTuple):

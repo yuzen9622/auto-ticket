@@ -10,14 +10,45 @@ from typing import Any, Protocol
 
 from cryptography.fernet import Fernet, InvalidToken
 
-from .models import AccountStatus, mask_account
+from .models import (
+    COOKIE_ACCOUNT_LABELS,
+    AccountStatus,
+    CredentialKind,
+    CredentialRecord,
+    mask_account,
+)
 
 logger = logging.getLogger(__name__)
 
 ENV_VAULT_KEY = "AUTO_TICKET_VAULT_KEY"
 ENV_KKTIX_ACCOUNT = "AUTO_TICKET_KKTIX_USERNAME"
 ENV_KKTIX_KEY = "AUTO_TICKET_KKTIX_PASSWORD"
+ENV_TIXCRAFT_ACCOUNT = "AUTO_TICKET_TIXCRAFT_USERNAME"
+ENV_TIXCRAFT_KEY = "AUTO_TICKET_TIXCRAFT_PASSWORD"
+ENV_IBON_ACCOUNT = "AUTO_TICKET_IBON_USERNAME"
+ENV_IBON_KEY = "AUTO_TICKET_IBON_PASSWORD"
 KEY_FILENAME = ".vault_key"
+
+ENV_CREDENTIAL_MAP: dict[str, tuple[str, str]] = {
+    "kktix": (ENV_KKTIX_ACCOUNT, ENV_KKTIX_KEY),
+    "tixcraft": (ENV_TIXCRAFT_ACCOUNT, ENV_TIXCRAFT_KEY),
+    "ibon": (ENV_IBON_ACCOUNT, ENV_IBON_KEY),
+}
+
+
+def get_env_credentials(
+    platform: Any, environ: Mapping[str, str] | None = None
+) -> tuple[str, str] | None:
+    plat = _normalize_platform(platform)
+    env_keys = ENV_CREDENTIAL_MAP.get(plat)
+    if not env_keys:
+        return None
+    env = os.environ if environ is None else environ
+    acc = env.get(env_keys[0], "").strip()
+    key = env.get(env_keys[1], "").strip()
+    if not acc or not key:
+        return None
+    return acc, key
 
 
 class VaultKeyError(ValueError):
@@ -54,14 +85,7 @@ class EnvCredentialSource:
         return self.load(platform) is not None
 
     def load(self, platform: str) -> tuple[str, str] | None:
-        plat = _normalize_platform(platform)
-        if plat != "kktix":
-            return None
-        acc = self._environ.get(ENV_KKTIX_ACCOUNT, "").strip()
-        key = self._environ.get(ENV_KKTIX_KEY, "").strip()
-        if not acc or not key:
-            return None
-        return acc, key
+        return get_env_credentials(platform, self._environ)
 
 
 EnvAuthSource = EnvCredentialSource
@@ -153,12 +177,16 @@ class EncryptedFileVault:
     def available(self, platform: str) -> bool:
         return self._platform_file(platform).exists()
 
-    def store(self, platform: str, account: str, access_key: str) -> None:
-        path = self._platform_file(platform)
+    def store_record(self, record: CredentialRecord) -> None:
+        path = self._platform_file(record.platform)
         path.parent.mkdir(parents=True, exist_ok=True)
-        blob = json.dumps({"account": account, "access_key": access_key}).encode(
-            "utf-8"
-        )
+        data = {
+            "account": record.account,
+            "access_key": record.access_key,
+            "kind": record.kind.value,
+            "cookies": record.cookies,
+        }
+        blob = json.dumps(data).encode("utf-8")
         sealed = self._fernet.encrypt(blob)
 
         fd = os.open(path, os.O_CREAT | os.O_WRONLY | os.O_TRUNC, 0o600)
@@ -171,12 +199,22 @@ class EncryptedFileVault:
                 path.unlink(missing_ok=True)
             raise
 
+    def store(self, platform: str, account: str, access_key: str) -> None:
+        record = CredentialRecord(
+            platform=platform,
+            kind=CredentialKind.PASSWORD,
+            account=account,
+            access_key=access_key,
+            cookies={},
+        )
+        self.store_record(record)
+
     def erase(self, platform: str) -> None:
         path = self._platform_file(platform)
         if path.exists():
             path.unlink(missing_ok=True)
 
-    def load(self, platform: str) -> tuple[str, str] | None:
+    def load_record(self, platform: str) -> CredentialRecord | None:
         path = self._platform_file(platform)
         if not path.exists():
             return None
@@ -185,20 +223,46 @@ class EncryptedFileVault:
                 sealed = f.read()
             blob = self._fernet.decrypt(sealed)
             data = json.loads(blob.decode("utf-8"))
-            return str(data["account"]), str(data["access_key"])
+            raw_kind = data.get("kind", CredentialKind.PASSWORD.value)
+            kind = (
+                CredentialKind(raw_kind)
+                if raw_kind in ("password", "cookie")
+                else CredentialKind.PASSWORD
+            )
+            account = str(data.get("account", ""))
+            access_key = str(data.get("access_key", ""))
+            cookies = dict(data.get("cookies", {}))
+            return CredentialRecord(
+                platform=_normalize_platform(platform),
+                kind=kind,
+                account=account,
+                access_key=access_key,
+                cookies=cookies,
+            )
         except (InvalidToken, ValueError, KeyError) as exc:
             raise VaultDecryptError("Failed to decrypt vault content") from exc
+
+    def load(self, platform: str) -> tuple[str, str] | None:
+        record = self.load_record(platform)
+        if record is None:
+            return None
+        return record.account, record.access_key
 
     def describe(self, platform: str) -> AccountStatus:
         plat = _normalize_platform(platform)
         try:
-            pair = self.load(plat)
-            if pair is not None:
+            record = self.load_record(plat)
+            if record is not None:
+                if record.kind == CredentialKind.COOKIE:
+                    masked = record.account or COOKIE_ACCOUNT_LABELS.get(plat, "cookie")
+                else:
+                    masked = mask_account(record.account)
                 return AccountStatus(
                     platform=plat,
                     source="vault",
                     configured=True,
-                    masked_account=mask_account(pair[0]),
+                    masked_account=masked,
+                    credential_kind=record.kind,
                 )
         except VaultDecryptError:
             return AccountStatus(
@@ -206,10 +270,12 @@ class EncryptedFileVault:
                 source="vault",
                 configured=False,
                 masked_account=None,
+                credential_kind=None,
             )
         return AccountStatus(
             platform=plat,
             source="vault",
             configured=False,
             masked_account=None,
+            credential_kind=None,
         )

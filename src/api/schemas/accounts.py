@@ -12,6 +12,7 @@ class AccountStatusResponse(BaseModel):
     source: str
     configured: bool
     masked_account: str | None = None
+    credential_kind: str | None = None
 
 
 class StoreCredentialsRequest(BaseModel):
@@ -19,6 +20,12 @@ class StoreCredentialsRequest(BaseModel):
 
     account: str = Field(min_length=1)
     access_key: str = Field(min_length=1)
+
+
+class StoreCookieRequest(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    cookies: dict[str, str] = Field(default_factory=dict)
 
 
 class LoginRequest(BaseModel):
