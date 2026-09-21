@@ -470,8 +470,10 @@ describe("活動搜尋", () => {
     fireEvent.change(providerSelectEl!, { target: { value: "tixcraft" } })
 
     // 僅顯示拓元的活動
-    expect(screen.getByText("拓元的音樂會")).toBeInTheDocument()
-    expect(screen.queryByText("KKTIX 的音樂會")).toBeNull()
+    await waitFor(() => {
+      expect(screen.getByText("拓元的音樂會")).toBeInTheDocument()
+      expect(screen.queryByText("KKTIX 的音樂會")).toBeNull()
+    })
   })
 
   it("當篩選後無符合活動時顯示自訂空狀態", async () => {

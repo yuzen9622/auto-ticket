@@ -100,6 +100,12 @@ export function AccountCard({
             label={t("maskedAccount")}
             value={data.masked_account ?? "—"}
           />
+          {data.credential_kind && (
+            <KvRow
+              label={t.has("credentialKind") ? t("credentialKind") : "憑證類型"}
+              value={data.credential_kind === "cookie" ? "Cookie" : "密碼"}
+            />
+          )}
         </>
       )}
     </Panel>

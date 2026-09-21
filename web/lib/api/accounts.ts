@@ -3,6 +3,7 @@ import type {
   AccountStatusResponse,
   JobOut,
   LoginRequest,
+  StoreCookieRequest,
   StoreCredentialsRequest,
 } from "./types"
 
@@ -22,6 +23,16 @@ export function storeCredentials(
   return apiFetch<void>(
     `/api/v1/accounts/${encodeURIComponent(platform)}/credentials`,
     { method: "PUT", body }
+  )
+}
+
+export function storeCookie(
+  platform: string,
+  body: StoreCookieRequest
+): Promise<void> {
+  return apiFetch<void>(
+    `/api/v1/accounts/${encodeURIComponent(platform)}/cookie`,
+    { method: "POST", body }
   )
 }
 

@@ -21,7 +21,7 @@ import {
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
-import { eraseCredentials, storeCredentials } from "@/lib/api/accounts"
+import { eraseCredentials, storeCookie, storeCredentials } from "@/lib/api/accounts"
 import { ApiError } from "@/lib/api/client"
 import { PLATFORM_NAMES, type Platform } from "@/lib/contract"
 
@@ -44,6 +44,10 @@ export function CredentialForm({
   const currentPlatform = platformProp ?? "kktix"
   const [account, setAccount] = React.useState("")
   const [password, setPassword] = React.useState("")
+  const [cookieValue, setCookieValue] = React.useState("")
+  const [authType, setAuthType] = React.useState<"password" | "cookie">(
+    currentPlatform === "tixcraft" ? "cookie" : "password"
+  )
   const [revealed, setRevealed] = React.useState(false)
 
   const [prevPlatform, setPrevPlatform] = React.useState(currentPlatform)
@@ -51,12 +55,15 @@ export function CredentialForm({
     setPrevPlatform(currentPlatform)
     setAccount("")
     setPassword("")
+    setCookieValue("")
+    setAuthType(currentPlatform === "tixcraft" ? "cookie" : "password")
     setRevealed(false)
   }
 
   const clear = () => {
     setAccount("")
     setPassword("")
+    setCookieValue("")
     setRevealed(false)
   }
 
@@ -93,11 +100,27 @@ export function CredentialForm({
     onError: (e) => toast.error(messageFor(e)),
   })
 
+  const cookieKey = currentPlatform === "tixcraft" ? "TIXUISID" : "ibonqware"
+  const storeCookieMut = useMutation({
+    mutationFn: () =>
+      storeCookie(currentPlatform, {
+        cookies: { [cookieKey]: cookieValue.trim() },
+      }),
+    onSuccess: () => {
+      clear()
+      invalidate()
+      toast.success("Cookie 已寫入後端保管庫")
+    },
+    onError: (e) => toast.error(messageFor(e)),
+  })
+
   // 拓元主要採用社群登入，密碼可為選填；KKTIX 與 ibon 則帳號與密碼均為必填。
   const canSubmit =
-    account.trim() !== "" &&
-    (currentPlatform === "tixcraft" || password !== "") &&
-    !store.isPending
+    authType === "cookie"
+      ? cookieValue.trim() !== "" && !storeCookieMut.isPending
+      : account.trim() !== "" &&
+        (currentPlatform === "tixcraft" || password !== "") &&
+        !store.isPending
 
   const vaultLocked =
     store.error instanceof ApiError && store.error.code === "vault_locked"
@@ -118,55 +141,107 @@ export function CredentialForm({
 
   return (
     <Panel title={t("credentialHeading")}>
+      {currentPlatform === "ibon" && (
+        <div className="mb-3 flex items-center gap-2 border-b pb-2">
+          <Button
+            type="button"
+            size="xs"
+            variant={authType === "password" ? "default" : "outline"}
+            onClick={() => setAuthType("password")}
+          >
+            帳號密碼
+          </Button>
+          <Button
+            type="button"
+            size="xs"
+            variant={authType === "cookie" ? "default" : "outline"}
+            onClick={() => setAuthType("cookie")}
+          >
+            Cookie (Session)
+          </Button>
+        </div>
+      )}
+
       <form
         className="flex flex-col gap-3"
         onSubmit={(e) => {
           e.preventDefault()
-          if (canSubmit) store.mutate()
+          if (!canSubmit) return
+          if (authType === "cookie") {
+            storeCookieMut.mutate()
+          } else {
+            store.mutate()
+          }
         }}
       >
-        <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+        {authType === "cookie" ? (
           <div className="flex flex-col gap-1">
-            <Label htmlFor="cred-account">{accountLabel}</Label>
+            <Label htmlFor="cred-cookie">
+              {currentPlatform === "tixcraft"
+                ? "TIXUISID Cookie"
+                : "ibonqware Cookie"}
+            </Label>
             <Input
-              id="cred-account"
-              value={account}
-              onChange={(e) => setAccount(e.target.value)}
-              placeholder={accountPlaceholder}
+              id="cred-cookie"
+              type="password"
+              value={cookieValue}
+              onChange={(e) => setCookieValue(e.target.value)}
+              placeholder={
+                currentPlatform === "tixcraft"
+                  ? "請貼上 TIXUISID Cookie 值"
+                  : "請貼上 ibonqware Cookie 值"
+              }
               className="h-7"
               autoComplete="off"
             />
+            <span className="text-[11px] text-muted-foreground">
+              Cookie 僅儲存於本機加密保管庫，送出後前端立即清空且永不回填。
+            </span>
           </div>
-
-          <div className="flex flex-col gap-1">
-            <Label htmlFor="cred-key">{passwordLabel}</Label>
-            <div className="relative flex w-full items-center">
+        ) : (
+          <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+            <div className="flex flex-col gap-1">
+              <Label htmlFor="cred-account">{accountLabel}</Label>
               <Input
-                id="cred-key"
-                type={revealed ? "text" : "password"}
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                placeholder={passwordPlaceholder}
-                className="h-7 w-full pr-8"
+                id="cred-account"
+                value={account}
+                onChange={(e) => setAccount(e.target.value)}
+                placeholder={accountPlaceholder}
+                className="h-7"
                 autoComplete="off"
               />
-              <Button
-                type="button"
-                size="icon-xs"
-                variant="ghost"
-                className="absolute right-1 text-muted-foreground hover:text-foreground"
-                aria-label={revealed ? t("hidePassword") : t("showPassword")}
-                onClick={() => setRevealed((v) => !v)}
-              >
-                {revealed ? (
-                  <EyeOff className="size-3.5" />
-                ) : (
-                  <Eye className="size-3.5" />
-                )}
-              </Button>
+            </div>
+
+            <div className="flex flex-col gap-1">
+              <Label htmlFor="cred-key">{passwordLabel}</Label>
+              <div className="relative flex w-full items-center">
+                <Input
+                  id="cred-key"
+                  type={revealed ? "text" : "password"}
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  placeholder={passwordPlaceholder}
+                  className="h-7 w-full pr-8"
+                  autoComplete="off"
+                />
+                <Button
+                  type="button"
+                  size="icon-xs"
+                  variant="ghost"
+                  className="absolute right-1 text-muted-foreground hover:text-foreground"
+                  aria-label={revealed ? t("hidePassword") : t("showPassword")}
+                  onClick={() => setRevealed((v) => !v)}
+                >
+                  {revealed ? (
+                    <EyeOff className="size-3.5" />
+                  ) : (
+                    <Eye className="size-3.5" />
+                  )}
+                </Button>
+              </div>
             </div>
           </div>
-        </div>
+        )}
 
         {vaultLocked && (
           <p className="rounded-md border border-amber-500/50 bg-amber-500/10 px-2.5 py-1.5 text-xs text-amber-600 dark:text-amber-400">

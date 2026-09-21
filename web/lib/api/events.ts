@@ -13,10 +13,14 @@ import type {
  */
 export function searchEvents(
   query: string,
-  options: { signal?: AbortSignal } = {}
+  options: { platform?: string; signal?: AbortSignal } = {}
 ): Promise<EventSearchResponse> {
+  const queryParams: Record<string, string> = { q: query }
+  if (options.platform) {
+    queryParams.platform = options.platform
+  }
   return apiFetch<EventSearchResponse>("/api/v1/events/search", {
-    query: { q: query },
+    query: queryParams,
     signal: options.signal,
   })
 }

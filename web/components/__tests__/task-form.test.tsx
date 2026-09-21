@@ -487,3 +487,44 @@ describe("自動化設定與進階設定", () => {
     ).toBeInTheDocument()
   })
 })
+
+describe("多平台帳號狀態檢查", () => {
+  it("拓元與 ibon 活動依自身平台查詢帳號狀態，不被 KKTIX 狀態卡住", async () => {
+    // 模擬 KKTIX 未設定，但拓元已設定
+    api.getAccountStatus.mockImplementation((plat: string) => {
+      if (plat === "tixcraft") {
+        return Promise.resolve({
+          platform: "tixcraft",
+          source: "vault",
+          configured: true,
+          masked_account: "TIXUISID",
+          credential_kind: "cookie",
+        })
+      }
+      return Promise.resolve({
+        platform: "kktix",
+        source: "none",
+        configured: false,
+        masked_account: null,
+      })
+    })
+
+    api.getEvent.mockResolvedValue(
+      eventFixture({
+        id: "ev_tixcraft01",
+        platform: "tixcraft",
+        title: "拓元熱門演唱會",
+        canonical_url: "https://tixcraft.com/activity/detail/24_tix",
+      })
+    )
+
+    renderWithProviders(<TaskForm eventId="ev_tixcraft01" />)
+
+    // 確認 getAccountStatus 是以 "tixcraft" 查詢
+    await waitFor(() =>
+      expect(api.getAccountStatus).toHaveBeenCalledWith("tixcraft")
+    )
+    // 拓元已設定，因此不應出現「尚未設定帳號」的警告按鈕
+    expect(screen.queryByRole("link", { name: "前往設定" })).toBeNull()
+  })
+})

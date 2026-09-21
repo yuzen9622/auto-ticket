@@ -84,9 +84,10 @@ export function TaskForm({ eventId }: { eventId: string }) {
   })
   const event: EventOut | undefined = eventQuery.data
 
+  const targetPlatform = event?.platform || LIVE_PLATFORM
   const accountQuery = useQuery({
-    queryKey: ["account-status", LIVE_PLATFORM],
-    queryFn: () => getAccountStatus(LIVE_PLATFORM),
+    queryKey: ["account-status", targetPlatform],
+    queryFn: () => getAccountStatus(targetPlatform),
   })
   const accountConfigured = accountQuery.data?.configured ?? false
 

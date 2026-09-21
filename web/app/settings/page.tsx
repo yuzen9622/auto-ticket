@@ -1,6 +1,7 @@
 "use client"
 
 import * as React from "react"
+import { useSearchParams } from "next/navigation"
 
 import { AccountCard } from "@/components/settings/account-card"
 import { BrowserProfileManager } from "@/components/settings/browser-profile-manager"
@@ -8,10 +9,27 @@ import { CredentialForm } from "@/components/settings/credential-form"
 import { LocalProfileManager } from "@/components/settings/local-profile-manager"
 import { SessionJobWatcher } from "@/components/settings/session-job-watcher"
 import { DEFAULT_PROFILE, loadCurrentBrowserProfile } from "@/lib/browser-profile"
-import { type Platform } from "@/lib/contract"
+import { PLATFORM, type Platform } from "@/lib/contract"
 
 export default function SettingsPage() {
-  const [platform, setPlatform] = React.useState<Platform>("kktix")
+  const searchParams = useSearchParams()
+  const qPlatform = searchParams.get("platform")
+  const validPlatform = PLATFORM.includes(qPlatform as Platform)
+    ? (qPlatform as Platform)
+    : null
+
+  const [platform, setPlatform] = React.useState<Platform>(
+    validPlatform ?? "kktix"
+  )
+  const [prevValidPlatform, setPrevValidPlatform] =
+    React.useState(validPlatform)
+  if (validPlatform !== prevValidPlatform) {
+    setPrevValidPlatform(validPlatform)
+    if (validPlatform) {
+      setPlatform(validPlatform)
+    }
+  }
+
   const [profile, setProfile] = React.useState<string>(DEFAULT_PROFILE)
 
   React.useEffect(() => {

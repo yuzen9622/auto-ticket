@@ -137,9 +137,7 @@ export function summarizeJobResult(
   if (result === null) return []
   const rows: JobResultRow[] = []
 
-  const hasSession = asBoolean(result.has_session)
   const isLoggedIn =
-    hasSession === true ||
     result.login_state === "LOGGED_IN" ||
     result.page_kind === "LOGGED_IN"
 

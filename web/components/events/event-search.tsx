@@ -129,10 +129,18 @@ export function EventSearch() {
   }, [debouncedDraft, query, immediateQuery])
 
   const results = useQuery({
-    queryKey: ["event-search", effectiveQuery],
-    // 查詢鍵含 query，且舊請求會被中止——連打搜尋時舊結果不會蓋掉新查詢。
-    queryFn: ({ signal }) => searchEvents(effectiveQuery, { signal }),
+    queryKey: ["event-search", effectiveQuery, selectedProvider],
+    // 查詢鍵含 query 與 platform，且舊請求會被中止——連打搜尋時舊結果不會蓋掉新查詢。
+    queryFn: ({ signal }) =>
+      searchEvents(effectiveQuery, {
+        platform:
+          selectedProvider !== ALL_PROVIDERS_VALUE
+            ? selectedProvider
+            : undefined,
+        signal,
+      }),
     enabled: effectiveQuery !== "",
+    placeholderData: (previousData) => previousData,
   })
 
   const handleDraftChange = (value: string) => {

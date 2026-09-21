@@ -134,13 +134,6 @@ export function SessionJobWatcher({
   const isIbon = platform === "ibon"
 
   const handleAutoLogin = () => {
-    if (isTixcraft) {
-      toast.info(t("autoLoginUnsupported_tixcraft"))
-      return
-    }
-    if (isIbon) {
-      toast.info(t("autoLoginNotice_ibon"))
-    }
     autoLogin.mutate()
   }
 
@@ -156,16 +149,18 @@ export function SessionJobWatcher({
           >
             {t("sessionCheck")}
           </Button>
+          {!isTixcraft && (
+            <Button
+              variant="default"
+              size="sm"
+              disabled={busy}
+              onClick={handleAutoLogin}
+            >
+              {t("autoLogin")}
+            </Button>
+          )}
           <Button
-            variant={isTixcraft || isIbon ? "outline" : "default"}
-            size="sm"
-            disabled={busy}
-            onClick={handleAutoLogin}
-          >
-            {t("autoLogin")}
-          </Button>
-          <Button
-            variant={isTixcraft || isIbon ? "default" : "outline"}
+            variant={isTixcraft ? "default" : "outline"}
             size="sm"
             disabled={busy}
             onClick={() => manualLogin.mutate()}

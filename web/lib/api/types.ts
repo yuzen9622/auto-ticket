@@ -204,11 +204,16 @@ export interface AccountStatusResponse {
   source: string
   configured: boolean
   masked_account: string | null
+  credential_kind?: "password" | "cookie" | null
 }
 
 export interface StoreCredentialsRequest {
   account: string
   access_key: string
+}
+
+export interface StoreCookieRequest {
+  cookies: Record<string, string>
 }
 
 export interface LoginRequest {
