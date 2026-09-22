@@ -1,6 +1,6 @@
 {
   "name": "@yuzen9622/auto-ticket",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "type": "module",
   "description": "auto-ticket 原生本機 launcher：以 npx 取得並啟動 API/worker/web，runtime 從 GitHub Release 惰性下載。",
   "repository": {

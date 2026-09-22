@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.1](https://github.com/yuzen9622/auto-ticket/compare/v0.2.0...v0.2.1) (2026-09-22)
+
+
+### Bug Fixes
+
+* **cli:** make the start path survive a clean machine ([ad6adc8](https://github.com/yuzen9622/auto-ticket/commit/ad6adc86f7e0c4560fa10142464b5e748b4a32a6))
+
 ## [0.2.0](https://github.com/yuzen9622/auto-ticket/compare/v0.1.0...v0.2.0) (2026-09-22)
 
 
