@@ -161,3 +161,65 @@ async def test_ibon_resolve_error_mapping() -> None:
         resolver = IbonEventResolver(client=client)
         with pytest.raises(IbonResolveError):
             await resolver.search("any")
+
+
+@pytest.mark.asyncio
+async def test_ibon_status_is_announced_before_the_session_sale_window() -> None:
+    """尚未開賣看的是場次自己的售票起訖，不是活動層的售票時間。
+
+    分階段開賣的活動，活動層的 `ActivityTicketSDate` 寫的是最早那一階段；時間一過
+    就把整場標成販售中，但實際上每個場次都還沒開。場次列自己帶 `StartDT`/`EndDT`
+    與伺服器現在時間 `NowDT`，那才是準的。
+    """
+    games = json.loads(load_fixture("ibon_game_info_list.json"))
+    games["Item"]["GIHtmls"][0].update(
+        {
+            "CanBuy": False,
+            "SoldOut": False,
+            "Href": None,
+            "StartDT": "2026-09-26T11:00:00",
+            "NowDT": "2026-09-22T10:29:31.1795064",
+        }
+    )
+
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(
+            build_handler(games=json.dumps(games, ensure_ascii=False))
+        )
+    ) as client:
+        resolver = IbonEventResolver(client=client)
+        event = await resolver.fetch_event_metadata(
+            "https://ticket.ibon.com.tw/ActivityInfo/Details/38001"
+        )
+
+    assert event.status == EventStatus.ANNOUNCED
+    session = event.raw_metadata["sessions"][0]
+    assert session["sale_start_at"] == "2026-09-26T11:00:00"
+    assert session["server_now"] == "2026-09-22T10:29:31.1795064"
+
+
+@pytest.mark.asyncio
+async def test_ibon_status_is_closed_after_the_session_sale_window() -> None:
+    games = json.loads(load_fixture("ibon_game_info_list.json"))
+    games["Item"]["GIHtmls"][0].update(
+        {
+            "CanBuy": False,
+            "SoldOut": False,
+            "Href": None,
+            "StartDT": "2026-09-12T12:00:00",
+            "EndDT": "2026-09-15T23:59:00",
+            "NowDT": "2026-09-22T10:41:21.2491311",
+        }
+    )
+
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(
+            build_handler(games=json.dumps(games, ensure_ascii=False))
+        )
+    ) as client:
+        resolver = IbonEventResolver(client=client)
+        event = await resolver.fetch_event_metadata(
+            "https://ticket.ibon.com.tw/ActivityInfo/Details/38001"
+        )
+
+    assert event.status == EventStatus.CLOSED

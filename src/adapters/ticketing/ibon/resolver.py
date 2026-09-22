@@ -188,12 +188,30 @@ def _ibon_status(
     *,
     now: datetime | None = None,
 ) -> EventStatus:
-    """開賣狀態一律由場次的可購買旗標決定，售票時間只在沒有場次時當備援。"""
+    """開賣狀態由每個場次自己的售票視窗決定。
+
+    `GetGameInfoList` 每一列都帶該場次的 ``StartDT``／``EndDT``（售票起訖）與
+    ``NowDT``（ibon 伺服器的現在），比活動層的 ``ActivityTicketSDate`` 準：分階段
+    開賣的活動，活動層寫的是最早那一階段，時間一過就會把整場標成販售中。時間基準
+    也一律用 ``NowDT``，本機時鐘偏掉不該影響判讀。
+
+    售完刻意只認 ``SoldOut`` 旗標。2026-09-22 掃過 ibon 全站 392 個活動的場次，
+    沒有任何一列把它設成 true——ibon 的售完只寫在訂購頁（需要瀏覽器才打得開），
+    這一層看不到。看不到就不要宣稱，否則「已售罄」這個篩選會變成裝飾。
+    """
     if sessions:
         if any(s.get("can_buy") for s in sessions):
             return EventStatus.ON_SALE
-        if all(s.get("sold_out") for s in sessions):
+
+        windows = [_session_window(s) for s in sessions]
+        if any(s.get("sold_out") for s in sessions) and all(
+            s.get("sold_out") or after for s, (_, after, _) in zip(sessions, windows)
+        ):
             return EventStatus.SOLD_OUT
+        if all(before for before, _, _ in windows):
+            return EventStatus.ANNOUNCED
+        if all(after for _, after, _ in windows):
+            return EventStatus.CLOSED
 
     current = now or datetime.now(timezone.utc)
     sale_start = _parse_ibon_datetime(detail.get("ActivityTicketSDate"))
@@ -202,9 +220,21 @@ def _ibon_status(
         return EventStatus.CLOSED
     if sale_start is not None and current < sale_start:
         return EventStatus.ANNOUNCED
-    if sale_start is not None:
-        return EventStatus.ON_SALE
     return EventStatus.UNKNOWN
+
+
+def _session_window(session: dict[str, Any]) -> tuple[bool, bool, bool]:
+    """回傳（還沒開賣、已經截止、無法判斷）。"""
+    server_now = _parse_ibon_datetime(session.get("server_now"))
+    start = _parse_ibon_datetime(session.get("sale_start_at"))
+    end = _parse_ibon_datetime(session.get("sale_end_at"))
+    if server_now is None:
+        return (False, False, True)
+    if start is not None and server_now < start:
+        return (True, False, False)
+    if end is not None and server_now > end:
+        return (False, True, False)
+    return (False, False, False)
 
 
 class IbonResolveError(ResolveError):
@@ -347,6 +377,11 @@ class IbonEventResolver(EventResolver):
                     "can_buy": bool(row.get("CanBuy")),
                     "sold_out": bool(row.get("SoldOut")),
                     "purchase_url": _absolute_go_ticket_url(row.get("Href")),
+                    # 該場次自己的售票起訖，以及 ibon 伺服器回報的現在。分階段開賣
+                    # 的活動只有這三個值對得起來，活動層的售票時間會提早整整一階段。
+                    "sale_start_at": str(row.get("StartDT") or "").strip() or None,
+                    "sale_end_at": str(row.get("EndDT") or "").strip() or None,
+                    "server_now": str(row.get("NowDT") or "").strip() or None,
                 }
             )
         return sessions
