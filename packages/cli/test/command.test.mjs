@@ -195,14 +195,19 @@ describe("start 的前置條件", () => {
 describe("runtime list", () => {
   it("列出版本與大小，標記目前使用中的那一版，且完全不寫入", async () => {
     const writes = [];
+    // 鍵一律用 path.join 組：實作內部也是 path.join，寫死斜線在 Windows 上對不起來。
     const tree = {
       "/rt": [
         { name: "0.1.0", isDirectory: () => true, isFile: () => false },
         { name: "0.0.9", isDirectory: () => true, isFile: () => false },
         { name: ".tmp", isDirectory: () => true, isFile: () => false },
       ],
-      "/rt/0.1.0": [{ name: "a.bin", isDirectory: () => false, isFile: () => true }],
-      "/rt/0.0.9": [{ name: "b.bin", isDirectory: () => false, isFile: () => true }],
+      [path.join("/rt", "0.1.0")]: [
+        { name: "a.bin", isDirectory: () => false, isFile: () => true },
+      ],
+      [path.join("/rt", "0.0.9")]: [
+        { name: "b.bin", isDirectory: () => false, isFile: () => true },
+      ],
     };
     const fsImpl = {
       readdir: async (dir) => tree[dir] ?? [],

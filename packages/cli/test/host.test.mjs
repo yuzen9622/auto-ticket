@@ -1,3 +1,5 @@
+import path from "node:path";
+
 import { describe, expect, it } from "vitest";
 
 import { CliError, ExitCode } from "../src/command.mjs";
@@ -77,8 +79,11 @@ describe("buildEnv", () => {
   it("PYTHONPATH 指向 runtime 的 site-packages 與 app/src", () => {
     const env = buildEnv({ paths: fakePaths(), runtimeDir: "/rt", delimiter: ":" });
     // 沒有這一條，serve_api.py 會在 import uvicorn 當場死掉——而且是啟動 90 秒
-    // 逾時之後才看得到，不是立刻。
-    expect(env.PYTHONPATH).toBe("/rt/site-packages:/rt/app/src");
+    // 逾時之後才看得到，不是立刻。分隔字元由 delimiter 決定，路徑分隔則交給
+    // path.join，所以預期值也要用 path.join 組，不能寫死斜線。
+    expect(env.PYTHONPATH).toBe(
+      [path.join("/rt", "site-packages"), path.join("/rt", "app", "src")].join(":"),
+    );
   });
 
   it("Windows 用分號串 PYTHONPATH", () => {
