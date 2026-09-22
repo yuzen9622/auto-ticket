@@ -397,8 +397,10 @@ async def test_search_events_multi_platform(db: Database) -> None:
         tix_results = tix_resp.json()["results"]
         assert len(tix_results) >= 1
         assert tix_results[0]["title"] == "拓元好聲音演唱會"
-        # 列表頁就有販售狀態，卡片不該停在 UNKNOWN。
-        assert tix_results[0]["status"] == "ON_SALE"
+        # 拓元的售票狀態只有場次頁看得出來，而場次頁要瀏覽器才打得開。搜尋層
+        # 拿不到就誠實停在 UNKNOWN，等 Worker 補完再顯示——照列表頁籤猜一個
+        # 狀態的舊做法，全站 73 個活動有 18 個是錯的。
+        assert tix_results[0]["status"] == "UNKNOWN"
 
 
 async def test_get_event_hydrates_by_event_platform(db: Database) -> None:

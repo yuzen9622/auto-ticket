@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import re
+import time
 from datetime import datetime
 from typing import Any
 from urllib.parse import urlsplit
@@ -55,8 +56,11 @@ SEARCH_RESULT_LIMIT = 30
 #: 只補前幾筆的詳情，而且限制同時打上游的數量。
 SEARCH_HYDRATE_LIMIT = 12
 SEARCH_HYDRATE_CONCURRENCY = 4
-#: 已經排過瀏覽器補資料的活動；避免每次搜尋都重排同一批 job。
-_hydration_requested: set[str] = set()
+#: 已經排過瀏覽器補資料的活動與排定的時刻；避免每次搜尋都重排同一批 job。
+_hydration_requested: dict[str, float] = {}
+#: 售票狀態會變（開賣、售完），排過一次就永不再排等於把第一次的結果當永久答案。
+#: 隔一段時間讓同一場活動能重新補一次。
+HYDRATION_TTL_S = 600.0
 DESCRIPTION_MAX_CHARS = 300
 
 _TAG_RE = re.compile(r"<[^>]+>")
@@ -272,9 +276,15 @@ def _keep_stored_detail(ev: Event, stored: Event | None) -> Event:
     if _is_detail_loaded(ev):
         return ev
     merged = {**(ev.raw_metadata or {}), **(stored.raw_metadata or {})}
+    # 售票狀態也要一起留。拓元的狀態只有場次頁看得出來，搜尋層拿不到就回
+    # `UNKNOWN`；不把已經抓回來的狀態接回去，每搜一次就把它洗成「狀態未確認」。
+    ev_status = ev.status.value if hasattr(ev.status, "value") else str(ev.status)
     return ev.model_copy(
         update={
             "raw_metadata": merged,
+            "status": stored.status
+            if ev_status == EventStatus.UNKNOWN.value
+            else ev.status,
             "sale_start_at": ev.sale_start_at or stored.sale_start_at,
             "sale_end_at": ev.sale_end_at or stored.sale_end_at,
             "event_start_at": ev.event_start_at or stored.event_start_at,
@@ -487,12 +497,20 @@ async def search_events(
 async def _queue_browser_hydration(
     events: list[Event], *, broker: SqliteTaskBroker, settings: ApiSettings
 ) -> None:
+    now = time.monotonic()
     for ev in events:
-        if not (ev.raw_metadata or {}).get("needs_browser_detail"):
+        platform = (
+            ev.platform.value if hasattr(ev.platform, "value") else str(ev.platform)
+        )
+        # 條件是平台而不是 `needs_browser_detail`：補完說明之後那個旗標會變成
+        # False，但售票狀態還是只有場次頁看得出來，而且它會變。只看旗標的話，
+        # 一場活動從開賣到售完的整段時間都會停在第一次抓到的狀態。
+        if platform != PlatformEnum.TIXCRAFT.value:
             continue
-        if ev.id in _hydration_requested:
+        queued_at = _hydration_requested.get(ev.id)
+        if queued_at is not None and now - queued_at < HYDRATION_TTL_S:
             continue
-        _hydration_requested.add(ev.id)
+        _hydration_requested[ev.id] = now
         try:
             await broker.enqueue(
                 kind=JobKind.EVENT_HYDRATE,
@@ -505,7 +523,7 @@ async def _queue_browser_hydration(
                 },
             )
         except Exception as exc:  # noqa: BLE001 — 補資料失敗不該讓搜尋失敗
-            _hydration_requested.discard(ev.id)
+            _hydration_requested.pop(ev.id, None)
             logger.warning("event_hydrate_enqueue_failed", event_id=ev.id, error=str(exc))
 
 
