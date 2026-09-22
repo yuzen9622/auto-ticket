@@ -121,24 +121,6 @@ async def test_ibon_fetch_metadata_fills_description_organizer_and_sessions() ->
 
 
 @pytest.mark.asyncio
-async def test_ibon_status_is_sold_out_when_every_session_is() -> None:
-    games = json.loads(load_fixture("ibon_game_info_list.json"))
-    games["Item"]["GIHtmls"][0].update({"CanBuy": False, "SoldOut": True})
-
-    async with httpx.AsyncClient(
-        transport=httpx.MockTransport(
-            build_handler(games=json.dumps(games, ensure_ascii=False))
-        )
-    ) as client:
-        resolver = IbonEventResolver(client=client)
-        event = await resolver.fetch_event_metadata(
-            "https://ticket.ibon.com.tw/ActivityInfo/Details/38001"
-        )
-
-    assert event.status == EventStatus.SOLD_OUT
-
-
-@pytest.mark.asyncio
 async def test_ibon_resolve_direct_url() -> None:
     async with httpx.AsyncClient(
         transport=httpx.MockTransport(build_handler())

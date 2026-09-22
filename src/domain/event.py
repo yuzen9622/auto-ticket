@@ -16,6 +16,17 @@ class PlatformEnum(str, Enum):
 
 
 class EventStatus(str, Enum):
+    """活動的售票狀態。
+
+    對外只呈現 `ANNOUNCED`（尚未開賣）與 `ON_SALE`（販售中）；買不到的一律
+    `CLOSED`，不會出現在搜尋結果裡。
+
+    `SOLD_OUT` 已經不再由任何解析器產生——三個平台的售完都只寫在購票頁上，那些
+    頁面一律擋掉無頭瀏覽器，得借使用者本機的 Chrome 才讀得到，不值得為了一個狀態
+    在背景彈視窗。保留這個值只為了讀得動先前寫進資料庫的舊資料；那些列會在下一次
+    補票況時被改寫掉。
+    """
+
     ANNOUNCED = "ANNOUNCED"
     ON_SALE = "ON_SALE"
     SOLD_OUT = "SOLD_OUT"

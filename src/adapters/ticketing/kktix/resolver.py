@@ -755,8 +755,9 @@ class KKTIXEventResolver(EventResolver):
 
         KKTIX 的活動主頁只說得出三件事：某個票種尚未開賣、結束販售、或正在販售
         （沒有 badge）。2026-09-22 掃 487 個活動主頁，`span.status` 只出現
-        `waiting`／`closed` 兩種，沒有任何一頁把售完標在票種上——售完只寫在要登入
-        才進得去的購票登記頁。所以這裡永遠不會回 `SOLD_OUT`，宣稱得越多錯得越多。
+        `waiting`／`closed` 兩種，沒有任何一頁把售完標在票種上。
+
+        對外只分「尚未開賣／販售中」兩種，買不到的一律 `CLOSED`。
         """
         if not tickets:
             if soup is not None:
@@ -782,11 +783,7 @@ class KKTIXEventResolver(EventResolver):
         if TicketTypeStatus.COMING_SOON in statuses:
             return EventStatus.ANNOUNCED
 
-        # 3. 全數售罄（頁面若真的長出售完字樣才會走到）
-        if statuses == {TicketTypeStatus.SOLD_OUT}:
-            return EventStatus.SOLD_OUT
-
-        # 4. 剩下的只可能是結束販售，或結束販售混著售罄。
+        # 3. 剩下的都是買不到了：結束販售，或（理論上的）售罄。
         if statuses.issubset({TicketTypeStatus.CLOSED, TicketTypeStatus.SOLD_OUT}):
             return EventStatus.CLOSED
 

@@ -107,7 +107,9 @@ def _status_from_detail(detail: ActivityDetail) -> EventStatus:
 
     2026-09-22 抓全站 73 個活動比對過：拿列表頁的「最新開賣」頁籤當販售中，
     其中 18 個會判錯——14 個按得下「立即訂購」的活動被標成尚未開賣，4 個標成
-    熱賣中的其實買不到（含 2 個已售完）。頁籤是陳列方式，不是售票狀態。
+    熱賣中的其實買不到。頁籤是陳列方式，不是售票狀態。
+
+    對外只分「尚未開賣／販售中」兩種，其餘一律是買不到（`CLOSED`，不進搜尋結果）。
     """
     if not detail.sessions_seen:
         return EventStatus.UNKNOWN
@@ -116,12 +118,11 @@ def _status_from_detail(detail: ActivityDetail) -> EventStatus:
         return EventStatus.ANNOUNCED
 
     states = {s.state for s in detail.sessions}
-    if SessionSaleState.ON_SALE in states:
+    # 購票鈕還在就是買得到——包含掛著「選購一空」的場次：入口沒關，可能有回流票。
+    if states & {SessionSaleState.ON_SALE, SessionSaleState.ZONE_EMPTY}:
         return EventStatus.ON_SALE
-    if states & {SessionSaleState.SOLD_OUT, SessionSaleState.ZONE_EMPTY}:
-        # 沒有任何一場買得到，而且至少一場明確售完：整場活動就是售完。
-        return EventStatus.SOLD_OUT
-    if states == {SessionSaleState.DEADLINE_PASSED}:
+    # 一個入口都沒有：已售完或已過購票期限，兩種都是「買不到了」。
+    if states & {SessionSaleState.SOLD_OUT, SessionSaleState.DEADLINE_PASSED}:
         return EventStatus.CLOSED
     return EventStatus.UNKNOWN
 

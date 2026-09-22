@@ -64,7 +64,7 @@ describe("useEventStatuses", () => {
     expect(api.getEventStatuses).toHaveBeenCalledTimes(1)
   })
 
-  it("還沒確認完就繼續問，但問到上限就收手", async () => {
+  it("後端一直沒進展就收手，不要無止盡地問", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true })
     // 後端一直回「還沒確認」——沒有 Worker 在跑時就是這個樣子。
     api.getEventStatuses.mockResolvedValue({
@@ -75,15 +75,36 @@ describe("useEventStatuses", () => {
 
     await waitFor(() => expect(api.getEventStatuses).toHaveBeenCalledTimes(1))
     await vi.advanceTimersByTimeAsync(10_000)
-    const midway = api.getEventStatuses.mock.calls.length
-    expect(midway).toBeGreaterThan(1)
+    expect(api.getEventStatuses.mock.calls.length).toBeGreaterThan(1)
 
-    await vi.advanceTimersByTimeAsync(120_000)
+    await vi.advanceTimersByTimeAsync(300_000)
     const settled = api.getEventStatuses.mock.calls.length
-    expect(settled).toBeLessThanOrEqual(15)
-
-    await vi.advanceTimersByTimeAsync(120_000)
+    await vi.advanceTimersByTimeAsync(300_000)
     expect(api.getEventStatuses.mock.calls.length).toBe(settled)
+  })
+
+  it("後端還在一筆一筆補就繼續等，不會因為次數到了就放棄", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    // 每一輪多確認一筆——大批活動由 Worker 慢慢補回來就是這個樣子。
+    const ids = Array.from({ length: 12 }, (_, i) => `e${i}`)
+    let confirmed = 0
+    api.getEventStatuses.mockImplementation(async () => {
+      confirmed += 1
+      return {
+        results: ids.map((id, index) =>
+          row(id, { checked_at: index < confirmed ? "2026-09-22T03:00:00Z" : null })
+        ),
+      }
+    })
+
+    const { result } = renderHook(() => useEventStatuses(ids), { wrapper })
+
+    // 固定 15 次的舊做法會在補完之前就放棄。
+    await vi.advanceTimersByTimeAsync(60_000)
+    await waitFor(() => expect(result.current.isSettled).toBe(true))
+    expect(
+      [...result.current.statuses.values()].filter((r) => r.checked_at).length
+    ).toBe(ids.length)
   })
 
   it("換一組活動時輪詢次數重新計算", async () => {
@@ -97,8 +118,8 @@ describe("useEventStatuses", () => {
       { wrapper, initialProps: { ids: ["a"] } }
     )
 
-    // 先把第一組問到上限。
-    await vi.advanceTimersByTimeAsync(120_000)
+    // 先把第一組問到放棄。
+    await vi.advanceTimersByTimeAsync(300_000)
     const exhausted = api.getEventStatuses.mock.calls.length
     expect(exhausted).toBeGreaterThan(1)
 
@@ -148,7 +169,7 @@ describe("useEventStatuses", () => {
     await waitFor(() => expect(api.getEventStatuses).toHaveBeenCalledTimes(1))
     expect(result.current.isSettled).toBe(false)
 
-    await vi.advanceTimersByTimeAsync(120_000)
+    await vi.advanceTimersByTimeAsync(300_000)
     await waitFor(() => expect(result.current.isSettled).toBe(true))
   })
 })

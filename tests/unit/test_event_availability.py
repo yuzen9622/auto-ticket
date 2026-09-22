@@ -1,76 +1,16 @@
-"""售完判定：KKTIX 購票登記頁與 ibon 訂購頁。
+"""票況補齊工作的派工與邊界。
 
-fixture 是 2026-09-22 用真瀏覽器抓下來的實際頁面剪出來的。這兩頁純 HTTP 都打不開
-（KKTIX 回 403、ibon 回 403），而且一個是 AngularJS、一個是 ASP.NET 的座位圖，
-手寫 fixture 只會讓測試對著不存在的 DOM 通過。
+售票狀態對外只分「尚未開賣／販售中」，所以這裡沒有售完探測：KKTIX 的購票登記頁與
+ibon 的訂購頁都擋掉無頭瀏覽器，只有借使用者本機的 Chrome 才讀得到，不值得為了一個
+狀態在背景彈視窗。
 """
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
 
-from adapters.ticketing.ibon.pages import (
-    parse_zone_availability,
-    zones_are_sold_out,
-)
-from adapters.ticketing.kktix.pages import (
-    parse_registration_tickets,
-    registration_is_sold_out,
-)
 from worker.handlers.hydrate import MAX_EVENTS_PER_JOB, parse_requests
-
-FIXTURES = Path(__file__).parent.parent / "fixtures"
-
-
-def load_fixture(name: str) -> str:
-    return (FIXTURES / name).read_text(encoding="utf-8")
-
-
-def test_kktix_registration_page_reports_sold_out() -> None:
-    tickets = parse_registration_tickets(
-        load_fixture("kktix_registration_sold_out_page.html")
-    )
-    assert [t.name for t in tickets] == ["加購福利券"]
-    assert tickets[0].selectable is False
-    assert registration_is_sold_out(tickets) is True
-
-
-def test_kktix_registration_page_reports_still_on_sale() -> None:
-    """還買得到的票種一定有張數輸入框——這比字樣可靠，字樣主辦可以自己改。"""
-    tickets = parse_registration_tickets(
-        load_fixture("kktix_registration_available_page.html")
-    )
-    assert len(tickets) == 2
-    assert all(t.selectable for t in tickets)
-    assert registration_is_sold_out(tickets) is False
-
-
-def test_kktix_sold_out_is_unknown_when_no_ticket_parsed() -> None:
-    """一個票種都沒解析到是「不知道」，不是售完。"""
-    assert registration_is_sold_out([]) is None
-
-
-def test_ibon_zone_map_reports_sold_out() -> None:
-    zones = parse_zone_availability(load_fixture("ibon_zone_map_sold_out.html"))
-    assert sorted(z.name for z in zones) == ["包子", "培根"]
-    assert all(z.remaining == 0 for z in zones)
-    assert zones_are_sold_out(zones) is True
-
-
-def test_ibon_zone_map_reports_remaining_seats() -> None:
-    zones = parse_zone_availability(load_fixture("ibon_zone_map_available.html"))
-    assert len(zones) > 1
-    assert zones_are_sold_out(zones) is False
-    # 「熱賣中」是「還很多」，不是售完；解析不出數字時剩餘張數留空而不是填 0。
-    plenty = [z for z in zones if z.remaining_text == "熱賣中"]
-    assert plenty and all(z.remaining is None for z in plenty)
-    assert all(not z.sold_out for z in plenty)
-
-
-def test_ibon_sold_out_is_unknown_when_no_zone_parsed() -> None:
-    assert zones_are_sold_out([]) is None
+from worker.settings import WorkerSettings
 
 
 def test_status_job_payload_accepts_a_batch() -> None:
@@ -129,3 +69,64 @@ def test_status_job_payload_is_capped(count: int) -> None:
         }
     )
     assert len(requests) == MAX_EVENTS_PER_JOB
+
+
+async def test_status_job_never_launches_a_browser_window(monkeypatch) -> None:
+    """補票況不得自己開使用者的 Chrome。
+
+    每搜尋一次就彈出一個瀏覽器視窗完全不成比例；而且自帶的無頭瀏覽器沒裝時，
+    每一批都會走到這條退路。沒有現成的瀏覽器可借就放棄，讓票況停在未確認。
+    """
+    from worker.handlers import hydrate
+
+    launched: list[str] = []
+
+    async def fake_ensure(*args: object, **kwargs: object) -> object:
+        launched.append("launched")
+        raise AssertionError("補票況不該呼叫 ensure_system_chrome")
+
+    monkeypatch.setattr(
+        "browser.system_chrome.ensure_system_chrome", fake_ensure, raising=True
+    )
+    # 自帶的無頭瀏覽器不存在——這正是會走到退路的情況。
+    monkeypatch.setattr(
+        hydrate,
+        "_headless_pool",
+        lambda: _raising_cm("Executable doesn't exist at .../chrome-headless-shell"),
+    )
+    # 偵錯埠沒有東西在聽。
+    async def no_port(endpoint: str, **kwargs: object) -> bool:
+        return False
+
+    monkeypatch.setattr(hydrate, "probe_debug_port", no_port)
+
+    class _Db:
+        def session(self) -> object:  # pragma: no cover - 不該被用到
+            raise AssertionError("沒有補到任何活動就不該寫入資料庫")
+
+    statuses = await hydrate.resolve_statuses(
+        [
+            hydrate.StatusRequest(
+                event_id="a",
+                platform="tixcraft",
+                slug="26_x",
+                canonical_url="https://tixcraft.com/activity/detail/26_x",
+            )
+        ],
+        db=_Db(),
+        settings=WorkerSettings(),
+    )
+
+    assert statuses == {}
+    assert launched == []
+
+
+def _raising_cm(message: str):
+    import contextlib
+
+    @contextlib.asynccontextmanager
+    async def cm():
+        raise RuntimeError(message)
+        yield  # pragma: no cover
+
+    return cm()

@@ -203,10 +203,10 @@ async def test_tixcraft_listing_failure_raises() -> None:
     [
         # 兩場都按得下「立即訂購」。
         ("tixcraft_game_list.html", EventStatus.ON_SALE),
-        # 兩場都是「已售完」，連購票鈕都沒有。
-        ("tixcraft_game_list_sold_out.html", EventStatus.SOLD_OUT),
-        # 主場次購票鈕還在，但掛著「選購一空」；其餘專區已截止。買不到就是售完。
-        ("tixcraft_game_list_zone_empty.html", EventStatus.SOLD_OUT),
+        # 兩場都是「已售完」，連購票鈕都沒有——買不到了，當成已結束。
+        ("tixcraft_game_list_sold_out.html", EventStatus.CLOSED),
+        # 主場次購票鈕還在（只是掛著「選購一空」）：入口沒關，可能有回流票。
+        ("tixcraft_game_list_zone_empty.html", EventStatus.ON_SALE),
         # 場次表寫「目前無場次資訊」：活動公告了、場次還沒排，也就還不能買。
         ("tixcraft_game_list_no_session.html", EventStatus.ANNOUNCED),
     ],

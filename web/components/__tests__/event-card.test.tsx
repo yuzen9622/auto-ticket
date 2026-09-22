@@ -44,13 +44,13 @@ describe("活動卡片的票況呈現", () => {
 
   it("票況確認完就換成狀態文字，骨架收掉", () => {
     renderWithProviders(
-      <EventCard event={event({ status: "SOLD_OUT", detail_loaded: true })} />
+      <EventCard event={event({ status: "ON_SALE", detail_loaded: true })} />
     )
 
     const cell = statusCell()
     expect(cell).not.toHaveAttribute("aria-busy")
     expect(cell.querySelector("[data-slot='skeleton']")).toBeNull()
-    expect(cell).toHaveTextContent("已售罄")
+    expect(cell).toHaveTextContent("熱賣中")
   })
 
   it("等不到票況時收掉骨架、如實說狀態未確認", () => {

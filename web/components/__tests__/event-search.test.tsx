@@ -220,7 +220,7 @@ describe("活動搜尋", () => {
       results: [
         {
           id: shallow.id,
-          status: "SOLD_OUT",
+          status: "ON_SALE",
           sale_start_at: shallow.sale_start_at,
           sale_end_at: null,
           event_start_at: shallow.event_start_at,
@@ -232,7 +232,7 @@ describe("活動搜尋", () => {
 
     renderWithProviders(<EventSearch />)
     const card = (await screen.findByText("五月天 2026 諾亞方舟")).closest("li")
-    await waitFor(() => expect(card).toHaveTextContent("已售罄"))
+    await waitFor(() => expect(card).toHaveTextContent("熱賣中"))
     // 一次問一整批，不是每張卡片各打一次。
     expect(api.getEventStatuses).toHaveBeenCalledWith(
       [shallow.id],

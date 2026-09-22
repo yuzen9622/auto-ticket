@@ -32,7 +32,14 @@ const SEARCH_PARAM = "q"
 const ALL_STATUSES_VALUE = "ALL"
 const ALL_PROVIDERS_VALUE = "ALL"
 
-const STATUS_OPTIONS = ["ON_SALE", "ANNOUNCED", "SOLD_OUT"] as const
+/**
+ * 只分「販售中／尚未開賣」兩種。
+ *
+ * 已售罄拿掉了：三個平台的售完都只寫在購票頁上，而那些頁面一律擋掉無頭瀏覽器，
+ * 得借使用者本機的 Chrome 才讀得到——為了一個狀態在背景彈視窗、還把整批補資料
+ * 拖慢，不划算。買不到的活動一律當成已結束，不進搜尋結果。
+ */
+const STATUS_OPTIONS = ["ON_SALE", "ANNOUNCED"] as const
 
 const PROVIDER_OPTIONS = [
   { id: "kktix", name: "KKTIX" },

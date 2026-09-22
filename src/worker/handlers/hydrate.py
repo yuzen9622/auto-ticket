@@ -4,12 +4,12 @@
 瀏覽器的 Worker 慢慢把每一場的真實狀態補上（G32：API 依約不得碰瀏覽器）。一張 job
 帶一整批活動，處理時彼此並行——逐一排隊會讓十幾筆結果等上好幾分鐘。
 
-三個平台要開瀏覽器的理由各不相同：
+只有拓元需要瀏覽器：它的節目介紹頁與場次頁一律先回 401 的 JS 驗證頁，純 HTTP 永遠
+拿不到內容。KKTIX 與 ibon 的狀態純 HTTP 就問得到。
 
-* 拓元：節目介紹頁與場次頁一律先回 401 的 JS 驗證頁，純 HTTP 永遠拿不到內容。
-* KKTIX：活動主頁看得出尚未開賣／結束販售，但**看不到售完**；售完只寫在購票登記頁，
-  那一頁純 HTTP 回 403，而且是 AngularJS，不跑 JS 連票種列都沒有。
-* ibon：JSON API 的 `SoldOut` 旗標全站沒人設，售完只能從訂購頁的座位圖讀。
+售票狀態對外只分「尚未開賣／販售中」，所以這裡不做售完探測。KKTIX 的購票登記頁與
+ibon 的訂購頁都會擋掉無頭瀏覽器（各自回 403），只有借使用者本機那顆 Chrome 才讀得到
+——為了一個狀態在背景彈出瀏覽器視窗，而且每搜尋一次就彈一輪，完全不成比例。
 """
 
 from __future__ import annotations
@@ -25,15 +25,6 @@ from typing import Any
 import httpx
 
 from adapters.ticketing.factory import build_resolver
-from adapters.ticketing.ibon.pages import (
-    parse_zone_availability,
-    zones_are_sold_out,
-)
-from adapters.ticketing.kktix.pages import (
-    parse_registration_tickets,
-    registration_is_sold_out,
-)
-from adapters.ticketing.kktix.selectors import KKTIX_EVENT_URL_RE
 from adapters.ticketing.tixcraft.pages import (
     detail_url,
     game_url,
@@ -47,8 +38,8 @@ from broker.broker import SqliteTaskBroker
 from broker.jobs import JobRecord
 from broker.outbox import OutboxWriter
 from browser.context_factory import BrowserProfile, build_persistent_context_options
-from browser.system_chrome import SystemChromeError, ensure_system_chrome
-from domain.event import Event, EventStatus, PlatformEnum
+from browser.system_chrome import SystemChromeError, probe_debug_port
+from domain.event import Event, PlatformEnum
 from storage.database import Database
 from storage.repositories.event_repository import EventRepository
 
@@ -63,21 +54,32 @@ CHALLENGE_MARKERS = (
     '{"response":"identify"}',
 )
 
-PAGE_SETTLE_MS = 6000
-#: 售完探測只要等頁面把票種／座位圖渲染出來，不必等滿六秒。
-AVAILABILITY_SETTLE_MS = 2500
+#: 等頁面把要的元素掛上來的上限。正常是一秒內，等不到多半是被驗證頁擋住了。
+READY_TIMEOUT_MS = 8000
 HYDRATE_PROFILE_NAME = "hydrate"
 #: 同時開幾個分頁。開太多會被平台當成攻擊，開太少整批就退化成排隊。
 PAGE_CONCURRENCY = 4
-#: 一場活動最多探幾個場次。場次多的活動（職棒整季）逐場開頁會開到天亮，而且
-#: 只要有一場買得到就不是售完，早就可以收手。
-MAX_SESSION_PROBES = 3
 #: 一張 job 最多處理幾場活動。
 MAX_EVENTS_PER_JOB = 30
+#: 拓元兩頁各自「抓到這個就可以走了」的元素。
+INTRO_SELECTOR = "#intro"
+GAME_LIST_SELECTOR = "#gameList"
 
 
 def _is_challenge(html: str) -> bool:
     return any(marker in html for marker in CHALLENGE_MARKERS)
+
+
+#: Playwright 沒下載瀏覽器時丟的錯長這樣。
+BROWSER_MISSING_MARKERS = (
+    "Executable doesn't exist",
+    "playwright install",
+)
+
+
+def _browser_not_installed(exc: Exception) -> bool:
+    text = str(exc)
+    return any(marker in text for marker in BROWSER_MISSING_MARKERS)
 
 
 @dataclass(frozen=True, slots=True)
@@ -139,10 +141,20 @@ class _PagePool:
                 with contextlib.suppress(Exception):
                     await page.close()
 
-    async def fetch(self, url: str, *, settle_ms: int = AVAILABILITY_SETTLE_MS) -> str:
+    async def fetch(self, url: str, *, ready_selector: str | None = None) -> str:
+        """抓一頁 HTML；等到要的東西出現就走，不死等固定秒數。
+
+        原本每頁固定睡六秒，但實測拓元的 `#gameList` 在 0.9 秒就掛上了——十幾筆
+        活動乘以兩頁，光是空等就把整批拖到半分鐘。等不到也照樣把 HTML 交出去：
+        那通常是人機驗證頁，呼叫端要看內容才認得出來。
+        """
         async with self.page() as page:
             await page.goto(url, wait_until="domcontentloaded", timeout=45000)
-            await page.wait_for_timeout(settle_ms)
+            if ready_selector is not None:
+                with contextlib.suppress(Exception):
+                    await page.wait_for_selector(
+                        ready_selector, state="attached", timeout=READY_TIMEOUT_MS
+                    )
             return await page.content()
 
 
@@ -173,15 +185,25 @@ async def _headless_pool() -> Any:
 
 @contextlib.asynccontextmanager
 async def _system_chrome_pool(settings: WorkerSettings) -> Any:
-    """自帶瀏覽器被擋下時的退路：借使用者本機那顆 Chrome。"""
+    """自帶瀏覽器被擋下時的退路：借使用者本機那顆 Chrome。
+
+    **只接已經開著的**，不會自己去開一顆。補票況是背景工作，為了它在使用者面前
+    彈出一個瀏覽器視窗完全不成比例——尤其這件事每搜尋一次就會發生一輪。真的需要
+    開視窗的是搶票與登入，那些流程自己會呼叫 `ensure_system_chrome`。
+
+    使用者如果已經因為搶票或登入而開著那顆 Chrome（偵錯埠活著），這裡就順手借來
+    用；沒開就放棄，讓那幾場活動的票況停在「未確認」。
+    """
     from playwright.async_api import async_playwright
 
     endpoint = settings.cdp_endpoint
     if endpoint is None:
-        if not settings.auto_launch_browser:
-            raise SystemChromeError("未啟用自動開啟瀏覽器，且沒有設定 CDP 端點")
-        launched = await ensure_system_chrome(port=settings.browser_debug_port)
-        endpoint = launched.endpoint
+        candidate = f"http://127.0.0.1:{settings.browser_debug_port}"
+        if not await probe_debug_port(candidate):
+            raise SystemChromeError(
+                "沒有已經開著的瀏覽器可借；補票況不會自己開一顆"
+            )
+        endpoint = candidate
 
     async with async_playwright() as pw:
         browser = await pw.chromium.connect_over_cdp(endpoint)
@@ -202,67 +224,16 @@ async def _resolve_tixcraft(
     if not slug:
         return (None, False)
 
-    detail_html = await pool.fetch(detail_url(slug), settle_ms=PAGE_SETTLE_MS)
+    detail_html = await pool.fetch(detail_url(slug), ready_selector=INTRO_SELECTOR)
     if _is_challenge(detail_html):
         return (None, True)
-    game_html = await pool.fetch(game_url(slug), settle_ms=PAGE_SETTLE_MS)
+    game_html = await pool.fetch(game_url(slug), ready_selector=GAME_LIST_SELECTOR)
     if _is_challenge(game_html):
         game_html = None
 
     detail = parse_activity_detail(detail_html, game_html=game_html)
     listing = await TixcraftEventResolver().listing_for(slug)
     return (build_event(slug, listing=listing, detail=detail), False)
-
-
-def _kktix_registration_url(event: Event) -> str | None:
-    match = KKTIX_EVENT_URL_RE.match(event.canonical_url)
-    if match is None:
-        return None
-    return f"https://kktix.com/events/{match.group('slug')}/registrations/new"
-
-
-async def _refine_kktix(event: Event, pool: _PagePool) -> Event:
-    """進購票登記頁看票種還選不選得到。
-
-    活動主頁看不到售完，還有一種活動連票種表都沒有（主頁只有一顆購票鈕），狀態會
-    停在 `UNKNOWN`。登記頁兩件事都說得出來：有張數輸入框就是還買得到，全部沒有
-    就是售完。
-    """
-    url = _kktix_registration_url(event)
-    if url is None:
-        return event
-    tickets = parse_registration_tickets(await pool.fetch(url))
-    sold_out = registration_is_sold_out(tickets)
-    if sold_out is True:
-        return event.model_copy(update={"status": EventStatus.SOLD_OUT})
-    if sold_out is False and event.status is EventStatus.UNKNOWN:
-        return event.model_copy(update={"status": EventStatus.ON_SALE})
-    return event
-
-
-async def _refine_ibon(event: Event, pool: _PagePool) -> Event:
-    """逐一進買得到的場次的訂購頁看座位圖；只要一場還有票就不是售完。"""
-    sessions = [
-        session
-        for session in (event.raw_metadata or {}).get("sessions") or []
-        if isinstance(session, dict)
-        and session.get("can_buy")
-        and session.get("purchase_url")
-    ][:MAX_SESSION_PROBES]
-    if not sessions:
-        return event
-
-    verdicts: list[bool | None] = []
-    for session in sessions:
-        zones = parse_zone_availability(await pool.fetch(str(session["purchase_url"])))
-        verdict = zones_are_sold_out(zones)
-        if verdict is False:
-            return event
-        verdicts.append(verdict)
-
-    if verdicts and all(verdict is True for verdict in verdicts):
-        return event.model_copy(update={"status": EventStatus.SOLD_OUT})
-    return event
 
 
 async def _resolve_one(
@@ -276,20 +247,9 @@ async def _resolve_one(
         return await _resolve_tixcraft(request, pool)
 
     # KKTIX 與 ibon 的基本狀態純 HTTP 就問得到，Worker 自己問，不依賴 API 先寫好。
+    # KKTIX 與 ibon 的「尚未開賣／販售中」純 HTTP 就問得到，不必開瀏覽器。
     resolver = build_resolver(request.platform, client=client)
-    event = await resolver.fetch_event_metadata(request.canonical_url)
-    # 還沒開賣或已經結束的活動沒有「售完」可言，不必再開一次瀏覽器。狀態不明的
-    # 活動則相反——它正是最需要進購票頁問清楚的那一種。
-    if event.status not in (EventStatus.ON_SALE, EventStatus.UNKNOWN):
-        return (event, False)
-
-    if request.platform == PlatformEnum.KKTIX.value:
-        return (await _refine_kktix(event, pool), False)
-    if request.platform == PlatformEnum.IBON.value and (
-        event.status is EventStatus.ON_SALE
-    ):
-        return (await _refine_ibon(event, pool), False)
-    return (event, False)
+    return (await resolver.fetch_event_metadata(request.canonical_url), False)
 
 
 def _mark_checked(event: Event) -> Event:
@@ -339,16 +299,31 @@ async def resolve_statuses(
             async with _headless_pool() as pool:
                 await run(pool, requests)
         except Exception as exc:  # noqa: BLE001 — 換另一顆瀏覽器再試
-            logger.warning("event_status_headless_failed: %s", exc)
+            if _browser_not_installed(exc):
+                # 這不是「這次抓失敗」，是這台機器根本沒有可用的無頭瀏覽器；
+                # 講清楚要跑哪一行，否則只會看到一句語焉不詳的警告。
+                logger.warning(
+                    "event_status_needs_browser_install: 沒有安裝無頭瀏覽器，"
+                    "票況補不到。請執行 `pnpm run setup:browsers`"
+                    "（等同 `uv run playwright install chromium`）。原始錯誤：%s",
+                    exc,
+                )
+            else:
+                logger.warning("event_status_headless_failed: %s", exc)
             challenged = list(requests)
 
         if challenged:
-            logger.info("event_status_escalating_to_system_chrome: %d", len(challenged))
             retry = list(challenged)
             challenged = []
             try:
                 async with _system_chrome_pool(settings) as pool:
+                    logger.info(
+                        "event_status_borrowing_open_browser: %d", len(retry)
+                    )
                     await run(pool, retry)
+            except SystemChromeError as exc:
+                # 沒有現成的瀏覽器可借就到此為止，不會為了補票況彈出視窗。
+                logger.info("event_status_skipped_no_browser: %s", exc)
             except Exception as exc:  # noqa: BLE001
                 logger.warning("event_status_system_chrome_failed: %s", exc)
     finally:

@@ -195,19 +195,16 @@ def _ibon_status(
     開賣的活動，活動層寫的是最早那一階段，時間一過就會把整場標成販售中。時間基準
     也一律用 ``NowDT``，本機時鐘偏掉不該影響判讀。
 
-    售完刻意只認 ``SoldOut`` 旗標。2026-09-22 掃過 ibon 全站 392 個活動的場次，
-    沒有任何一列把它設成 true——ibon 的售完只寫在訂購頁（需要瀏覽器才打得開），
-    這一層看不到。看不到就不要宣稱，否則「已售罄」這個篩選會變成裝飾。
+    對外只分「尚未開賣／販售中」兩種。售完不在這一層判——ibon 的 ``SoldOut`` 旗標
+    實測全站沒有人設，真正的售完只寫在訂購頁，而那一頁擋掉無頭瀏覽器（回 403
+    「連線暫時受限」），只有借使用者本機的 Chrome 才讀得到。為了它在背景彈出一個
+    瀏覽器視窗不成比例。
     """
     if sessions:
         if any(s.get("can_buy") for s in sessions):
             return EventStatus.ON_SALE
 
         windows = [_session_window(s) for s in sessions]
-        if any(s.get("sold_out") for s in sessions) and all(
-            s.get("sold_out") or after for s, (_, after, _) in zip(sessions, windows)
-        ):
-            return EventStatus.SOLD_OUT
         if all(before for before, _, _ in windows):
             return EventStatus.ANNOUNCED
         if all(after for _, after, _ in windows):

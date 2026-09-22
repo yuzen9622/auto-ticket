@@ -56,8 +56,7 @@ logger = get_logger("api.events")
 
 PROVIDER_NAMES = {"kktix": "KKTIX", "tixcraft": "拓元售票", "ibon": "ibon 售票"}
 SEARCH_RESULT_LIMIT = 30
-#: 只補前幾筆的詳情，而且限制同時打上游的數量。
-SEARCH_HYDRATE_LIMIT = 12
+#: 背景補詳情時同時打上游的數量上限。
 SEARCH_HYDRATE_CONCURRENCY = 4
 #: 一次最多問幾場活動的狀態；搜尋一頁也就這個量級。
 STATUS_QUERY_LIMIT = 60
@@ -464,12 +463,15 @@ async def search_events(
     #      行程自己在背景問，沒有 Worker 也能有狀態。
     #   2. 要瀏覽器才看得到的部分（拓元的場次表、KKTIX／ibon 的售完）排一張 job
     #      給 Worker，一整批一起處理。
-    pending = active_events[:SEARCH_HYDRATE_LIMIT]
-    _spawn(_hydrate_over_http(pending, db=db, client=client))
+    # 整頁結果都要補，不是只補前幾筆——補不到的那些會一路掛著「狀態未確認」，
+    # 使用者看到的就是一整片沒有答案的卡片。
+    _spawn(_hydrate_over_http(active_events, db=db, client=client))
 
     broker = getattr(request.app.state, "broker", None)
     if broker is not None:
-        await _queue_browser_hydration(pending, broker=broker, settings=settings)
+        await _queue_browser_hydration(
+            active_events, broker=broker, settings=settings
+        )
 
     return EventSearchResponse(
         query=query,

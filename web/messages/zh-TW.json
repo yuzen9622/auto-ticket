@@ -550,7 +550,6 @@
     "eventStatus": {
       "ANNOUNCED": "尚未開賣",
       "ON_SALE": "熱賣中",
-      "SOLD_OUT": "已售罄",
       "CLOSED": "已結束",
       "UNKNOWN": "狀態未確認"
     },
