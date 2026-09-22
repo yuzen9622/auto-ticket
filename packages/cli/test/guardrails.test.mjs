@@ -74,12 +74,24 @@ describe("guardrails: packages/cli 靜態掃描", () => {
     }
   });
 
-  it("src/ 恰好 5 個 .mjs 檔，檔名固定", async () => {
+  it("src/ 恰好 6 個 .mjs 檔，檔名固定", async () => {
     const entries = await readdir(path.join(CLI_ROOT, "src"));
     const mjsFiles = entries.filter((f) => f.endsWith(".mjs")).sort();
     expect(mjsFiles).toEqual(
-      ["command.mjs", "host.mjs", "migration.mjs", "runtime-cache.mjs", "supervisor.mjs"].sort(),
+      [
+        "command.mjs",
+        "host.mjs",
+        "migration.mjs",
+        "runtime-cache.mjs",
+        "supervisor.mjs",
+        "ui.mjs",
+      ].sort(),
     );
+  });
+
+  it("ui.mjs 是葉節點，不 import 任何其他 CLI 模組", async () => {
+    const text = await readFile(path.join(CLI_ROOT, "src", "ui.mjs"), "utf8");
+    expect(/from\s+["']\.\//.test(text), "ui.mjs 不得 import 同套件的其他模組").toBe(false);
   });
 
   it("四個領域模組彼此零 import（無循環依賴）", async () => {
@@ -127,5 +139,13 @@ describe("guardrails: packages/cli 靜態掃描", () => {
   it("package.json 的 dependencies 恆為空物件", async () => {
     const pkg = JSON.parse(await readFile(path.join(CLI_ROOT, "package.json"), "utf8"));
     expect(pkg.dependencies).toEqual({});
+  });
+
+  it("package.json 宣告 license，且套件裡真的帶著授權條款", async () => {
+    const pkg = JSON.parse(await readFile(path.join(CLI_ROOT, "package.json"), "utf8"));
+    expect(pkg.license).toBe("MIT");
+    await expect(readFile(path.join(CLI_ROOT, "LICENSE"), "utf8")).resolves.toContain(
+      "MIT License",
+    );
   });
 });

@@ -12,6 +12,7 @@
   "bugs": {
     "url": "https://github.com/yuzen9622/auto-ticket/issues"
   },
+  "license": "MIT",
   "bin": {
     "auto-ticket": "bin/auto-ticket.mjs"
   },
@@ -30,6 +31,7 @@
     "bin",
     "src",
     "runtime-manifest.json",
+    "LICENSE",
     "README.md"
   ],
   "publishConfig": {
