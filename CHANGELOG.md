@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.3.0](https://github.com/yuzen9622/auto-ticket/compare/v0.2.1...v0.3.0) (2026-09-22)
+
+
+### Features
+
+* **cli:** show download progress instead of going silent for minutes ([b6c87dd](https://github.com/yuzen9622/auto-ticket/commit/b6c87dd2dd408cdbf91da5452f8c96ed94645338))
+
+
+### Bug Fixes
+
+* **cli:** fall back to a one-line banner on narrow terminals ([5293e37](https://github.com/yuzen9622/auto-ticket/commit/5293e3762431dac8b3de5fe227e394d2fcf177ca))
+* **cli:** reclaim the displaced runtime instead of hoarding it ([b61e91e](https://github.com/yuzen9622/auto-ticket/commit/b61e91e9906488ec5e93f240b6578a2f95c212e0))
+
 ## [0.2.1](https://github.com/yuzen9622/auto-ticket/compare/v0.2.0...v0.2.1) (2026-09-22)
 
 
