@@ -20,6 +20,7 @@ const huninn = Huninn({
   variable: "--font-huninn",
   display: "swap",
   adjustFontFallback: false,
+  fallback: ["PingFang TC", "Microsoft JhengHei", "Heiti TC", "sans-serif"],
 })
 
 const geistMono = Geist_Mono({
