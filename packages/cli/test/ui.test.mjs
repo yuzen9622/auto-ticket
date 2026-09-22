@@ -231,6 +231,43 @@ describe("進度列：互動輸出", () => {
 });
 
 describe("進度列：速率", () => {
+  const args = (stream, now) => ({
+    label: "下載",
+    stream,
+    env: {},
+    now,
+    setIntervalImpl: () => null,
+    clearIntervalImpl: () => {},
+    signalSource: { once: () => {}, removeListener: () => {} },
+  });
+
+  it("剛起步時不報速率與 ETA，因為那是拿兩個雜訊相除", () => {
+    let t = 0;
+    const stream = fakeStream(false);
+    const p = createProgress(args(stream, () => t));
+    p.start();
+    stream.chunks.length = 0;
+    t += 20; // 20ms 收到 1.4KB——實測會算出「剩 3201m 12s」
+    p.update({ loaded: 1400, total: 254_351_945 });
+    expect(stream.text).toContain("0%");
+    expect(stream.text).not.toContain("/s");
+    expect(stream.text).not.toContain("剩");
+    p.stop();
+  });
+
+  it("累積到足夠樣本之後才開始報速率", () => {
+    let t = 0;
+    const stream = fakeStream(false);
+    const p = createProgress(args(stream, () => t));
+    p.start();
+    t += 2000;
+    stream.chunks.length = 0;
+    p.update({ loaded: 2 * 1024 * 1024, total: 254_351_945 });
+    expect(stream.text).toContain("/s");
+    expect(stream.text).toContain("剩");
+    p.stop();
+  });
+
   it("重試歸零後，速率以新的一次嘗試計算，不被失敗那次拖低", () => {
     let t = 0;
     const stream = fakeStream(false);
@@ -245,11 +282,12 @@ describe("進度列：速率", () => {
     });
     p.start();
     t += 100_000; // 一次很慢、最後失敗的嘗試
-    p.update({ loaded: 1024, total: 1_048_576 });
+    p.update({ loaded: 1024, total: 2 * 1024 * 1024 });
     p.reset();
-    t += 1000; // 重試後 1 秒下了 1MB
+    t += 2000; // 重試後 2 秒下了 2MB
     stream.chunks.length = 0;
-    p.update({ loaded: 1_048_576, total: 1_048_576 });
+    p.update({ loaded: 2 * 1024 * 1024, total: 2 * 1024 * 1024 });
+    // 沒歸零的話分母會是 102 秒，算出來是 20 KB/s 這個量級的假數字。
     expect(stream.text).toContain("1.0 MB/s");
     p.stop();
   });

@@ -17,6 +17,11 @@ const SPINNER_INTERVAL_MS = 80;
 const PLAIN_STEP_RATIO = 0.05;
 const PLAIN_STEP_MS = 10_000;
 
+// 剛起步時「已下載量 / 耗時」是拿兩個雜訊相除。實測第一幀會算出
+// `1.3 KB/s  剩 3201m 12s`——那是使用者看到的第一行，寧可先不報。
+const RATE_MIN_ELAPSED_MS = 1500;
+const RATE_MIN_BYTES = 256 * 1024;
+
 const BANNER_LINES = [
   " ███  █   █ █████  ███    █████ ███  ████ █   █ █████ █████",
   "█   █ █   █   █   █   █     █    █  █     █  █  █       █  ",
@@ -138,7 +143,8 @@ export function createProgress({
 
   const rate = () => {
     const elapsed = now() - windowStart;
-    return elapsed > 0 ? (loaded / elapsed) * 1000 : 0;
+    if (elapsed < RATE_MIN_ELAPSED_MS || loaded < RATE_MIN_BYTES) return 0;
+    return (loaded / elapsed) * 1000;
   };
 
   function body() {
