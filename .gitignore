@@ -26,4 +26,14 @@ web/.env.local
 *.tsbuildinfo
 next-env.d.ts
 
-docs/
+packages/cli/node_modules/
+dist-runtime/
+
+# 只公開安裝與維運需要的文件；PRD/SDD/架構筆記與研究稿留在本機。
+docs/*
+!docs/INSTALL.md
+!docs/RUNTIME.md
+!docs/MIGRATION.md
+!docs/RELEASING.md
+!docs/SECURITY.md
+docs/internal/

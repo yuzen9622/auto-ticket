@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -9,6 +10,16 @@ from typing import Any
 PROFILE_NAME_RE = re.compile(r"\A[a-zA-Z0-9_-]{1,64}\Z")
 SAFE_FILENAME_RE = re.compile(r"\A[a-zA-Z0-9_.-]+\Z")
 DEFAULT_SCREENSHOT_DIR = Path("data/screenshots")
+ENV_BROWSER_PROFILE_ROOT = "AUTO_TICKET_BROWSER_PROFILE_ROOT"
+
+
+def default_profile_root() -> Path:
+    """persistent context 的落地根目錄。
+
+    未設環境變數時維持 CWD 相對的 `.browser_profiles`——開發流程照舊。
+    打包安裝的情境沒有「專案目錄」可相對，launcher 會把它指到 `~/.auto-ticket`。
+    """
+    return Path(os.environ.get(ENV_BROWSER_PROFILE_ROOT) or ".browser_profiles")
 
 DEFAULT_MACOS_CHROME_USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
@@ -41,7 +52,7 @@ class BrowserProfile:
         if not PROFILE_NAME_RE.fullmatch(self.name):
             raise ValueError(f"Invalid profile name: {self.name!r}")
         if self.user_data_dir is None:
-            object.__setattr__(self, "user_data_dir", Path(".browser_profiles") / self.name)
+            object.__setattr__(self, "user_data_dir", default_profile_root() / self.name)
         if self.viewport is None:
             object.__setattr__(self, "viewport", {"width": 1920, "height": 1080})
 

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "auto-ticket"
-version = "0.1.0"
+version = "0.1.0" # x-release-please-version
 description = "Automated ticketing research platform (KKTIX)"
 requires-python = ">=3.12"
 dependencies = [
@@ -25,7 +25,17 @@ dependencies = [
     "websockets>=17.1",
     "cryptography>=50.0.1",
     "ddddocr>=1.6.1",
+    # ddddocr 沒有釘住 onnxruntime，而 1.24 之後就不再出 macOS x86_64 wheel，
+    # 1.30 更只剩 arm64。在 Intel Mac 上讓解析器自由挑選＝必定挑到沒有 wheel 的
+    # 版本，再掉進 sdist 編譯。見下方 [tool.uv]：這條上界必須被擋在 dev 鎖定範圍外。
+    "onnxruntime>=1.23.2,<1.24; sys_platform == 'darwin' and platform_machine == 'x86_64'",
 ]
+
+[tool.uv]
+# uv.lock 是通用鎖定檔，會把所有平台壓成同一個版本。把 Intel Mac 排除在鎖定範圍外，
+# 上面那條 ORT 上界才不會反過來把 arm64 dev 機（CPython 3.14）拖到裝不起來的版本。
+# Intel Mac 的實際鎖定在 packaging/runtime/requirements-darwin-x64.txt，與此檔無關。
+environments = ["sys_platform != 'darwin' or platform_machine != 'x86_64'"]
 
 [project.optional-dependencies]
 dev = [

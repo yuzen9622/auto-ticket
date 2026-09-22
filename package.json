@@ -11,13 +11,17 @@
     "dev:worker:headed": "uv run python scripts/worker.py --no-headless",
     "dev:web": "pnpm --dir web run dev",
     "build": "pnpm --dir web run build",
+    "build:web:standalone": "pnpm --dir web run build && uv run python packaging/runtime/build_runtime.py --assert-web-only",
     "start:web": "pnpm --dir web run start",
     "lint": "pnpm --dir web run lint",
     "typecheck": "pnpm --dir web run typecheck",
     "test": "uv run pytest",
     "test:web": "pnpm --dir web run test",
     "invariants": "uv run python scripts/check_invariants.py",
-    "check": "pnpm run invariants && pnpm run test && pnpm run typecheck && pnpm run lint && pnpm run test:web && pnpm --dir web run check:contract"
+    "cli:install": "npm --prefix packages/cli install",
+    "cli:test": "npm --prefix packages/cli test",
+    "check:cli": "pnpm run cli:test",
+    "check": "pnpm run invariants && pnpm run test && pnpm run typecheck && pnpm run lint && pnpm run test:web && pnpm --dir web run check:contract && pnpm run check:cli"
   },
   "devDependencies": {
     "concurrently": "^9.1.0"

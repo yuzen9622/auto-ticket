@@ -1,0 +1,37 @@
+{
+  "name": "@yuzen9622/auto-ticket",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "auto-ticket 原生本機 launcher：以 npx 取得並啟動 API/worker/web，runtime 從 GitHub Release 惰性下載。",
+  "bin": {
+    "auto-ticket": "./bin/auto-ticket.mjs"
+  },
+  "engines": {
+    "node": ">=20.10"
+  },
+  "os": [
+    "darwin",
+    "win32"
+  ],
+  "cpu": [
+    "x64",
+    "arm64"
+  ],
+  "files": [
+    "bin",
+    "src",
+    "runtime-manifest.json",
+    "README.md"
+  ],
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "scripts": {
+    "test": "vitest run"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "vitest": "^3.2.7"
+  }
+}

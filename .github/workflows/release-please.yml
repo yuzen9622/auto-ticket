@@ -1,0 +1,21 @@
+name: release-please
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    steps:
+      # release-please 只負責 Conventional Commit → 版本 / CHANGELOG / Release PR / tag。
+      # 它明確不處理 package manager publication，asset build 與 npm publish 因此
+      # 全部留給 tag 觸發的 release-runtime.yml，責任歸屬才不會混。
+      - uses: googleapis/release-please-action@v4
+        with:
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json

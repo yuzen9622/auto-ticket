@@ -1,0 +1,124 @@
+name: release-runtime
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+  id-token: write
+
+jobs:
+  build:
+    name: runtime (${{ matrix.target }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - target: darwin-arm64
+            runner: macos-14
+          - target: darwin-x64
+            runner: macos-15-intel
+          - target: win32-x64
+            runner: windows-2022
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Install CPython 3.12
+        run: uv python install 3.12
+
+      # --only-binary=:all: 讓任何沒有 wheel 的套件當場紅燈。靜默掉進 sdist 編譯
+      # 會產出「裝得起來、跑起來才炸」的 runtime，那比建置失敗難查一百倍。
+      - name: Install runtime site-packages
+        run: |
+          uv pip install --only-binary=:all: --target site-packages \
+            --python-version 3.12 \
+            -r packaging/runtime/requirements-${{ matrix.target }}.txt
+
+      # D2 硬門檻：onnxruntime 是 native extension，wheel 裝得進去卻 import 失敗
+      # 是這條鏈最常見的失敗形態，只有真的推論一次才看得出來。任一平台失敗即中止發版。
+      - name: OCR smoke test
+        shell: bash
+        env:
+          PYTHONPATH: site-packages
+          PYTHONNOUSERSITE: "1"
+        run: |
+          "$(uv python find 3.12)" -s packaging/runtime/smoke_ocr.py \
+            --image tests/fixtures/captcha_sample.png
+
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Build web
+        # 刻意不設定任何 NEXT_PUBLIC_*：loopback base 必須以字面值內聯進 client chunk，
+        # build_runtime.py 會在打包前斷言它存在。
+        run: |
+          pnpm --dir web install --frozen-lockfile
+          pnpm --dir web build
+
+      - name: Assemble runtime artifact
+        shell: bash
+        run: |
+          "$(uv python find 3.12)" packaging/runtime/build_runtime.py \
+            --target ${{ matrix.target }} \
+            --site-packages site-packages \
+            --out dist-runtime
+
+      - name: Upload release assets
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "${{ github.ref_name }}" dist-runtime/* --clobber
+
+  publish:
+    name: manifest + npm publish
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: https://registry.npmjs.org
+
+      - name: Build runtime manifest from release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/release/build_manifest.mjs --tag "${{ github.ref_name }}"
+
+      - name: Cross-check manifest against assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/release/build_manifest.mjs --verify --tag "${{ github.ref_name }}"
+
+      - name: Redact public release notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "${{ github.ref_name }}" --json body -q .body > raw-notes.md
+          node scripts/release/redact_notes.mjs --in raw-notes.md --out public-notes.md
+          gh release edit "${{ github.ref_name }}" --notes-file public-notes.md
+
+      - name: Install CLI deps
+        run: npm --prefix packages/cli ci
+
+      - name: CLI tests
+        run: npm --prefix packages/cli test
+
+      - name: npm publish
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm --prefix packages/cli publish --provenance --access public
+
+      - name: Promote release out of draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release edit "${{ github.ref_name }}" --draft=false --latest

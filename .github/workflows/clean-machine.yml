@@ -1,0 +1,55 @@
+name: clean-machine
+
+# 發版後的最後一道：在**沒有 repo**的機器上，只靠 npm registry 與 GitHub Release
+# 把 CLI 跑起來。這是唯一能證明「使用者拿到的東西真的能用」的測試。
+on:
+  release:
+    types: [released]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 要測的版本（例如 1.0.0）
+        required: true
+
+permissions: {}
+
+jobs:
+  npx-smoke:
+    name: npx smoke (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-14, macos-15-intel, windows-2022]
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Resolve version
+        id: v
+        shell: bash
+        run: |
+          raw="${{ inputs.version || github.event.release.tag_name }}"
+          echo "version=${raw#v}" >> "$GITHUB_OUTPUT"
+
+      - name: doctor
+        run: npx --yes @yuzen9622/auto-ticket@${{ steps.v.outputs.version }} doctor
+
+      - name: version
+        shell: bash
+        run: |
+          out=$(npx --yes @yuzen9622/auto-ticket@${{ steps.v.outputs.version }} version)
+          echo "$out"
+          echo "$out" | grep -q 'python=3.12'
+          echo "$out" | grep -q 'onnxruntime=1.23.2'
+
+      - name: Assert zero runtime dependencies
+        shell: bash
+        run: |
+          npm install -g @yuzen9622/auto-ticket@${{ steps.v.outputs.version }}
+          npm ls --prefix "$(npm root -g)" --depth 0
+          test "$(npm ls --prefix "$(npm root -g)" --depth 1 --json \
+            | node -e 'const d=JSON.parse(require("fs").readFileSync(0,"utf8"));
+                       const p=d.dependencies?.["@yuzen9622/auto-ticket"];
+                       process.stdout.write(String(Object.keys(p?.dependencies??{}).length))')" = "0"

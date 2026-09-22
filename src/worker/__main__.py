@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import os
+import dataclasses
 from pathlib import Path
 
 from broker.broker import SqliteTaskBroker
@@ -15,6 +15,9 @@ from .settings import WorkerSettings, default_worker_id
 
 def parse_args(args: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run Auto Ticket Standalone Worker")
+    # 每個旗標的 default 都是 None：真正的預設值在 `WorkerSettings.from_env()`，
+    # 這裡只負責「使用者有沒有顯式指定」。把預設值抄第二份在這裡，等於讓
+    # argparse 永遠蓋過環境變數，打包安裝的路徑就再也傳不進來。
     parser.add_argument(
         "--worker-id",
         default=None,
@@ -22,40 +25,59 @@ def parse_args(args: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--db",
-        default="data/auto-ticket.db",
-        help="Path to SQLite database file (default: data/auto-ticket.db)",
+        default=None,
+        help="Path to SQLite database file (default: $AUTO_TICKET_DB_PATH 或 data/auto-ticket.db)",
     )
     parser.add_argument(
         "--profile",
-        default="live",
+        default=None,
         help="Browser profile name (default: live)",
     )
     parser.add_argument(
         "--headless",
         action=argparse.BooleanOptionalAction,
-        default=True,
+        default=None,
         help="Run browser in headless mode (default: --headless)",
     )
     parser.add_argument(
         "--poll-ms",
         type=int,
-        default=500,
+        default=None,
         help="Queue polling interval in milliseconds (default: 500)",
     )
     parser.add_argument(
         "--clock-tick-hz",
         type=float,
-        default=1.0,
+        default=None,
         help="Clock tick frequency in Hz (default: 1.0)",
     )
     parser.add_argument(
         "--screenshot-dir",
-        default="data/screenshots",
-        help="Directory to store screenshots (default: data/screenshots)",
+        default=None,
+        help=(
+            "Directory to store screenshots "
+            "(default: $AUTO_TICKET_SCREENSHOT_DIR 或 data/screenshots)"
+        ),
+    )
+    parser.add_argument(
+        "--timeline-dir",
+        default=None,
+        help=(
+            "Directory to store task timelines "
+            "(default: $AUTO_TICKET_TIMELINE_DIR 或 data/timelines)"
+        ),
+    )
+    parser.add_argument(
+        "--vault-root",
+        default=None,
+        help=(
+            "Directory holding the encrypted credential vault "
+            "(default: $AUTO_TICKET_VAULT_ROOT 或 data/credentials)"
+        ),
     )
     parser.add_argument(
         "--cdp-endpoint",
-        default=os.environ.get("AUTO_TICKET_CDP_ENDPOINT") or None,
+        default=None,
         help=(
             "借用你自己的 Chrome（http://127.0.0.1:9222，僅 loopback）。"
             "KKTIX 的人機驗證擋 Playwright 自帶的瀏覽器，開視窗也過不了，"
@@ -66,31 +88,43 @@ def parse_args(args: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--challenge-grace-s",
         type=float,
-        default=45.0,
+        default=None,
         help="Cloudflare 挑戰被動寬限秒數（預設 45 秒）",
     )
     parser.add_argument(
         "--ocr",
         action=argparse.BooleanOptionalAction,
-        default=True,
+        default=None,
         help="啟用或停用圖片驗證碼 OCR（預設 --ocr 啟用）",
     )
     return parser.parse_args(args)
 
 
+def settings_from_args(args: argparse.Namespace) -> WorkerSettings:
+    """環境變數為底，顯式旗標覆寫。兩者都沒給時落回 dataclass 預設。"""
+    overrides: dict[str, object] = {}
+    for flag, field_name, cast in (
+        ("db", "db_path", Path),
+        ("screenshot_dir", "screenshot_dir", Path),
+        ("timeline_dir", "timeline_dir", Path),
+        ("vault_root", "vault_root", Path),
+        ("profile", "profile", str),
+        ("headless", "headless", bool),
+        ("poll_ms", "poll_ms", int),
+        ("clock_tick_hz", "clock_tick_hz", float),
+        ("cdp_endpoint", "cdp_endpoint", str),
+        ("challenge_grace_s", "challenge_grace_s", float),
+        ("ocr", "ocr_enabled", bool),
+    ):
+        value = getattr(args, flag)
+        if value is not None:
+            overrides[field_name] = cast(value)
+    return dataclasses.replace(WorkerSettings.from_env(), **overrides)
+
+
 async def amain(args: argparse.Namespace) -> None:
     worker_id = args.worker_id or default_worker_id()
-    settings = WorkerSettings(
-        db_path=Path(args.db),
-        profile=args.profile,
-        headless=bool(args.headless),
-        poll_ms=args.poll_ms,
-        clock_tick_hz=args.clock_tick_hz,
-        screenshot_dir=Path(args.screenshot_dir),
-        cdp_endpoint=args.cdp_endpoint,
-        challenge_grace_s=args.challenge_grace_s,
-        ocr_enabled=bool(args.ocr),
-    )
+    settings = settings_from_args(args)
     settings.screenshot_dir.mkdir(parents=True, exist_ok=True)
     settings.db_path.parent.mkdir(parents=True, exist_ok=True)
 

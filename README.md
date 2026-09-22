@@ -13,14 +13,48 @@
 
 ---
 
-## 先決條件
+## 安裝與啟動
+
+```bash
+npx @yuzen9622/auto-ticket
+```
+
+第一次執行會下載 runtime 與 Chromium，之後啟動不再下載。API 固定 `127.0.0.1:8000`、
+前端固定 `127.0.0.1:3000`，啟動後開 <http://127.0.0.1:3000>；首次請先到 `/settings`
+設定憑證。
+
+需要 **Node.js ≥ 20.10** 與 **Google Chrome**；支援 macOS 13 以上（Apple Silicon /
+Intel）與 Windows 10 1803 以上 x64，首版不支援 Linux。完整前置需求、埠位衝突處置與
+macOS Gatekeeper 手動放行步驟見 [docs/INSTALL.md](docs/INSTALL.md)。
+
+既有的 `data/` 會在首次啟動時**複製**到 `~/.auto-ticket/data/`，來源永不更動
+（[docs/MIGRATION.md](docs/MIGRATION.md)）。
+
+| 指令 | 作用 |
+| --- | --- |
+| `auto-ticket` | 啟動全套（等同 `start`） |
+| `auto-ticket doctor` | 只讀診斷：平台、Node、`tar`、Chrome、埠、runtime、磁碟、OCR |
+| `auto-ticket version` | CLI / runtime / Python / onnxruntime 版本 |
+| `auto-ticket migrate --dry-run` | 預覽資料遷移計畫 |
+| `auto-ticket logs api -f` | 追行程日誌 |
+
+其他文件：[RUNTIME.md](docs/RUNTIME.md)（目錄配置、環境變數、升級回滾）、
+[SECURITY.md](docs/SECURITY.md)、[RELEASING.md](docs/RELEASING.md)、
+[CONTRIBUTING.md](CONTRIBUTING.md)。
+
+---
+
+## 本機開發
+
+打包安裝與開發流程互不影響：下列所有環境變數未設定時都落回 repo 相對的預設值，
+`pnpm run dev` 的行為與以前完全相同。
+
+### 先決條件
 
 - Python ≥ 3.12 與 [uv](https://docs.astral.sh/uv/)
 - Node.js ≥ 20 與 pnpm（本專案以 pnpm 10.30.0 驗證）
 
----
-
-## 快速啟動
+### 快速啟動
 
 ```bash
 # 1. 安裝 Python 與前端依賴
@@ -49,7 +83,10 @@ pnpm run dev:worker:headed
 | `AUTO_TICKET_VAULT_KEY` | 憑證加密金鑰。**未設定時 vault 為鎖定狀態**，`PUT /accounts/{platform}/credentials` 會回 `409 vault_locked` | 無（vault 停用） |
 | `AUTO_TICKET_DB_PATH` | SQLite 資料庫路徑 | `data/auto-ticket.db` |
 | `AUTO_TICKET_SCREENSHOT_DIR` | 截圖存放目錄 | `data/screenshots` |
-| `AUTO_TICKET_VAULT_ROOT` | vault 檔案根目錄 | 由後端設定決定 |
+| `AUTO_TICKET_VAULT_ROOT` | vault 檔案根目錄 | `data/credentials` |
+| `AUTO_TICKET_TIMELINE_DIR` | 任務時間軸存放目錄 | `data/timelines` |
+| `AUTO_TICKET_BROWSER_PROFILE_ROOT` | Playwright persistent context 根目錄 | `.browser_profiles` |
+| `AUTO_TICKET_CORS_ORIGINS` | API 允許的來源，逗號分隔 | 見 `src/api/settings.py` |
 | `NEXT_PUBLIC_API_BASE_URL` | 前端呼叫的 API base URL | `http://127.0.0.1:8000` |
 | `NEXT_PUBLIC_WS_BASE_URL` | 前端連線的 WebSocket base URL | `ws://127.0.0.1:8000` |
 
@@ -117,8 +154,8 @@ pnpm run dev:api
 
 **瀏覽器 Console 出現 CORS 錯誤**
 API 的允許來源清單在 `src/api/settings.py` 的 `DEFAULT_CORS_ORIGINS`，預設含
-`127.0.0.1` 與 `localhost` 的 `3000`／`5173`。`scripts/serve_api.py` 不讀
-`AUTO_TICKET_CORS_ORIGINS`，若要從其他 origin 存取，需改該常數。另請確認前端
+`127.0.0.1` 與 `localhost` 的 `3000`／`5173`。要從其他 origin 存取，設定
+`AUTO_TICKET_CORS_ORIGINS`（逗號分隔）即可。另請確認前端
 `NEXT_PUBLIC_API_BASE_URL` 與實際 API 位址一致（`localhost` 與 `127.0.0.1` 是不同 origin）。
 
 **Live Console 連線狀態停在「重連中」**

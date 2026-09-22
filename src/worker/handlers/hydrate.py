@@ -19,7 +19,6 @@ import contextlib
 import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from pathlib import Path
 from typing import Any
 
 import httpx
@@ -37,7 +36,11 @@ from adapters.ticketing.tixcraft.resolver import (
 from broker.broker import SqliteTaskBroker
 from broker.jobs import JobRecord
 from broker.outbox import OutboxWriter
-from browser.context_factory import BrowserProfile, build_persistent_context_options
+from browser.context_factory import (
+    BrowserProfile,
+    build_persistent_context_options,
+    default_profile_root,
+)
 from browser.system_chrome import SystemChromeError, probe_debug_port
 from domain.event import Event, PlatformEnum
 from storage.database import Database
@@ -168,7 +171,7 @@ async def _headless_pool() -> Any:
 
     profile = BrowserProfile(
         name=HYDRATE_PROFILE_NAME,
-        user_data_dir=Path(".browser_profiles") / HYDRATE_PROFILE_NAME,
+        user_data_dir=default_profile_root() / HYDRATE_PROFILE_NAME,
         headless=True,
     )
     options = build_persistent_context_options(profile)

@@ -1,0 +1,19 @@
+# Runtime 的來源清單，逐條對應 pyproject.toml 的 [project].dependencies。
+# 這裡刻意只寫下界、不寫上界：真正的鎖定在 requirements-<target>.txt，
+# 由 `uv pip compile` 配合 constraints.txt 產生並進版控。
+pydantic>=2.12
+sqlalchemy[asyncio]>=2.0.44
+aiosqlite>=0.21
+rapidfuzz>=3.14
+httpx>=0.28
+beautifulsoup4>=4.14
+apscheduler>=3.10.4
+ntplib>=0.4.0
+playwright>=1.60
+python-statemachine>=3.2.0
+structlog>=24.1.0
+fastapi>=0.141.1
+uvicorn[standard]>=0.52.4
+websockets>=17.1
+cryptography>=50.0.1
+ddddocr>=1.6.1

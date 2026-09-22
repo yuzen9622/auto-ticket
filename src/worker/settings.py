@@ -14,6 +14,7 @@ DEFAULT_TIMELINE_DIR = Path("data/timelines")
 ENV_DB_PATH = "AUTO_TICKET_DB_PATH"
 ENV_SCREENSHOT_DIR = "AUTO_TICKET_SCREENSHOT_DIR"
 ENV_VAULT_ROOT = "AUTO_TICKET_VAULT_ROOT"
+ENV_TIMELINE_DIR = "AUTO_TICKET_TIMELINE_DIR"
 ENV_CDP_ENDPOINT = "AUTO_TICKET_CDP_ENDPOINT"
 ENV_CHALLENGE_GRACE_S = "AUTO_TICKET_CHALLENGE_GRACE_S"
 ENV_OCR_ENABLED = "AUTO_TICKET_OCR_ENABLED"
@@ -86,6 +87,9 @@ class WorkerSettings:
                 source.get(ENV_SCREENSHOT_DIR, str(DEFAULT_SCREENSHOT_DIR))
             ),
             vault_root=Path(source.get(ENV_VAULT_ROOT, str(DEFAULT_VAULT_ROOT))),
+            timeline_dir=Path(
+                source.get(ENV_TIMELINE_DIR, str(DEFAULT_TIMELINE_DIR))
+            ),
             cdp_endpoint=source.get(ENV_CDP_ENDPOINT) or None,
             challenge_grace_s=grace_s,
             ocr_enabled=ocr_on,

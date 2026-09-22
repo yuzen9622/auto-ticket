@@ -1,0 +1,25 @@
+{
+  "schema": 1,
+  "version": "0.1.0",
+  "releaseTag": "v0.1.0",
+  "baseUrl": "https://github.com/yuzen9622/auto-ticket/releases/download/v0.1.0",
+  "python": "3.12",
+  "onnxruntime": "1.23.2",
+  "targets": {
+    "darwin-arm64": {
+      "file": "auto-ticket-runtime-darwin-arm64-0.1.0.tar.gz",
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "size": 0
+    },
+    "darwin-x64": {
+      "file": "auto-ticket-runtime-darwin-x64-0.1.0.tar.gz",
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "size": 0
+    },
+    "win32-x64": {
+      "file": "auto-ticket-runtime-win32-x64-0.1.0.tar.gz",
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "size": 0
+    }
+  }
+}

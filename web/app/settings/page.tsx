@@ -11,7 +11,7 @@ import { SessionJobWatcher } from "@/components/settings/session-job-watcher"
 import { DEFAULT_PROFILE, loadCurrentBrowserProfile } from "@/lib/browser-profile"
 import { PLATFORM, type Platform } from "@/lib/contract"
 
-export default function SettingsPage() {
+function SettingsPanels() {
   const searchParams = useSearchParams()
   const qPlatform = searchParams.get("platform")
   const validPlatform = PLATFORM.includes(qPlatform as Platform)
@@ -39,7 +39,7 @@ export default function SettingsPage() {
   }, [])
 
   return (
-    <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
+    <>
       <div className="flex flex-col gap-4">
         <AccountCard platform={platform} onPlatformChange={setPlatform} />
         <CredentialForm platform={platform} onPlatformChange={setPlatform} />
@@ -53,7 +53,19 @@ export default function SettingsPage() {
         />
         <LocalProfileManager />
       </div>
-    </div>
+    </>
   )
 }
 
+export default function SettingsPage() {
+  return (
+    <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
+      {/* useSearchParams 會讓整個 page 退回 client render，沒有 Suspense 邊界
+          時 `next build` 直接在預渲染階段失敗。邊界擺在讀取 query 的那一層，
+          外層的版面配置仍然能靜態產出。 */}
+      <React.Suspense fallback={null}>
+        <SettingsPanels />
+      </React.Suspense>
+    </div>
+  )
+}

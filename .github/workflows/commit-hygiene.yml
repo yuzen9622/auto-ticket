@@ -1,0 +1,31 @@
+name: commit-hygiene
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  commitlint:
+    name: Conventional Commits + 敏感詞
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      # commitlint 只在 CI 用一次，裝進 repo 的 lockfile 只會讓 web 的安裝變慢。
+      - name: Validate commit subjects
+        run: |
+          npx --yes \
+            --package @commitlint/cli \
+            --package @commitlint/config-conventional \
+            -- commitlint \
+              --from "${{ github.event.pull_request.base.sha }}" \
+              --to "${{ github.event.pull_request.head.sha }}" \
+              --verbose

@@ -1,0 +1,8 @@
+# Runtime 打包專用的硬釘版。與 dev 的 uv.lock 完全獨立——dev 跑 CPython 3.14 且不必
+# 支援 Intel Mac，runtime 要同時餵飽三個平台，兩者本來就不該共用一份解析結果。
+#
+# onnxruntime 是唯一需要人工釘版的套件：ddddocr 沒有釘它，而 1.24 起就不再發
+# macOS x86_64 wheel、1.30 更只剩 arm64。1.23.2 是目前唯一同時涵蓋
+# macosx_13_0_arm64 / macosx_13_0_x86_64 / win_amd64 的版本，因此也把對外的
+# 最低系統需求定在 macOS 13 Ventura。
+onnxruntime==1.23.2
