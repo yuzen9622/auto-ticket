@@ -3,10 +3,22 @@ name: release-runtime
 on:
   push:
     tags: ["v*"]
+  # release-please 用 GITHUB_TOKEN 建 tag，而 GITHUB_TOKEN 觸發的事件**不會**啟動
+  # 新的 workflow run（GitHub 用這條規則擋遞迴）。所以合併 release PR 之後這支要
+  # 手動派送，不能只靠上面的 tag 觸發——沒有這個入口，chain 會安靜地斷在這裡。
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 要建置並發佈的 tag（例如 v0.2.0）
+        required: true
+        type: string
 
 permissions:
   contents: write
   id-token: write
+
+env:
+  TAG: ${{ inputs.tag || github.ref_name }}
 
 jobs:
   build:
@@ -24,6 +36,8 @@ jobs:
             runner: windows-2022
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.tag || github.ref_name }}
 
       - uses: astral-sh/setup-uv@v5
         with:
@@ -75,7 +89,7 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release upload "${{ github.ref_name }}" dist-runtime/* --clobber
+        run: gh release upload "$TAG" dist-runtime/* --clobber
 
   publish:
     name: manifest + npm publish
@@ -83,6 +97,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.tag || github.ref_name }}
 
       - uses: actions/setup-node@v4
         with:
@@ -92,20 +108,20 @@ jobs:
       - name: Build runtime manifest from release assets
         env:
           GH_TOKEN: ${{ github.token }}
-        run: node scripts/release/build_manifest.mjs --tag "${{ github.ref_name }}"
+        run: node scripts/release/build_manifest.mjs --tag "$TAG"
 
       - name: Cross-check manifest against assets
         env:
           GH_TOKEN: ${{ github.token }}
-        run: node scripts/release/build_manifest.mjs --verify --tag "${{ github.ref_name }}"
+        run: node scripts/release/build_manifest.mjs --verify --tag "$TAG"
 
       - name: Redact public release notes
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release view "${{ github.ref_name }}" --json body -q .body > raw-notes.md
+          gh release view "$TAG" --json body -q .body > raw-notes.md
           node scripts/release/redact_notes.mjs --in raw-notes.md --out public-notes.md
-          gh release edit "${{ github.ref_name }}" --notes-file public-notes.md
+          gh release edit "$TAG" --notes-file public-notes.md
 
       - name: Install CLI deps
         run: npm --prefix packages/cli ci
@@ -121,4 +137,4 @@ jobs:
       - name: Promote release out of draft
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release edit "${{ github.ref_name }}" --draft=false --latest
+        run: gh release edit "$TAG" --draft=false --latest

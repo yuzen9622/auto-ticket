@@ -18,6 +18,16 @@ main ─► release-please.yml ──► Release PR（CHANGELOG.md + 版本號�
          └─► clean-machine.yml   三 OS 乾淨 runner 跑 npx 煙霧測試
 ```
 
+> **合併 release PR 之後要手動派送 `release-runtime`。** release-please 用
+> `GITHUB_TOKEN` 建 tag，而 GitHub 為了擋遞迴，**`GITHUB_TOKEN` 觸發的事件不會啟動
+> 新的 workflow run**——所以 `push: tags` 那個觸發器在這條路徑上不會生效。合併後跑：
+>
+> ```bash
+> gh workflow run release-runtime.yml -f tag=v<X.Y.Z>
+> ```
+>
+> 失敗的樣貌是「什麼都沒發生」：tag 與 draft release 都在，但沒有任何建置。
+
 **責任切分**：release-please 只做「Conventional Commit → 版本 / CHANGELOG /
 Release PR / tag」，它明確不處理 package manager publication。runtime asset build、
 sha256、manifest 組裝與 `npm publish` 因此全部放在 tag 觸發的 `release-runtime.yml`，
