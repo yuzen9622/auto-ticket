@@ -109,16 +109,6 @@ export function ExperimentTable({ taskId }: { taskId?: string }) {
       ),
     },
     {
-      key: "strategy",
-      header: t("columnStrategy"),
-      cell: (e) => e.strategy_used,
-    },
-    {
-      key: "clock",
-      header: t("columnClockSync"),
-      cell: (e) => e.clock_sync_mode,
-    },
-    {
       key: "created",
       header: t("columnCreated"),
       cell: (e) => (

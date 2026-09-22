@@ -68,8 +68,6 @@ export function MetricsPanel({
               : "text-destructive"
           }
         />
-        <KvRow label={t("strategy")} value={experiment.strategy_used} />
-        <KvRow label={t("clockSync")} value={experiment.clock_sync_mode} />
         <KvRow
           label={t("saleTimeError")}
           value={formatMs(experiment.sale_time_error_ms)}
