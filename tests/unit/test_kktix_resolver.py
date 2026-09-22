@@ -203,9 +203,11 @@ async def test_fetch_event_metadata_ticket_types(
     event = await make_resolver(kktix_client).fetch_event_metadata(EVENT_URL)
     assert len(event.ticket_types) == 3
     assert [ticket.price for ticket in event.ticket_types] == [2800, 3800, 0]
+    # 活動主頁只印得出「結束販售」與「尚未開賣」兩種 badge；沒有 badge 就是販售中。
+    # 售完不在這一頁上，所以不會有票種被判成 SOLD_OUT。
     assert [ticket.status for ticket in event.ticket_types] == [
         TicketTypeStatus.AVAILABLE,
-        TicketTypeStatus.SOLD_OUT,
+        TicketTypeStatus.CLOSED,
         TicketTypeStatus.COMING_SOON,
     ]
     assert event.status is EventStatus.ON_SALE
@@ -711,3 +713,63 @@ def test_parse_sale_start_at_captures_both_start_and_end(
     assert end == datetime(2026, 5, 20, 10, 0, tzinfo=timezone.utc)
     assert len(periods) == 2
 
+
+
+def test_parse_status_treats_a_missing_badge_as_on_sale() -> None:
+    """販售中的票種主頁不掛狀態 badge，狀態文字就是空字串。
+
+    曾經讓選擇器退到 `td.period`，於是每一列都讀到販售時間當狀態；主辦單位在說明
+    裡寫的「售完為止」也會被讀成售完。
+    """
+    assert _parse_status("") is TicketTypeStatus.AVAILABLE
+
+
+@pytest.mark.parametrize("text", ["尚未開賣", "即將開賣"])
+def test_parse_status_recognizes_waiting_badge(text: str) -> None:
+    assert _parse_status(text) is TicketTypeStatus.COMING_SOON
+
+
+def test_derive_status_prefers_an_on_sale_ticket_over_a_closed_one(
+    kktix_client: httpx.AsyncClient,
+) -> None:
+    """早鳥票結束販售、一般票還在賣是常見組合；整場活動就是販售中。"""
+    tickets = [
+        TicketType(
+            id="tt_1",
+            event_id="ev_test",
+            name="早鳥票",
+            price=1000,
+            status=TicketTypeStatus.CLOSED,
+        ),
+        TicketType(
+            id="tt_2",
+            event_id="ev_test",
+            name="一般票",
+            price=1200,
+            status=TicketTypeStatus.AVAILABLE,
+        ),
+    ]
+    assert make_resolver(kktix_client)._derive_status(tickets) is EventStatus.ON_SALE
+
+
+def test_derive_status_ignores_the_contact_organizer_button(
+    kktix_client: httpx.AsyncClient,
+) -> None:
+    """沒有票種時，只認購票區塊裡那顆按鈕。
+
+    KKTIX 每一頁的頁首都有一個同樣是 `a.btn-point` 的「聯絡主辦單位」連結；
+    放寬選擇器會把還在賣的活動判成已結束。
+    """
+    soup = BeautifulSoup(
+        """
+        <a class="btn-point" href="/organizations/x/contact/new">聯絡主辦單位</a>
+        <div class="tickets">
+          <a class="btn-point" href="/events/x/registrations/new">下一步</a>
+        </div>
+        """,
+        "html.parser",
+    )
+    assert (
+        make_resolver(kktix_client)._derive_status([], soup=soup)
+        is EventStatus.UNKNOWN
+    )

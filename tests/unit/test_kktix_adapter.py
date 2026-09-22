@@ -481,13 +481,17 @@ async def test_event_page_does_not_invent_stock(telemetry: TimelineRecorder) -> 
     page = FakePage.from_fixture("kktix_event_page.html")
     options = await make_adapter(telemetry).read_ticket_options(page)
     assert all(o.remaining is None for o in options)
-    assert all(o.status_text for o in options)
     by_name = {o.name: o for o in options}
-    assert by_name["搖滾區站席"].available is False  # 狀態欄明寫「已售完」
+    # 販售中的票種主頁不掛任何狀態 badge，狀態字串就是空的——不要把空字串補成
+    # 販售時間，那一格的日期被讀成狀態會讓每個票種看起來都有狀態。
+    assert by_name["預售全區站席"].status_text == ""
     assert by_name["預售全區站席"].available is True
-    # 「尚未開賣」不等於售完；主頁快照如實照抄狀態字串，不替它判斷能不能買
+    # 「結束販售」與「尚未開賣」都不等於售完；主頁快照如實照抄狀態字串，
+    # 不替它判斷能不能買。主頁本來就下不了單，判斷留給登記頁。
+    assert by_name["搖滾區站席"].status_text == "結束販售"
+    assert by_name["搖滾區站席"].available is True
+    assert by_name["學生優惠票"].status_text == "尚未開賣"
     assert by_name["學生優惠票"].available is True
-    assert "尚未開賣" in by_name["學生優惠票"].status_text
 
 
 async def test_event_page_header_row_is_skipped(telemetry: TimelineRecorder) -> None:

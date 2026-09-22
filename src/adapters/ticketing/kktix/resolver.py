@@ -179,6 +179,11 @@ def _parse_price(text: str) -> int:
 
 
 def _parse_status(text: str) -> TicketTypeStatus:
+    """把票種狀態 badge 的字樣轉成狀態。
+
+    活動主頁實際只印「尚未開賣」與「結束販售」；沒有 badge 就是販售中，因此空字串
+    要落在 `AVAILABLE`。售完的字樣留著是給購票登記頁用的，主頁不會出現。
+    """
     lowered = text.casefold()
     if any(kw in text for kw in ("售完", "已售完", "額滿", "已額滿")) or "sold out" in lowered:
         return TicketTypeStatus.SOLD_OUT
@@ -744,9 +749,20 @@ class KKTIXEventResolver(EventResolver):
         sale_end_at: datetime | None = None,
         soup: BeautifulSoup | None = None,
     ) -> EventStatus:
+        """由票種列的狀態 badge 推活動狀態。
+
+        KKTIX 的活動主頁只說得出三件事：某個票種尚未開賣、結束販售、或正在販售
+        （沒有 badge）。2026-09-22 掃 487 個活動主頁，`span.status` 只出現
+        `waiting`／`closed` 兩種，沒有任何一頁把售完標在票種上——售完只寫在要登入
+        才進得去的購票登記頁。所以這裡永遠不會回 `SOLD_OUT`，宣稱得越多錯得越多。
+        """
         if not tickets:
             if soup is not None:
-                order_btn = soup.select_one(".order-now-section, #order-now, a.btn-point")
+                # 只認購票區塊裡那顆按鈕。頁首的「聯絡主辦單位」同樣是 a.btn-point，
+                # 放寬選擇器會把還在賣的活動判成已結束。
+                order_btn = soup.select_one(
+                    "div.tickets a.btn-point, .order-now-section a, #order-now a"
+                )
                 if order_btn is not None:
                     btn_text = order_btn.get_text(" ", strip=True)
                     if any(kw in btn_text for kw in ("聯絡主辦單位", "結束", "截止")):
@@ -755,23 +771,21 @@ class KKTIXEventResolver(EventResolver):
 
         statuses = {ticket.status for ticket in tickets}
 
-        # 1. 全數售罄
-        if statuses == {TicketTypeStatus.SOLD_OUT}:
-            return EventStatus.SOLD_OUT
-
-        # 2. 所有票種均已截止，或僅包含已截止與已售罄
-        if statuses.issubset({TicketTypeStatus.CLOSED, TicketTypeStatus.SOLD_OUT}):
-            if TicketTypeStatus.CLOSED in statuses:
-                return EventStatus.CLOSED
-            return EventStatus.SOLD_OUT
-
-        # 3. 仍有可購買票種
+        # 1. 仍有販售中的票種
         if TicketTypeStatus.AVAILABLE in statuses:
             return EventStatus.ON_SALE
 
-        # 4. 已售罄的早鳥票與尚未開賣的一般票可同時存在；只要仍有
-        # 尚未開賣的票種，整場活動仍應視為尚未開賣，而非狀態未知。
+        # 2. 沒有販售中的票種，但還有尚未開賣的：整場活動就是還沒開賣。
+        #    早鳥票結束販售、一般票尚未開賣是很常見的組合。
         if TicketTypeStatus.COMING_SOON in statuses:
             return EventStatus.ANNOUNCED
+
+        # 3. 全數售罄（頁面若真的長出售完字樣才會走到）
+        if statuses == {TicketTypeStatus.SOLD_OUT}:
+            return EventStatus.SOLD_OUT
+
+        # 4. 剩下的只可能是結束販售，或結束販售混著售罄。
+        if statuses.issubset({TicketTypeStatus.CLOSED, TicketTypeStatus.SOLD_OUT}):
+            return EventStatus.CLOSED
 
         return EventStatus.UNKNOWN

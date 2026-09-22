@@ -33,8 +33,8 @@
         <thead>
           <tr>
             <th class="name">票種</th>
-            <th class="price">價格</th>
             <th class="period">販售時間</th>
+            <th class="price">售價</th>
           </tr>
         </thead>
         <tbody>
@@ -43,32 +43,50 @@
           </tr>
           <tr id="ticket_501">
             <td class="name">預售全區站席</td>
-            <td class="price">NT$ 2,800</td>
             <td class="period">
-              <span class="time">2026/01/10 (週六) 12:00(+0800)</span>
-              ~
-              <span class="time">2026/02/28 (週六) 23:59(+0800)</span>
+              <span class="period-time">
+                <span class="time"
+                  ><span class="timezoneSuffix">2026/01/10 12:00(+0800)</span></span
+                >
+                ~
+                <span class="time"
+                  ><span class="timezoneSuffix">2026/02/28 23:59(+0800)</span></span
+                >
+              </span>
             </td>
+            <td class="price">NT$ 2,800</td>
           </tr>
           <tr id="ticket_502">
             <td class="name">搖滾區站席</td>
-            <td class="price">NT$ 3,800</td>
             <td class="period">
-              <span class="time">2026/01/12 (週一) 12:00(+0800)</span>
-              ~
-              <span class="time">2026/02/28 (週六) 23:59(+0800)</span>
-              <span class="status-note">已售完</span>
+              <span class="period-time">
+                <span class="time"
+                  ><span class="timezoneSuffix">2026/01/12 12:00(+0800)</span></span
+                >
+                ~
+                <span class="time"
+                  ><span class="timezoneSuffix">2026/01/31 23:59(+0800)</span></span
+                >
+              </span>
+              <span class="status closed">結束販售</span>
             </td>
+            <td class="price">NT$ 3,800</td>
           </tr>
           <tr id="ticket_503">
             <td class="name">學生優惠票</td>
-            <td class="price">免費</td>
             <td class="period">
-              <span class="time">2026/02/01 (週日) 12:00(+0800)</span>
-              ~
-              <span class="time">2026/02/28 (週六) 23:59(+0800)</span>
-              <span class="status-note">尚未開賣</span>
+              <span class="period-time">
+                <span class="time"
+                  ><span class="timezoneSuffix">2026/02/01 12:00(+0800)</span></span
+                >
+                ~
+                <span class="time"
+                  ><span class="timezoneSuffix">2026/02/28 23:59(+0800)</span></span
+                >
+              </span>
+              <span class="status waiting">尚未開賣</span>
             </td>
+            <td class="price">免費</td>
           </tr>
         </tbody>
       </table>
@@ -81,5 +99,12 @@
         >立即購票</a
       >
     </div>
+
+    <!--
+      票種狀態的寫法照抄 2026-09-22 從線上活動主頁抓下來的結構：販售時間欄裡掛
+      `span.status.waiting`（尚未開賣）或 `span.status.closed`（結束販售），販售中
+      的票種整個 badge 都不存在。掃過 487 個活動主頁沒有任何一頁把售完標在票種上
+      ——KKTIX 的售完只出現在要登入才進得去的購票登記頁。
+    -->
   </body>
 </html>

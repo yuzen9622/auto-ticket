@@ -34,7 +34,12 @@ class KKTIXSelectors:
     EVENT_TICKET_PERIOD_TIMES = "td.period .time"
     EVENT_TICKET_ROW_NAME = "td.name, .ticket-name"
     EVENT_TICKET_ROW_PRICE = "td.price, .ticket-price"
-    EVENT_TICKET_ROW_STATUS = "td.status, .ticket-status, td.period"
+    # 活動主頁的票種狀態是販售時間欄裡的一個 badge：`span.status.waiting`
+    # （尚未開賣）或 `span.status.closed`（結束販售），販售中則整個 badge 不存在。
+    # 不要把 `td.period` 放進來當備援——那一格平常只有日期，接起來比對會讓沒有
+    # badge 的販售中票種被當成有狀態文字，主辦單位寫在說明裡的「售完為止」也會
+    # 被讀成售完。
+    EVENT_TICKET_ROW_STATUS = "td.period span.status, td.status, .ticket-status"
 
     # =========================================================================
     # 2. 購票登記頁 (https://kktix.com/events/<slug>/registrations/new)
