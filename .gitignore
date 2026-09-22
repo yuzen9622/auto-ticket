@@ -25,3 +25,5 @@ node_modules/
 web/.env.local
 *.tsbuildinfo
 next-env.d.ts
+
+docs/
