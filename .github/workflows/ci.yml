@@ -12,6 +12,12 @@ concurrency:
 permissions:
   contents: read
 
+# Windows runner 的預設 shell 是 PowerShell，它不吃反斜線續行、glob 與引號規則
+# 也不一樣。同一份 run 腳本要在三種 OS 上有同一個意思，就得把 shell 釘死。
+defaults:
+  run:
+    shell: bash
+
 jobs:
   check:
     name: check (invariants / pytest / web / cli)

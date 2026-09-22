@@ -21,7 +21,6 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import os
 import re
 import shutil
 import subprocess
@@ -31,6 +30,21 @@ import tempfile
 from collections.abc import Iterable
 from datetime import UTC, datetime
 from pathlib import Path
+
+
+def _force_utf8_output() -> None:
+    """Windows 主控台預設是 cp1252，編不了中文，一行 log 就能讓建置整個倒下。
+
+    `PYTHONUTF8` 得在直譯器啟動前就設好才有用，在 `__main__` 裡設已經太遲，
+    所以直接改串流本身。
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            reconfigure(encoding="utf-8", errors="replace")
+
+
+_force_utf8_output()
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 PACKAGING_DIR = Path(__file__).resolve().parent
@@ -368,5 +382,4 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
-    os.environ.setdefault("PYTHONUTF8", "1")
     sys.exit(main())

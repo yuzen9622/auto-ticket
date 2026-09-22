@@ -20,6 +20,21 @@ import sys
 from pathlib import Path
 
 
+def _force_utf8_output() -> None:
+    """Windows 主控台預設是 cp1252，編不了中文，一行 log 就能讓建置整個倒下。
+
+    `PYTHONUTF8` 得在直譯器啟動前就設好才有用，在 `__main__` 裡設已經太遲，
+    所以直接改串流本身。
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            reconfigure(encoding="utf-8", errors="replace")
+
+
+_force_utf8_output()
+
+
 def backup(source: Path, dest: Path) -> dict[str, object]:
     if not source.is_file():
         raise FileNotFoundError(f"來源資料庫不存在: {source}")

@@ -13,6 +13,12 @@ on:
 
 permissions: {}
 
+# Windows runner 的預設 shell 是 PowerShell，它不吃反斜線續行、glob 與引號規則
+# 也不一樣。同一份 run 腳本要在三種 OS 上有同一個意思，就得把 shell 釘死。
+defaults:
+  run:
+    shell: bash
+
 jobs:
   npx-smoke:
     name: npx smoke (${{ matrix.os }})
@@ -28,7 +34,6 @@ jobs:
 
       - name: Resolve version
         id: v
-        shell: bash
         run: |
           raw="${{ inputs.version || github.event.release.tag_name }}"
           echo "version=${raw#v}" >> "$GITHUB_OUTPUT"
@@ -37,7 +42,6 @@ jobs:
         run: npx --yes @yuzen9622/auto-ticket@${{ steps.v.outputs.version }} doctor
 
       - name: version
-        shell: bash
         run: |
           out=$(npx --yes @yuzen9622/auto-ticket@${{ steps.v.outputs.version }} version)
           echo "$out"
@@ -45,7 +49,6 @@ jobs:
           echo "$out" | grep -q 'onnxruntime=1.23.2'
 
       - name: Assert zero runtime dependencies
-        shell: bash
         run: |
           npm install -g @yuzen9622/auto-ticket@${{ steps.v.outputs.version }}
           npm ls --prefix "$(npm root -g)" --depth 0
