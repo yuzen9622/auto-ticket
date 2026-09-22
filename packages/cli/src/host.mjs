@@ -153,7 +153,12 @@ export async function ensureBrowsers({
     await run(
       pythonPath ?? "python3",
       ["-s", "-m", "playwright", "install", "chromium"],
-      { env: { ...process.env, ...env, PLAYWRIGHT_BROWSERS_PATH: paths.msPlaywright } },
+      {
+        env: { ...process.env, ...env, PLAYWRIGHT_BROWSERS_PATH: paths.msPlaywright },
+        // 預設的 pipe 沒人讀，等於把 Playwright 自己的下載進度整段丟掉——
+        // 使用者看到的就是又一段幾分鐘的靜默。直接讓它接到終端機上。
+        stdio: "inherit",
+      },
     );
   } catch (err) {
     throw cliError(

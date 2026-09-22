@@ -7,6 +7,17 @@ npx @yuzen9622/auto-ticket
 第一次執行會下載約 300MB 的 runtime 與約 150MB 的 Chromium，兩者都是可重入的獨立
 階段：中斷了就再跑一次，不會留下半殘狀態。之後啟動不再下載。
 
+下載過程會即時回報進度（百分比、已下載量、速率、預估剩餘時間），解壓與安裝各自
+是獨立的一行。把輸出重導到檔案或在 CI 裡執行時，會自動換成逐行追加的純文字，
+不會寫入任何終端機控制碼：
+
+```bash
+npx @yuzen9622/auto-ticket start > install.log 2>&1
+tail -f install.log
+```
+
+`NO_COLOR=1` 只關掉顏色，進度照常顯示。
+
 ## 支援平台
 
 | 平台 | 支援 |
@@ -86,6 +97,10 @@ auto-ticket version         # CLI / runtime / Python / onnxruntime 版本
 auto-ticket migrate --dry-run   # 先看看遷移會做什麼
 auto-ticket logs api -f     # 追某個行程的日誌
 ```
+
+## 授權
+
+MIT。完整條款見 repo 根目錄的 `LICENSE`，套件內也帶了一份。
 
 ## 移除
 

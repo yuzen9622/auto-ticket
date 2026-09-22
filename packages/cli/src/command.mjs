@@ -12,6 +12,7 @@ import * as hostMod from "./host.mjs";
 import * as migrationMod from "./migration.mjs";
 import * as runtimeCacheMod from "./runtime-cache.mjs";
 import * as supervisorMod from "./supervisor.mjs";
+import * as uiMod from "./ui.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PACKAGE_ROOT = path.resolve(__dirname, "..");
@@ -351,18 +352,51 @@ export function runtimeOverrides(env = process.env) {
   };
 }
 
-/** 取得 runtime 目錄：旁路優先，否則走下載與校驗。 */
-async function resolveRuntimeDir({ manifest, entry, target, packageVersion, p }) {
+// 進度列上的階段名稱。`indeterminate` 表示這一步沒有位元組可數，只轉 spinner。
+const RUNTIME_PHASES = {
+  download: { label: "下載 runtime", indeterminate: false },
+  verify: { label: "校驗 sha256", indeterminate: true },
+  extract: { label: "解壓 runtime", indeterminate: true },
+  commit: { label: "安裝 runtime", indeterminate: true },
+};
+
+/**
+ * 取得 runtime 目錄：旁路優先，否則走下載與校驗。
+ *
+ * 這一步要搬 250MB 下來再解成 600MB，在慢速網路上是好幾分鐘。先前它整段靜默，
+ * 使用者看到的是一個像當掉的終端機——進度回報不是裝飾，是這條路徑的必要輸出。
+ */
+async function resolveRuntimeDir({ manifest, entry, target, packageVersion, p, ui = uiMod }) {
   const override = runtimeOverrides();
   if (override.dir) return override.dir;
-  return await runtimeCacheMod.ensureRuntime({
-    manifest,
-    manifestEntry: entry,
-    target,
-    version: packageVersion,
-    paths: p,
-    baseUrl: override.baseUrl ?? manifest.baseUrl,
-  });
+
+  const progress = ui.createProgress({ label: `${RUNTIME_PHASES.download.label} ${packageVersion}` });
+  progress.start();
+  try {
+    const dir = await runtimeCacheMod.ensureRuntime({
+      manifest,
+      manifestEntry: entry,
+      target,
+      version: packageVersion,
+      paths: p,
+      baseUrl: override.baseUrl ?? manifest.baseUrl,
+      onProgress: (update) => progress.update(update),
+      onRetry: ({ attempt, maxRetries }) => {
+        progress.reset();
+        progress.setLabel(`${RUNTIME_PHASES.download.label} ${packageVersion}（重試 ${attempt}/${maxRetries}）`);
+      },
+      onPhase: (phase) => {
+        const step = RUNTIME_PHASES[phase];
+        if (!step || phase === "download") return;
+        progress.setLabel(step.label, { indeterminate: step.indeterminate });
+      },
+    });
+    progress.done(`runtime ${packageVersion} 就緒（${target}）`);
+    return dir;
+  } catch (err) {
+    progress.fail(`runtime ${packageVersion} 安裝失敗`);
+    throw err;
+  }
 }
 
 /** 列出本機已安裝的 runtime 版本與各自佔用的位元組。只讀，不刪任何東西。 */
@@ -604,6 +638,7 @@ export async function main(argv, io = {}) {
         const manifest = await readRuntimeManifest();
         const entry = loadManifest(manifest, { packageVersion, target });
         const p = paths();
+        uiMod.writeBanner({ version: packageVersion });
         // 搶票一律借用使用者本機的真 Chrome，沒有它整個流程走不到最後一步。
         // 讓它在還沒下載 300MB runtime 之前就明確失敗，而不是等到領任務才炸。
         assertChromePresent();
@@ -627,6 +662,7 @@ export async function main(argv, io = {}) {
         }
         // env 先組好再交給 ensureBrowsers：兩邊各組一份就是漏 PYTHONPATH 的來源。
         const env = hostMod.buildEnv({ paths: p, runtimeDir });
+        // Playwright 自己會印下載進度，所以這裡不疊 spinner，只讓它的輸出透出來。
         await hostMod.ensureBrowsers({ paths: p, pythonPath, env });
         return await supervisorMod.supervise({
           env,

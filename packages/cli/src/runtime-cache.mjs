@@ -30,6 +30,10 @@ function defaultSleep(ms) {
  * 下載一個檔案並邊寫邊算 sha256，不二次讀檔。
  * 絕不讀取或帶上任何憑證環境變數：公開 repo 的 release asset 匿名可取，
  * 這裡的 fetch 呼叫刻意不組任何 Authorization header。
+ *
+ * `onProgress({ loaded, total })` 在串流過程中被高頻呼叫（每個 chunk 一次），
+ * 節流是呼叫端的事：這裡不知道對方要畫進度列還是寫日誌。`total` 取自
+ * content-length，伺服器沒給就是 null。
  */
 export async function download({
   url,
@@ -38,9 +42,13 @@ export async function download({
   sleepImpl = defaultSleep,
   maxRetries = 3,
   timeoutMs = 60_000,
+  onProgress,
+  onRetry,
 }) {
   let lastErr;
   for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
+    // 重試是整個檔案重下，不是續傳；呼叫端的計數器得跟著歸零，否則速率與 ETA 全是假的。
+    if (attempt > 0) onRetry?.({ attempt, maxRetries, reason: lastErr?.message });
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
@@ -57,7 +65,7 @@ export async function download({
           `下載失敗：HTTP ${response.status}（${url}）。`,
         );
       }
-      return await streamToFileWithHash(response, destPath);
+      return await streamToFileWithHash(response, destPath, onProgress);
     } catch (err) {
       clearTimeout(timer);
       if (isCliError(err)) throw err;
@@ -74,10 +82,13 @@ export async function download({
   );
 }
 
-async function streamToFileWithHash(response, destPath) {
+async function streamToFileWithHash(response, destPath, onProgress) {
   await fs.mkdir(path.dirname(destPath), { recursive: true });
   const hash = createHash("sha256");
   let size = 0;
+  const declared = Number(response.headers?.get?.("content-length"));
+  const total = Number.isFinite(declared) && declared > 0 ? declared : null;
+  const report = () => onProgress?.({ loaded: size, total });
   const out = createWriteStream(destPath);
   const body = response.body;
   if (body && typeof body.getReader === "function") {
@@ -92,6 +103,7 @@ async function streamToFileWithHash(response, destPath) {
             if (done) break;
             hash.update(value);
             size += value.length;
+            report();
             if (!out.write(value)) {
               await new Promise((r) => out.once("drain", r));
             }
@@ -107,6 +119,7 @@ async function streamToFileWithHash(response, destPath) {
     const buf = Buffer.isBuffer(body) ? body : Buffer.from(body ?? "");
     hash.update(buf);
     size = buf.length;
+    report();
     await new Promise((resolve, reject) => {
       out.write(buf, (err) => (err ? reject(err) : resolve()));
     });
@@ -197,6 +210,11 @@ export async function ensureRuntime({
   sleepImpl,
   fsImpl = fs,
   baseUrl,
+  onProgress,
+  onRetry,
+  // 解壓 600MB 要花的時間跟下載同一個量級，沒有階段回報的話進度列會停在 100%
+  // 不動好幾十秒，看起來就像當掉。
+  onPhase = () => {},
 }) {
   const runtimeDir = paths.runtimeDir(version);
   const already = await fsImpl.stat(runtimeDir).catch(() => null);
@@ -206,7 +224,16 @@ export async function ensureRuntime({
   const partPath = path.join(paths.runtimeTmp, `${manifestEntry.file}.part`);
   const url = `${baseUrl ?? ""}/${manifestEntry.file}`;
 
-  const { sha256 } = await download({ url, destPath: partPath, fetchImpl, sleepImpl });
+  onPhase("download");
+  const { sha256 } = await download({
+    url,
+    destPath: partPath,
+    fetchImpl,
+    sleepImpl,
+    onProgress,
+    onRetry,
+  });
+  onPhase("verify");
   if (!verifySha256(sha256, manifestEntry.sha256)) {
     await fsImpl.rm(partPath, { force: true });
     throw cliError(
@@ -215,6 +242,7 @@ export async function ensureRuntime({
     );
   }
 
+  onPhase("extract");
   const stagingParent = await fsImpl.mkdtemp(path.join(paths.runtimeTmp, "unpack-"));
   try {
     await extract({ archivePath: partPath, destDir: stagingParent, spawnImpl });
@@ -234,6 +262,7 @@ export async function ensureRuntime({
         `runtime 內部 MANIFEST.json 不符：version=${innerManifest.version} target=${innerManifest.target}`,
       );
     }
+    onPhase("commit");
     const committed = await commitRuntime({
       stagingDir,
       runtimeRoot: paths.runtimeRoot,

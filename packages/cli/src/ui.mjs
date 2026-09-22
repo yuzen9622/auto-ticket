@@ -1,0 +1,263 @@
+// 終端機顯示層：橫幅、spinner、進度列。純輸出，不做任何 I/O 決策，也不 import 其他 CLI 模組。
+//
+// 這裡刻意不引入任何第三方 TUI 套件。`dependencies` 恆為空物件是這個套件的硬約束
+// （見 guardrails 測試）：npx 的第一印象就是安裝速度，而且每多一個傳遞依賴，就多一條
+// 能在使用者機器上執行程式碼的供應鏈路徑——這支 CLI 會碰到帳密與付款，不值得為了
+// 一根進度列去換。下面全部只用 ANSI escape，總共不到兩百行。
+
+const ESC = "\u001B[";
+const CLEAR_LINE = `${ESC}2K${ESC}0G`;
+const HIDE_CURSOR = `${ESC}?25l`;
+const SHOW_CURSOR = `${ESC}?25h`;
+
+const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+const SPINNER_INTERVAL_MS = 80;
+
+// 非互動終端（重導到檔案、CI）不能靠覆寫同一行，只能每隔一段距離補一行。
+const PLAIN_STEP_RATIO = 0.05;
+const PLAIN_STEP_MS = 10_000;
+
+const BANNER_LINES = [
+  " ███  █   █ █████  ███    █████ ███  ████ █   █ █████ █████",
+  "█   █ █   █   █   █   █     █    █  █     █  █  █       █  ",
+  "█████ █   █   █   █   █     █    █  █     ███   ████    █  ",
+  "█   █ █   █   █   █   █     █    █  █     █  █  █       █  ",
+  "█   █  ███    █    ███      █   ███  ████ █   █ █████   █  ",
+];
+
+/**
+ * 能不能做動畫（覆寫同一行、轉 spinner、藏游標）。
+ *
+ * 只要輸出不是 TTY，一切覆寫控制碼都會原封不動寫進檔案，把日誌變成亂碼——
+ * 這正是先前把 `start` 導到檔案後看不到任何進度的那個坑的反面：不是不輸出，
+ * 而是要換一種輸出。
+ */
+export function isInteractive({ stream = process.stderr, env = process.env } = {}) {
+  if (!stream?.isTTY) return false;
+  if (env.TERM === "dumb") return false;
+  if (env.CI) return false;
+  return true;
+}
+
+/** 顏色與動畫分開判斷：NO_COLOR 只表示不要顏色，不表示不要進度。 */
+export function supportsColor({ stream = process.stderr, env = process.env } = {}) {
+  if (env.NO_COLOR) return false;
+  return isInteractive({ stream, env });
+}
+
+const paint = (on, code, text) => (on ? `${ESC}${code}m${text}${ESC}0m` : text);
+
+/**
+ * 啟動橫幅。只在互動終端印出；輸出被重導到檔案或跑在 CI 時回傳空陣列——
+ * 一整片方塊字元在日誌裡只是噪音，而版本資訊 supervisor 的日誌本來就有。
+ */
+export function banner({ version, stream = process.stderr, env = process.env } = {}) {
+  if (!isInteractive({ stream, env })) return [];
+  const tag = version ? `auto-ticket ${version}` : "auto-ticket";
+  const color = supportsColor({ stream, env });
+  const art = BANNER_LINES.map((line) => paint(color, "36", line));
+  return ["", ...art, "", paint(color, "2", `  ${tag}  ·  本機執行，資料不出你的機器`), ""];
+}
+
+export function writeBanner({ version, stream = process.stderr, env = process.env } = {}) {
+  for (const line of banner({ version, stream, env })) stream.write(`${line}\n`);
+}
+
+/** 1 KB = 1024 B，小數位隨量級縮減，讓寬度穩定不跳動。 */
+export function formatBytes(bytes) {
+  if (!Number.isFinite(bytes) || bytes < 0) return "—";
+  const units = ["B", "KB", "MB", "GB"];
+  let value = bytes;
+  let unit = 0;
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024;
+    unit += 1;
+  }
+  const digits = unit === 0 ? 0 : value >= 100 ? 0 : 1;
+  return `${value.toFixed(digits)} ${units[unit]}`;
+}
+
+export function formatDuration(ms) {
+  if (!Number.isFinite(ms) || ms < 0) return "—";
+  const total = Math.round(ms / 1000);
+  const m = Math.floor(total / 60);
+  const s = total % 60;
+  return m > 0 ? `${m}m ${String(s).padStart(2, "0")}s` : `${s}s`;
+}
+
+export function renderBar(ratio, width = 24) {
+  const filled = Math.max(0, Math.min(width, Math.round(ratio * width)));
+  return `${"█".repeat(filled)}${"░".repeat(width - filled)}`;
+}
+
+/**
+ * 一個可重入的進度回報器。
+ *
+ * `update()` 由下載迴圈高頻呼叫（每個 chunk 一次），所以它自己節流：互動模式下
+ * 以 spinner 的節拍重畫，非互動模式下只在跨過 5% 或 10 秒時補一行。呼叫端不必知道
+ * 自己身處哪一種終端。
+ *
+ * `total` 可以是 null——HTTP 回應不一定給 content-length，那時退成「只報已下載量」，
+ * 不假裝算得出百分比。
+ */
+export function createProgress({
+  label,
+  stream = process.stderr,
+  env = process.env,
+  now = () => Date.now(),
+  setIntervalImpl = setInterval,
+  clearIntervalImpl = clearInterval,
+  signalSource = process,
+  exitImpl = (code) => process.exit(code),
+} = {}) {
+  const interactive = isInteractive({ stream, env });
+  const color = supportsColor({ stream, env });
+
+  // 速率的分母是「這一次嘗試」的耗時，不是整段歷程：重試會整檔重下，
+  // 把失敗那次的時間算進去只會算出一個永遠偏低的假速率與假 ETA。
+  let windowStart = now();
+  let currentLabel = label;
+  let indeterminate = false;
+  let loaded = 0;
+  let total = null;
+  let frame = 0;
+  let timer = null;
+  let finished = false;
+  let lastPlainAt = 0;
+  let lastPlainRatio = -1;
+  let cursorHidden = false;
+  let onInterrupt = null;
+
+  const rate = () => {
+    const elapsed = now() - windowStart;
+    return elapsed > 0 ? (loaded / elapsed) * 1000 : 0;
+  };
+
+  function body() {
+    if (indeterminate) return "";
+    const speed = rate();
+    const parts = [];
+    if (total) {
+      const ratio = Math.min(1, loaded / total);
+      parts.push(renderBar(ratio));
+      parts.push(`${String(Math.floor(ratio * 100)).padStart(3)}%`);
+      parts.push(`${formatBytes(loaded)} / ${formatBytes(total)}`);
+      if (speed > 0) {
+        parts.push(`${formatBytes(speed)}/s`);
+        parts.push(`剩 ${formatDuration(((total - loaded) / speed) * 1000)}`);
+      }
+    } else {
+      parts.push(formatBytes(loaded));
+      if (speed > 0) parts.push(`${formatBytes(speed)}/s`);
+    }
+    return parts.join("  ");
+  }
+
+  function paintLine() {
+    const spin = paint(color, "36", SPINNER_FRAMES[frame % SPINNER_FRAMES.length]);
+    const detail = body();
+    stream.write(
+      `${CLEAR_LINE}${spin} ${currentLabel}${detail ? `  ${paint(color, "2", detail)}` : ""}`,
+    );
+  }
+
+  function tick() {
+    frame += 1;
+    paintLine();
+  }
+
+  function maybePlainLine(force) {
+    const at = now();
+    const ratio = total ? loaded / total : 0;
+    const steppedRatio = total && ratio - lastPlainRatio >= PLAIN_STEP_RATIO;
+    const steppedTime = at - lastPlainAt >= PLAIN_STEP_MS;
+    if (!force && !steppedRatio && !steppedTime) return;
+    lastPlainAt = at;
+    lastPlainRatio = ratio;
+    const detail = body();
+    stream.write(`${currentLabel}${detail ? `  ${detail}` : ""}\n`);
+  }
+
+  /**
+   * 停掉動畫並把游標放回來。任何離開路徑都必須經過這裡——包含 Ctrl-C：
+   * 藏了游標卻沒還，使用者的終端機會在我們結束後繼續看不到游標。
+   */
+  function stop() {
+    if (finished) return;
+    finished = true;
+    if (timer) clearIntervalImpl(timer);
+    timer = null;
+    if (onInterrupt) {
+      signalSource?.removeListener?.("SIGINT", onInterrupt);
+      signalSource?.removeListener?.("SIGTERM", onInterrupt);
+      onInterrupt = null;
+    }
+    if (cursorHidden) {
+      stream.write(`${CLEAR_LINE}${SHOW_CURSOR}`);
+      cursorHidden = false;
+    }
+  }
+
+  return {
+    /** 開始動畫；非互動模式只印一行起手句。 */
+    start() {
+      if (finished) return;
+      if (!interactive) {
+        stream.write(`${currentLabel}…\n`);
+        lastPlainAt = now();
+        return;
+      }
+      stream.write(HIDE_CURSOR);
+      cursorHidden = true;
+      // Node 對 SIGINT 的預設處置是直接終止，不會發 'exit'——沒有這個接管，
+      // 下載中按 Ctrl-C 就會把使用者的終端機留在「游標消失」的狀態。
+      onInterrupt = (signal) => {
+        stop();
+        exitImpl(signal === "SIGTERM" ? 143 : 130);
+      };
+      signalSource?.once?.("SIGINT", onInterrupt);
+      signalSource?.once?.("SIGTERM", onInterrupt);
+      paintLine();
+      timer = setIntervalImpl(tick, SPINNER_INTERVAL_MS);
+      timer?.unref?.();
+    },
+    update({ loaded: nextLoaded, total: nextTotal } = {}) {
+      if (finished) return;
+      if (Number.isFinite(nextLoaded)) loaded = nextLoaded;
+      if (Number.isFinite(nextTotal) && nextTotal > 0) total = nextTotal;
+      if (!interactive) maybePlainLine(false);
+    },
+    /**
+     * 換到下一個階段。`indeterminate` 用在沒有位元組可數的步驟（解壓、提交）：
+     * 那時只轉 spinner，不要擺一根永遠停在 100% 的進度列。
+     */
+    setLabel(next, options = {}) {
+      if (finished) return;
+      currentLabel = next;
+      indeterminate = Boolean(options.indeterminate);
+      if (indeterminate) {
+        loaded = 0;
+        total = null;
+      }
+      if (interactive) paintLine();
+      else stream.write(`${next}…\n`);
+    },
+    /** 重試時下載會從頭開始，計數器與速率視窗都要跟著歸零。 */
+    reset() {
+      loaded = 0;
+      windowStart = now();
+      lastPlainRatio = -1;
+    },
+    done(message) {
+      stop();
+      const mark = paint(color, "32", "✔");
+      stream.write(interactive ? `${CLEAR_LINE}${mark} ${message}\n` : `${message}\n`);
+    },
+    fail(message) {
+      stop();
+      const mark = paint(color, "31", "✖");
+      stream.write(interactive ? `${CLEAR_LINE}${mark} ${message}\n` : `${message}\n`);
+    },
+    stop,
+  };
+}
