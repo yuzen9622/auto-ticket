@@ -23,7 +23,7 @@ const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..")
 const MANIFEST_PATH = resolve(REPO_ROOT, "packages/cli/runtime-manifest.json")
 const PACKAGE_JSON_PATH = resolve(REPO_ROOT, "packages/cli/package.json")
 
-export const TARGETS = ["darwin-arm64", "darwin-x64", "win32-x64"]
+export const TARGETS = ["darwin-arm64", "win32-x64"]
 export const MANIFEST_SCHEMA = 1
 
 export function assetName(target, version) {

@@ -10,7 +10,7 @@ npm CLI（`packages/cli/`）負責下載、驗 sha256、解壓到 `~/.auto-ticke
 | --- | --- |
 | `constraints.txt` | 需要人工釘死的版本，目前只有 `onnxruntime==1.23.2` |
 | `requirements.in` | 來源清單，逐條對應 `pyproject.toml` 的 `[project].dependencies` |
-| `requirements-<target>.txt` | `uv pip compile` 的鎖定產物，**進版控** |
+| `requirements-<target>.txt` | `uv pip compile --only-binary=:all:` 的鎖定產物，**進版控** |
 | `build_runtime.py` | 組裝目錄、斷言 Next 產物、算 sha256、打包 |
 | `migrate_db.py` | 用 `sqlite3.Connection.backup()` 做一致性 DB 複製，由 CLI 呼叫 |
 | `smoke_ocr.py` | OCR 實機驗收，三平台的發版硬門檻 |
@@ -21,13 +21,11 @@ npm CLI（`packages/cli/`）負責下載、驗 sha256、解壓到 `~/.auto-ticke
 1.30 更只剩 arm64。解析器在 Intel Mac 上會自己挑到沒有 wheel 的版本，接著掉進
 sdist 編譯——不是失敗，就是產出一個裝得起來、跑起來才炸的 runtime。
 
-1.23.2 是唯一同時提供 `macosx_13_0_arm64` / `macosx_13_0_x86_64` / `win_amd64`（cp312）
-的版本，所以三個目標平台共用它，也因此**最低支援 macOS 13 Ventura**。
+1.23.2 的 wheel 標的是 `macosx_13_0_*` 與 `win_amd64`（cp312），兩個目標平台共用
+它，也因此**最低支援 macOS 13 Ventura**。釘死它是為了讓兩個平台的推論行為一致，
+而不是讓解析器各挑各的。
 
-`pyproject.toml` 另有一條同義的 marker 約束作為原始碼層防呆，但它只對外部解析器
-（例如有人直接 `pip install`）有效；dev 的 `uv.lock` 靠 `[tool.uv].environments`
-把 Intel Mac 排除在通用解析之外，否則那條上界會把 arm64 dev 機（CPython 3.14）
-一起拖到裝不起來的版本。
+（Intel Mac 首版不支援，理由是 `cryptography` 而不是 ORT——見 `docs/INSTALL.md`。）
 
 ## 重新產生鎖定檔
 
@@ -43,13 +41,6 @@ uv pip compile packaging/runtime/requirements.in \
   --python-version 3.12 \
   --python-platform aarch64-apple-darwin \
   -o packaging/runtime/requirements-darwin-arm64.txt
-
-uv pip compile packaging/runtime/requirements.in \
-  -c packaging/runtime/constraints.txt \
-  --only-binary=:all: \
-  --python-version 3.12 \
-  --python-platform x86_64-apple-darwin \
-  -o packaging/runtime/requirements-darwin-x64.txt
 
 uv pip compile packaging/runtime/requirements.in \
   -c packaging/runtime/constraints.txt \

@@ -54,7 +54,7 @@ export class CliError extends Error {
 
 /**
  * 依 process.platform / process.arch 解析目標三元組。
- * Rosetta 下的 x64 Node 不視為 darwin-x64：那是轉譯執行，時序特性失真，
+ * Rosetta 下的 x64 Node 不當成原生執行：那是轉譯，時序特性失真，
  * 必須明確引導使用者換原生 arm64 Node，而不是默默下載 x64 runtime 將就。
  */
 export function resolveTarget({
@@ -65,6 +65,8 @@ export function resolveTarget({
   if (platform === "darwin") {
     if (arch === "arm64") return "darwin-arm64";
     if (arch === "x64") {
+      // Apple Silicon 上跑 x64 Node（Rosetta）與真的 Intel Mac 長得一模一樣，
+      // 但前者的機器其實是支援的——值得分開講，否則使用者會以為自己的 Mac 不能用。
       if (isRunningUnderRosetta(sysctlImpl)) {
         throw new CliError(
           "UNSUPPORTED_PLATFORM",
@@ -73,13 +75,17 @@ export function resolveTarget({
             "而不是繼續在 x64 runtime 上運作（會讓瀏覽器自動化與 OCR 的時序特性失真）。",
         );
       }
-      return "darwin-x64";
+      throw new CliError(
+        "UNSUPPORTED_PLATFORM",
+        "首版不支援 Intel Mac：憑證加密用的 cryptography 自 49.0.0 起不再發行 " +
+          "macOS x86_64 wheel，無法為這個平台組出可用的 runtime。",
+      );
     }
   }
   if (platform === "win32" && arch === "x64") return "win32-x64";
   throw new CliError(
     "UNSUPPORTED_PLATFORM",
-    `首版僅支援 macOS(Apple Silicon/Intel) 與 Windows x64，偵測到 ${platform}/${arch}。`,
+    `首版僅支援 macOS(Apple Silicon) 與 Windows x64，偵測到 ${platform}/${arch}。`,
   );
 }
 

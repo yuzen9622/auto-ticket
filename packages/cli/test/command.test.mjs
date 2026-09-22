@@ -21,10 +21,18 @@ describe("resolveTarget", () => {
     expect(resolveTarget({ platform: "darwin", arch: "arm64" })).toBe("darwin-arm64");
   });
 
-  it("darwin/x64（非 Rosetta）→ darwin-x64", () => {
-    expect(
-      resolveTarget({ platform: "darwin", arch: "x64", sysctlImpl: () => "0" }),
-    ).toBe("darwin-x64");
+  it("darwin/x64（非 Rosetta，真 Intel Mac）→ CliError code=2 並說明原因", () => {
+    const err = (() => {
+      try {
+        resolveTarget({ platform: "darwin", arch: "x64", sysctlImpl: () => "0" });
+        return null;
+      } catch (e) {
+        return e;
+      }
+    })();
+    expect(err).not.toBeNull();
+    expect(err.exitCode).toBe(ExitCode.UNSUPPORTED_PLATFORM);
+    expect(err.message).toContain("Intel Mac");
   });
 
   it("win32/x64 → win32-x64", () => {
@@ -45,7 +53,7 @@ describe("resolveTarget", () => {
     expect(() => resolveTarget({ platform: "win32", arch: "arm64" })).toThrow(CliError);
   });
 
-  it("Rosetta 偵測到時給出原生 Node 指引，不回傳 darwin-x64", () => {
+  it("Rosetta 偵測到時給出原生 Node 指引，而不是「不支援 Intel Mac」", () => {
     try {
       resolveTarget({ platform: "darwin", arch: "x64", sysctlImpl: () => "1\n" });
       expect.unreachable("應該要拋錯");

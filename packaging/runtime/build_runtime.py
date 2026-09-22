@@ -46,7 +46,6 @@ WEB_WS_BASE = "ws://127.0.0.1:8000"
 
 TARGETS: dict[str, dict[str, str]] = {
     "darwin-arm64": {"uv_platform": "aarch64-apple-darwin", "python_exe": "bin/python3"},
-    "darwin-x64": {"uv_platform": "x86_64-apple-darwin", "python_exe": "bin/python3"},
     "win32-x64": {"uv_platform": "x86_64-pc-windows-msvc", "python_exe": "python.exe"},
 }
 

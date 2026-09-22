@@ -12,13 +12,21 @@ npx @yuzen9622/auto-ticket
 | 平台 | 支援 |
 | --- | --- |
 | macOS 13 Ventura 以上，Apple Silicon | ✅ |
-| macOS 13 Ventura 以上，Intel | ✅ |
+| macOS Intel | ❌ 首版不支援（見下） |
 | Windows 10 1803 以上，x64 | ✅ |
 | Linux | ❌ 首版不支援 |
 | Windows on ARM | ❌ 首版不支援 |
 
-macOS 的下界是 13，因為 OCR 依賴的 `onnxruntime` 唯一同時涵蓋三個目標平台的版本
-（1.23.2）其 wheel 標的就是 `macosx_13_0`。
+macOS 的下界是 13，因為 OCR 依賴的 `onnxruntime` 1.23.2 的 wheel 標的是 `macosx_13_0`。
+
+**為什麼不支援 Intel Mac**：憑證加密用的 `cryptography` 自 49.0.0 起不再發行涵蓋
+x86_64 的 macOS wheel（只剩 `macosx_11_0_arm64`），最後一個有的是 48.0.1。要支援
+Intel Mac 就得讓那台機器的加密庫停在一個更舊的版本，我們不願意在保管你帳密與
+信用卡資料的那一層做這種妥協。在 Intel Mac 上執行會得到明確的錯誤訊息，不會裝到
+一半才失敗。
+
+> 在 Apple Silicon 上用 Rosetta 跑 x64 版 Node 會長得跟 Intel Mac 一樣。CLI 會分辨
+> 這兩者，並提示你改裝原生 arm64 的 Node——你的機器是支援的。
 
 ## 前置需求
 

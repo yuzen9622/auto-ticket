@@ -50,16 +50,16 @@ CLI 啟動時會斷言 `runtime-manifest.json` 的 `version` 等於 `package.jso
 | target | runner |
 | --- | --- |
 | `darwin-arm64` | `macos-14` |
-| `darwin-x64` | `macos-15-intel` |
 | `win32-x64` | `windows-2022` |
 
-`macos-15-intel` 若在此帳號不可用，改成 `macos-13` 並**在這裡記錄實際使用的 runner**。
-
-> 實際使用中的 runner：（首次發版時填寫）
+**`darwin-x64`（Intel Mac）首版不發**：`cryptography` 自 49.0.0 起不再提供涵蓋
+x86_64 的 macOS wheel，最後一個有的是 48.0.1。要支援它就得讓 Intel 使用者的加密庫
+停在更舊的版本，這在保管憑證的那一層不值得。理由寫在 `docs/INSTALL.md`，
+`resolveTarget` 會給出具名錯誤（結束碼 2）。
 
 跨平台建置不可行：wheel 可以用 `--python-platform` 解析，但可重定位的 CPython
-必須是該平台自己的，所以三個 target 各開一個 runner。Next standalone 產物與平台
-無關，但三個 job 各自 build 一次（約 +2 分鐘/job）換取零跨 job 耦合。
+必須是該平台自己的，所以兩個 target 各開一個 runner。Next standalone 產物與平台
+無關，但兩個 job 各自 build 一次換取零跨 job 耦合。
 
 ## 發版鐵律
 
@@ -113,8 +113,7 @@ import 失敗是這條鏈最常見的失敗形態，只有真的推論一次才�
 | P4 | Settings → Actions → Workflow permissions 設為 **Read and write** | 上傳 release asset |
 | P5 | 建立／確認 npm 帳號並啟用 2FA，確保 scope `@yuzen9622` 可用 | npm publish |
 | P6 | npm → Access Tokens → 建 **Granular Access Token**（僅 `@yuzen9622/auto-ticket` 的 read+write），存為 repo secret `NPM_TOKEN` | npm publish。勿用 classic token |
-| P7 | 確認 `macos-15-intel` runner 標籤可用 | `darwin-x64` 建置 |
-| P8 | `main` 設分支保護，要求 `ci` 與 `commit-hygiene` 通過 | 建議，非阻擋 |
+| P7 | `main` 設分支保護，要求 `ci` 與 `commit-hygiene` 通過 | 建議，非阻擋 |
 
 **明確不需要**：Apple Developer Program 帳號、codesign 憑證、notarization 憑證。
 首版不做簽章與公證，macOS 使用者以「系統設定 → 隱私權與安全性 → 仍要打開」手動放行。

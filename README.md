@@ -23,8 +23,8 @@ npx @yuzen9622/auto-ticket
 前端固定 `127.0.0.1:3000`，啟動後開 <http://127.0.0.1:3000>；首次請先到 `/settings`
 設定憑證。
 
-需要 **Node.js ≥ 20.10** 與 **Google Chrome**；支援 macOS 13 以上（Apple Silicon /
-Intel）與 Windows 10 1803 以上 x64，首版不支援 Linux。完整前置需求、埠位衝突處置與
+需要 **Node.js ≥ 20.10** 與 **Google Chrome**；支援 macOS 13 以上（Apple Silicon）
+與 Windows 10 1803 以上 x64。首版不支援 Linux 與 Intel Mac。完整前置需求、埠位衝突處置與
 macOS Gatekeeper 手動放行步驟見 [docs/INSTALL.md](docs/INSTALL.md)。
 
 既有的 `data/` 會在首次啟動時**複製**到 `~/.auto-ticket/data/`，來源永不更動
