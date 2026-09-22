@@ -1,0 +1,9 @@
+# Windows 的 git 預設 core.autocrlf=true，checkout 會把所有文字檔換成 CRLF。
+# 這個 repo 的 CI 要在 windows-2022 上跑 JS 測試、也要在那裡組 runtime artifact，
+# 而 inline snapshot、`split("\n")` 與打包進 tar 的腳本都假設 LF。統一釘死。
+* text=auto eol=lf
+
+*.png binary
+*.onnx binary
+*.tar.gz binary
+*.db binary
