@@ -6,13 +6,16 @@ fixture 是從實際頁面剪下來的，不是照想像寫的：先前那份手
 
 from __future__ import annotations
 
+from datetime import datetime
 from pathlib import Path
 
 import httpx
 import pytest
 
 from adapters.ticketing.tixcraft.pages import (
+    ActivityListing,
     SessionSaleState,
+    extract_sale_start,
     has_game_list,
     parse_activity_detail,
     parse_game_list,
@@ -249,3 +252,65 @@ def test_tixcraft_buyable_session_is_not_masked_by_the_sold_out_label() -> None:
 def test_tixcraft_no_session_row_is_not_a_session() -> None:
     assert parse_game_list(load_fixture("tixcraft_game_list_no_session.html")) == []
     assert has_game_list(load_fixture("tixcraft_game_list_no_session.html")) is True
+
+
+SALE_START_CASES = [
+    # 使用者回報的那一場：「🎫售票時間： 2026/09/27 (日) 12PM (Local Time)」。
+    # 12 小時制又沒寫分鐘，只認 `HH:MM` 的話整行都讀不到。
+    ("tixcraft_intro_sale_time_12pm.html", "2026-09-27T12:00+08:00"),
+    # 預售寫在正式開賣前面，挑錯階段會早三天，而且那一輪要卡別、要序號。
+    ("tixcraft_intro_sale_time_presale_then_public.html", "2026-09-14T10:00+08:00"),
+]
+
+
+@pytest.mark.parametrize(("fixture", "expected"), SALE_START_CASES)
+def test_tixcraft_sale_start_is_read_from_the_intro_announcement(
+    fixture: str, expected: str
+) -> None:
+    sale_start_at, evidence = extract_sale_start(load_fixture(fixture))
+    assert sale_start_at == datetime.fromisoformat(expected)
+    assert evidence is not None
+
+
+@pytest.mark.parametrize(
+    ("fixture", "why"),
+    [
+        # 開賣延期、新日期還沒公告，但舊的「售票時間：2026/09/20 12:00 PM」還留在頁面上。
+        # 照抄會把搶票排在一個不會開賣的時刻。
+        ("tixcraft_intro_sale_time_postponed.html", "延期且尚未公告新日期"),
+        # 每個階段都寫「時間：待確認」。
+        ("tixcraft_intro_sale_time_pending.html", "主辦還沒定出時間"),
+    ],
+)
+def test_tixcraft_sale_start_is_left_empty_when_it_is_not_actually_announced(
+    fixture: str, why: str
+) -> None:
+    assert extract_sale_start(load_fixture(fixture)) == (None, None), why
+
+
+def test_tixcraft_sale_start_ignores_the_show_time() -> None:
+    """演出日期跟售票時間長得一模一樣，不能靠格式分辨，只能靠標籤。"""
+    html = """
+    <div id="intro">
+      <p>■ 演出日期： 2026/11/08 (日) 18:00</p>
+      <p>■ 售票時間： 2026/09/27 (日) 12:00</p>
+    </div>
+    """
+    sale_start_at, _ = extract_sale_start(html)
+    assert sale_start_at == datetime.fromisoformat("2026-09-27T12:00+08:00")
+
+
+def test_tixcraft_sale_start_lands_on_the_event_and_keeps_its_source() -> None:
+    detail = parse_activity_detail(load_fixture("tixcraft_intro_sale_time_12pm.html"))
+    # 節目介紹頁的標題在 `#intro` 之外，fixture 只留了介紹段落，標題照實際流程由
+    # 活動列表補上。
+    listing = ActivityListing(
+        slug="26_82major",
+        title="82MAJOR ＜82CLUB ： OUT OF CONTROL＞ in TAIPEI",
+        url="https://tixcraft.com/activity/detail/26_82major",
+    )
+    event = build_event("26_82major", listing=listing, detail=detail)
+    assert event.sale_start_at == datetime.fromisoformat("2026-09-27T12:00+08:00")
+    # 這個時間是從主辦寫的公告讀來的，不是拓元的欄位；出處要留著才查得回去。
+    assert event.raw_metadata["sale_start_source"] == "tixcraft_intro_text"
+    assert "2026/09/27" in event.raw_metadata["sale_start_text"]

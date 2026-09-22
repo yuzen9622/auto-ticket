@@ -23,6 +23,7 @@ import {
   type DateRange,
 } from "@/components/ui/date-range-picker"
 import { useDebounce } from "@/hooks/use-debounce"
+import { useEventStatuses } from "@/hooks/use-event-statuses"
 import { ApiError } from "@/lib/api/client"
 import { searchEvents } from "@/lib/api/events"
 import { useEventStatusLabel } from "@/lib/i18n/labels"
@@ -164,9 +165,36 @@ export function EventSearch() {
     return t("unknownError")
   }
 
+  // 搜尋只保證活動本身出得來；票況是後端在背景一場一場確認的，確認到哪張就把
+  // 哪張卡片換掉。這樣使用者立刻看得到活動，不必為了票況等上十幾秒。
+  const searchedEvents = results.data?.results
+  const eventIds = React.useMemo(
+    () => (searchedEvents ?? []).map((ev) => ev.id),
+    [searchedEvents]
+  )
+  const { statuses: statusById, isSettled: statusesSettled } =
+    useEventStatuses(eventIds)
+
+  const events = React.useMemo(
+    () =>
+      (searchedEvents ?? []).map((ev) => {
+        const resolved = statusById.get(ev.id)
+        if (!resolved) return ev
+        return {
+          ...ev,
+          status: resolved.status,
+          sale_start_at: resolved.sale_start_at ?? ev.sale_start_at,
+          sale_end_at: resolved.sale_end_at ?? ev.sale_end_at,
+          event_start_at: resolved.event_start_at ?? ev.event_start_at,
+          detail_loaded: resolved.detail_loaded,
+        }
+      }),
+    [searchedEvents, statusById]
+  )
+
   const unclosedEvents = React.useMemo(
-    () => (results.data?.results ?? []).filter((ev) => ev.status !== "CLOSED"),
-    [results.data?.results]
+    () => events.filter((ev) => ev.status !== "CLOSED"),
+    [events]
   )
 
   const filteredEvents = React.useMemo(() => {
@@ -346,7 +374,11 @@ export function EventSearch() {
             filteredEvents.length > 0 ? (
               <ul className="grid min-w-0 grid-cols-1 gap-3 md:grid-cols-2">
                 {filteredEvents.map((event) => (
-                  <EventCard key={event.id} event={event} />
+                  <EventCard
+                    key={event.id}
+                    event={event}
+                    awaitingStatus={!statusesSettled}
+                  />
                 ))}
               </ul>
             ) : (

@@ -91,7 +91,7 @@
     "saleEnd": "截止時間",
     "salePeriod": "販售期間",
     "status": "活動狀態",
-    "statusPendingLoad": "票況將於選擇活動後確認",
+    "statusPendingLoad": "票況確認中…",
     "description": "活動描述",
     "noDescription": "此活動沒有提供描述。",
     "unknownOrganizer": "未提供主辦單位",

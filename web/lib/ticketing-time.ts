@@ -26,8 +26,11 @@ export function msToLocalInput(ms: number): string {
  * 活動現在就在賣嗎？
  *
  * 在賣就沒有「搶票時間」這回事：任務建立後直接進登記頁下單，不走預約開賣流程。
- * 判斷同時看狀態與開賣時間——狀態還停在 `ANNOUNCED` 但開賣時間已過的活動，
- * 一樣沒有東西可等。
+ *
+ * 狀態說得出話時就聽狀態，不拿開賣時間去推翻它。三個平台的狀態都是從當下的頁面
+ * 或 API 算出來的（拓元看場次表、KKTIX 看票種 badge、ibon 比對伺服器時間），不會
+ * 落後；反過來開賣時間有時是從主辦寫的公告文字讀來的，可能是上一輪的舊日期。
+ * 只有狀態確實不知道時，才退回用開賣時間推。
  */
 export function isSellingNow(
   status: string | null | undefined,
@@ -35,6 +38,9 @@ export function isSellingNow(
   now: number
 ): boolean {
   if (status === "ON_SALE") return true
+  if (status === "ANNOUNCED" || status === "SOLD_OUT" || status === "CLOSED") {
+    return false
+  }
   const sale = parseServerDate(saleStartAt)?.getTime()
   return sale !== undefined && sale <= now
 }

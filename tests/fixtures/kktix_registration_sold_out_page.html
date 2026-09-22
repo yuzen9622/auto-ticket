@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head><meta charset="UTF-8"><title>KKTIX 購票登記頁</title></head>
+<body>
+<!-- 2026-09-22 由真瀏覽器抓 https://kktix.com/events/.../registrations/new 的票種區塊原樣剪下。
+     唯一的票種「加購福利券」寫著已售完，而且整個張數輸入框都沒有渲染出來。 -->
+<div id="registrationsNewApp"><div class="ticket-list">
+<div class="ticket-unit ng-scope" ng-class="{active: ticketModel.quantity != 0}" ng-controller="TicketCtrl" ng-init="index = $index" ng-repeat="ticket in tickets | orderBy:'position'">
+<div class="display-table" id="ticket_1055055">
+<div class="display-table-row">
+<span class="ticket-name ng-binding">
+              加購福利券
+              <!-- ngIf: unitNotice -->
+<!-- ngIf: !!ticket.labelsText -->
+<div class="ticket-extra-info">
+<!-- ngIf: ticket.for_online_event -->
+</div>
+</span>
+<!-- ngIf: showSeatInfo() -->
+<span class="ticket-price">
+<!-- ngIf: ticket.price --><span class="ng-scope" ng-if="ticket.price">
+<!-- ngIf: ticket.price.cents > 0 --><span class="ng-binding ng-scope" ng-if="ticket.price.cents &gt; 0">
+                TWD$1,200
+                <span class="mobile-fee ng-binding" ng-bind-html="ticket.booking_fee_cents | feeAnnotation : ticket.price.currency"></span>
+</span><!-- end ngIf: ticket.price.cents > 0 -->
+<!-- ngIf: ticket.price.cents ==  0 -->
+</span><!-- end ngIf: ticket.price -->
+</span>
+<!-- ngIf: chargeBookingFee -->
+<!-- ngIf: purchasableAndSelectable -->
+<!-- ngIf: !purchasableAndSelectable --><span class="ticket-quantity ng-binding ng-scope" ng-if="!purchasableAndSelectable">
+            已售完 <!-- ngIf: reasonDesc -->
+</span><!-- end ngIf: !purchasableAndSelectable -->
+</div>
+<!-- ngRepeat: addOn in ticket.add_ons -->
+</div>
+<!-- <div class="message" ng-if="showKKTIXonly" ng-bind-html="showKKTIXonlyMsg"></div> -->
+<!-- ngIf: hasOrderStageQualifications && ticketModel.quantity > 0 -->
+<!-- ngRepeat: code in ticketModel.invitationCodes track by $index -->
+</div>
+</div></div>
+</body>
+</html>

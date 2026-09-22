@@ -6,6 +6,7 @@ import httpx
 import pytest
 
 from api.main import create_app
+from api.routers.events import drain_background_tasks
 from api.settings import ApiSettings
 from storage.database import Database
 from tests.netguard import netguard_autouse  # noqa: F401
@@ -117,8 +118,17 @@ async def test_search_events_resolves_scope_on_the_backend(
         assert providers[0]["id"] == "kktix"
         assert providers[0]["name"] == "KKTIX"
         assert providers[0]["event_url"] == top["canonical_url"]
-        assert top["detail_loaded"] is True
-        assert top["status"] != "UNKNOWN"
+
+        # 搜尋不等狀態算完。狀態由背景補，再透過 /statuses 交給前端。
+        await drain_background_tasks()
+        statuses = await client.get(
+            "/api/v1/events/statuses", params={"ids": top["id"]}
+        )
+        assert statuses.status_code == 200
+        resolved = statuses.json()["results"][0]
+        assert resolved["id"] == top["id"]
+        assert resolved["status"] != "UNKNOWN"
+        assert resolved["detail_loaded"] is True
 
 
 async def test_search_events_accepts_event_url(app_with_backend_scope) -> None:
@@ -242,9 +252,14 @@ async def test_search_events_via_global_atom_feed_when_no_scope(db: Database) ->
         assert "策略破框" in top["title"]
         assert top["organizer"] == "EMBA雜誌"
         assert top["canonical_url"] == "https://embamagazine.kktix.cc/events/emba20260918"
-        # 關鍵驗證：票況已即時確認，不再是未確認（detail_loaded 為 True）！
-        assert top["detail_loaded"] is True
-        assert top["status"] == "ON_SALE"
+
+        # 票況由背景補齊後才確定；搜尋當下只保證活動本身出得來。
+        await drain_background_tasks()
+        resolved = (
+            await client.get("/api/v1/events/statuses", params={"ids": top["id"]})
+        ).json()["results"][0]
+        assert resolved["detail_loaded"] is True
+        assert resolved["status"] == "ON_SALE"
 
 
 CLOSED_HTML = """<!DOCTYPE html>
@@ -299,10 +314,23 @@ async def test_search_events_filters_out_closed_events(db: Database) -> None:
         transport=httpx.ASGITransport(app=app),
         base_url="http://test",
     ) as client:
-        # 1. 透過關鍵字搜尋，已結束活動被過濾，results 應為空
+        # 1. 透過關鍵字搜尋：第一次還不知道它已結束（狀態由背景補），補完之後
+        #    /statuses 會說 CLOSED，前端據此把卡片收起來；再搜一次也不會再出現。
         resp = await client.get("/api/v1/events/search", params={"q": "已結束"})
         assert resp.status_code == 200
-        assert resp.json()["results"] == []
+        first = resp.json()["results"]
+        assert [ev["title"] for ev in first] == ["已結束的測試活動"]
+
+        await drain_background_tasks()
+        resolved = (
+            await client.get(
+                "/api/v1/events/statuses", params={"ids": first[0]["id"]}
+            )
+        ).json()["results"][0]
+        assert resolved["status"] == "CLOSED"
+
+        again = await client.get("/api/v1/events/search", params={"q": "已結束"})
+        assert again.json()["results"] == []
 
         # 2. 透過直接網址搜尋已結束活動，results 亦應為空
         direct_resp = await client.get(
@@ -548,3 +576,131 @@ async def test_search_does_not_wipe_stored_event_detail(db: Database) -> None:
     assert stored is not None
     assert stored.raw_metadata["description"] == "由瀏覽器補回來的節目介紹"
     assert stored.raw_metadata["needs_browser_detail"] is False
+
+
+async def test_search_returns_before_statuses_are_resolved(db: Database) -> None:
+    """搜尋不等票況。
+
+    上游詳情頁刻意卡住：搜尋仍要立刻把活動交出來，票況之後由 /statuses 補上。
+    """
+    import asyncio
+
+    atom_xml = """<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <entry>
+    <title>慢速詳情的測試活動</title>
+    <link rel="alternate" type="text/html" href="https://slow.kktix.cc/events/slow-event"/>
+    <author><name>測試主辦</name></author>
+    <published>2026-01-01T00:00:00+08:00</published>
+    <summary>詳情頁會卡住</summary>
+  </entry>
+</feed>
+"""
+    detail_entered = asyncio.Event()
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "kktix.com" and request.url.path == "/events.atom":
+            return httpx.Response(200, text=atom_xml)
+        if request.url.host == "slow.kktix.cc":
+            detail_entered.set()
+            await asyncio.sleep(3)
+            return httpx.Response(200, text=CLOSED_HTML)
+        return httpx.Response(404)
+
+    mock_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    settings = ApiSettings(db_path=db.db_path, resolver_orgs=())
+    app = create_app(settings, db=db, http_client=mock_client)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://test",
+    ) as client:
+        started = asyncio.get_running_loop().time()
+        resp = await client.get("/api/v1/events/search", params={"q": "慢速"})
+        elapsed = asyncio.get_running_loop().time() - started
+
+        assert resp.status_code == 200
+        results = resp.json()["results"]
+        target = next(ev for ev in results if ev["title"] == "慢速詳情的測試活動")
+        # 詳情還卡在上游，搜尋已經回來了。
+        assert elapsed < 1.5
+        assert target["status"] == "UNKNOWN"
+
+        statuses = await client.get(
+            "/api/v1/events/statuses", params={"ids": target["id"]}
+        )
+        assert statuses.json()["results"][0]["checked_at"] is None
+
+        await drain_background_tasks()
+        assert detail_entered.is_set()
+
+
+async def test_event_statuses_rejects_an_empty_id_list(db: Database) -> None:
+    app = create_app(ApiSettings(db_path=db.db_path, resolver_orgs=()), db=db)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://test",
+    ) as client:
+        resp = await client.get("/api/v1/events/statuses", params={"ids": " , "})
+        assert resp.status_code == 400
+
+
+async def test_search_queues_one_batched_browser_job(db: Database) -> None:
+    """要瀏覽器才看得到的票況排成**一張** job，帶一整批活動。
+
+    一場一張的話，Worker 對同一個 profile 是一次領一張，一頁搜尋結果會排成十幾輪。
+    """
+    from broker.broker import SqliteTaskBroker
+    from broker.jobs import JobKind
+    from broker.schema import create_broker_schema
+
+    atom_xml = """<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <entry>
+    <title>批次測試活動 A</title>
+    <link rel="alternate" type="text/html" href="https://batch.kktix.cc/events/batch-a"/>
+    <author><name>測試主辦</name></author>
+    <published>2026-01-01T00:00:00+08:00</published>
+  </entry>
+  <entry>
+    <title>批次測試活動 B</title>
+    <link rel="alternate" type="text/html" href="https://batch.kktix.cc/events/batch-b"/>
+    <author><name>測試主辦</name></author>
+    <published>2026-01-01T00:00:00+08:00</published>
+  </entry>
+</feed>
+"""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "kktix.com" and request.url.path == "/events.atom":
+            return httpx.Response(200, text=atom_xml)
+        if request.url.host == "batch.kktix.cc":
+            return httpx.Response(200, text=CLOSED_HTML)
+        return httpx.Response(404)
+
+    await create_broker_schema(db.engine)
+    broker = SqliteTaskBroker(db)
+    mock_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    settings = ApiSettings(db_path=db.db_path, resolver_orgs=())
+    app = create_app(settings, db=db, broker=broker, http_client=mock_client)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://test",
+    ) as client:
+        resp = await client.get("/api/v1/events/search", params={"q": "批次測試"})
+        assert resp.status_code == 200
+        searched = {ev["id"] for ev in resp.json()["results"]}
+        assert len(searched) >= 2
+
+    job = await broker.claim(worker_id="test-worker")
+    assert job is not None
+    assert job.kind is JobKind.EVENT_HYDRATE
+    rows = job.payload["events"]
+    assert {row["event_id"] for row in rows} == searched
+    assert all(row["canonical_url"] and row["platform"] for row in rows)
+
+    # 只有這一張；不是一場一張。
+    assert await broker.claim(worker_id="test-worker-2") is None
+
+    await drain_background_tasks()

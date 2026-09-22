@@ -17,8 +17,14 @@ vi.mock("next/navigation", () => ({
   useSearchParams: () => nav.params,
 }))
 
-const api = vi.hoisted(() => ({ searchEvents: vi.fn() }))
-vi.mock("@/lib/api/events", () => ({ searchEvents: api.searchEvents }))
+const api = vi.hoisted(() => ({
+  searchEvents: vi.fn(),
+  getEventStatuses: vi.fn(),
+}))
+vi.mock("@/lib/api/events", () => ({
+  searchEvents: api.searchEvents,
+  getEventStatuses: api.getEventStatuses,
+}))
 
 import { ApiError } from "@/lib/api/client"
 import { EventSearch } from "@/components/events/event-search"
@@ -50,6 +56,9 @@ beforeEach(() => {
   nav.replace.mockClear()
   nav.params = new URLSearchParams()
   api.searchEvents.mockReset()
+  api.getEventStatuses.mockReset()
+  // 票況是搜尋之後才非同步補的；預設當成還沒補到，卡片顯示搜尋回來的狀態。
+  api.getEventStatuses.mockResolvedValue({ results: [] })
 })
 
 describe("活動搜尋", () => {
@@ -152,7 +161,7 @@ describe("活動搜尋", () => {
     expect(screen.queryByText(result().canonical_url)).toBeNull()
   })
 
-  it("淺資料尚未確認票況時說明會在選擇後確認", async () => {
+  it("票況還沒確認完時放骨架動畫，不放代表票況的文字", async () => {
     nav.params = new URLSearchParams("q=五月天")
     api.searchEvents.mockResolvedValue({
       query: "五月天",
@@ -160,10 +169,99 @@ describe("活動搜尋", () => {
     })
 
     renderWithProviders(<EventSearch />)
-    expect(
-      await screen.findByText("票況將於選擇活動後確認")
-    ).toBeInTheDocument()
-    expect(screen.queryByText("狀態未確認")).toBeNull()
+    const card = (await screen.findByText("五月天 2026 諾亞方舟")).closest("li")
+    expect(card).not.toBeNull()
+
+    const statusCell = card!.querySelector("dd[aria-busy='true']")
+    expect(statusCell).not.toBeNull()
+    expect(statusCell!.querySelector("[data-slot='skeleton']")).not.toBeNull()
+
+    // 骨架期間不得出現任何看得到的票況字樣——那會被當成一種票況。
+    expect(card).not.toHaveTextContent("狀態未確認")
+    expect(card).not.toHaveTextContent("熱賣中")
+    expect(card).not.toHaveTextContent("尚未開賣")
+    expect(card).not.toHaveTextContent("已售罄")
+    // 讀螢幕的人還是要知道這一格在等資料。
+    expect(statusCell!.querySelector(".sr-only")).toHaveTextContent(
+      "票況確認中…"
+    )
+  })
+
+  it("票況確認完之後骨架換成真正的狀態文字", async () => {
+    nav.params = new URLSearchParams("q=五月天")
+    const shallow = result({ status: "UNKNOWN", detail_loaded: false })
+    api.searchEvents.mockResolvedValue({ query: "五月天", results: [shallow] })
+    api.getEventStatuses.mockResolvedValue({
+      results: [
+        {
+          id: shallow.id,
+          status: "ANNOUNCED",
+          sale_start_at: shallow.sale_start_at,
+          sale_end_at: null,
+          event_start_at: shallow.event_start_at,
+          detail_loaded: true,
+          checked_at: "2026-09-22T03:00:00Z",
+        },
+      ],
+    })
+
+    renderWithProviders(<EventSearch />)
+    const card = (await screen.findByText("五月天 2026 諾亞方舟")).closest("li")
+    await waitFor(() => expect(card).toHaveTextContent("尚未開賣"))
+    expect(card!.querySelector("[data-slot='skeleton']")).toBeNull()
+    expect(card!.querySelector("dd[aria-busy='true']")).toBeNull()
+  })
+
+  it("票況確認完之後卡片就地換成真正的狀態", async () => {
+    nav.params = new URLSearchParams("q=五月天")
+    const shallow = result({ status: "UNKNOWN", detail_loaded: false })
+    api.searchEvents.mockResolvedValue({ query: "五月天", results: [shallow] })
+    api.getEventStatuses.mockResolvedValue({
+      results: [
+        {
+          id: shallow.id,
+          status: "SOLD_OUT",
+          sale_start_at: shallow.sale_start_at,
+          sale_end_at: null,
+          event_start_at: shallow.event_start_at,
+          detail_loaded: true,
+          checked_at: "2026-09-22T03:00:00Z",
+        },
+      ],
+    })
+
+    renderWithProviders(<EventSearch />)
+    const card = (await screen.findByText("五月天 2026 諾亞方舟")).closest("li")
+    await waitFor(() => expect(card).toHaveTextContent("已售罄"))
+    // 一次問一整批，不是每張卡片各打一次。
+    expect(api.getEventStatuses).toHaveBeenCalledWith(
+      [shallow.id],
+      expect.anything()
+    )
+  })
+
+  it("票況說已結束的活動會從結果裡收起來", async () => {
+    nav.params = new URLSearchParams("q=五月天")
+    const shallow = result({ status: "UNKNOWN", detail_loaded: false })
+    api.searchEvents.mockResolvedValue({ query: "五月天", results: [shallow] })
+    api.getEventStatuses.mockResolvedValue({
+      results: [
+        {
+          id: shallow.id,
+          status: "CLOSED",
+          sale_start_at: null,
+          sale_end_at: null,
+          event_start_at: null,
+          detail_loaded: true,
+          checked_at: "2026-09-22T03:00:00Z",
+        },
+      ],
+    })
+
+    renderWithProviders(<EventSearch />)
+    await waitFor(() =>
+      expect(screen.queryByText("五月天 2026 諾亞方舟")).toBeNull()
+    )
   })
 
   it("同一場活動有多個平台時全部顯示", async () => {

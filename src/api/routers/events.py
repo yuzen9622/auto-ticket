@@ -24,6 +24,7 @@ from adapters.ticketing.kktix.resolver import (
 )
 from adapters.ticketing.kktix.selectors import KKTIX_EVENT_URL_RE
 from api.deps import get_db, get_resolver, get_settings
+from api.queries import get_event_status_rows
 from api.errors import (
     InvalidRequestError,
     NotFoundError,
@@ -35,6 +36,8 @@ from api.schemas.events import (
     EventOut,
     EventSearchResponse,
     EventSearchResultOut,
+    EventStatusesResponse,
+    EventStatusOut,
     ResolveEventRequest,
     ResolveEventResponse,
     TicketingProviderOut,
@@ -56,6 +59,8 @@ SEARCH_RESULT_LIMIT = 30
 #: 只補前幾筆的詳情，而且限制同時打上游的數量。
 SEARCH_HYDRATE_LIMIT = 12
 SEARCH_HYDRATE_CONCURRENCY = 4
+#: 一次最多問幾場活動的狀態；搜尋一頁也就這個量級。
+STATUS_QUERY_LIMIT = 60
 #: 已經排過瀏覽器補資料的活動與排定的時刻；避免每次搜尋都重排同一批 job。
 _hydration_requested: dict[str, float] = {}
 #: 售票狀態會變（開賣、售完），排過一次就永不再排等於把第一次的結果當永久答案。
@@ -432,61 +437,39 @@ async def search_events(
     ranked = sorted(scored.values(), key=lambda pair: (-pair[0], pair[1].title))
     top_events = [ev for _, ev in ranked[:limit]]
 
-    # 補詳情會逐一打上游，搜尋結果一長就變成三十個請求打同一個網域。只補使用者
-    # 第一眼會看到的前幾筆，而且一次只允許少量併發。
-    hydrate_gate = asyncio.Semaphore(SEARCH_HYDRATE_CONCURRENCY)
-
-    async def _hydrate(ev: Event, *, allowed: bool) -> Event:
-        if _is_detail_loaded(ev) or not allowed:
-            return ev
-        # 需要瀏覽器才打得開的平台，在搜尋階段再試一次 HTTP 也只是被同一道
-        # 人機驗證擋掉；留給使用者點進活動時由 Worker 補。
-        if (ev.raw_metadata or {}).get("needs_browser_detail"):
-            return ev
-        try:
-            async with hydrate_gate:
-                ev_resolver = build_resolver(ev.platform, client=client)
-                hydrated = await ev_resolver.fetch_event_metadata(ev.canonical_url)
-            merged_meta = {**(ev.raw_metadata or {}), **(hydrated.raw_metadata or {})}
-            return hydrated.model_copy(update={"raw_metadata": merged_meta})
-        except Exception:
-            return ev
-
-    hydrated_events = list(
-        await asyncio.gather(
-            *[
-                _hydrate(ev, allowed=index < SEARCH_HYDRATE_LIMIT)
-                for index, ev in enumerate(top_events)
-            ]
-        )
-    )
-
+    # 已經查過的活動把詳情與狀態接回來，畫面才不會每搜一次就退回「狀態未確認」。
     known_by_id = {ev.id: ev for ev in known}
-    hydrated_events = [_keep_stored_detail(ev, known_by_id.get(ev.id)) for ev in hydrated_events]
+    top_events = [_keep_stored_detail(ev, known_by_id.get(ev.id)) for ev in top_events]
 
-    if hydrated_events:
+    if top_events:
         try:
             async with db.session() as session:
                 repo = EventRepository(session)
-                for ev in hydrated_events:
+                for ev in top_events:
                     await repo.upsert_event(ev)
         except Exception as exc:
-            logger.warning("hydrated_event_upsert_failed", error=str(exc))
+            logger.warning("searched_event_upsert_failed", error=str(exc))
 
     active_events = [
         ev
-        for ev in hydrated_events
+        for ev in top_events
         if (ev.status.value if hasattr(ev.status, "value") else str(ev.status))
         != EventStatus.CLOSED.value
     ]
 
-    # 需要瀏覽器才補得到的活動，排一張背景 job 給 Worker；這一次的結果照舊先回，
-    # 下一次搜尋同一場就有活動說明了。不等它，搜尋不該為了描述卡住十幾秒。
+    # 狀態不在這裡算完。搜尋只負責把活動交出去，狀態交給兩條非同步的路去補，
+    # 前端再用 /statuses 把結果接回卡片上：
+    #
+    #   1. 純 HTTP 問得到的部分（KKTIX／ibon 的尚未開賣、販售中、已結束）由這個
+    #      行程自己在背景問，沒有 Worker 也能有狀態。
+    #   2. 要瀏覽器才看得到的部分（拓元的場次表、KKTIX／ibon 的售完）排一張 job
+    #      給 Worker，一整批一起處理。
+    pending = active_events[:SEARCH_HYDRATE_LIMIT]
+    _spawn(_hydrate_over_http(pending, db=db, client=client))
+
     broker = getattr(request.app.state, "broker", None)
     if broker is not None:
-        await _queue_browser_hydration(
-            active_events[:SEARCH_HYDRATE_LIMIT], broker=broker, settings=settings
-        )
+        await _queue_browser_hydration(pending, broker=broker, settings=settings)
 
     return EventSearchResponse(
         query=query,
@@ -494,37 +477,146 @@ async def search_events(
     )
 
 
+#: 背景工作要留著參考，否則事件迴圈可能在跑完之前就把 task 回收掉。
+_background_tasks: set[asyncio.Task[None]] = set()
+
+
+def _spawn(coro: Any) -> None:
+    task = asyncio.create_task(coro)
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
+
+
+async def drain_background_tasks(timeout: float = 30.0) -> None:
+    """等背景補資料跑完。給測試用，讓「非同步補齊」這件事可以被斷言。"""
+    while _background_tasks:
+        pending = list(_background_tasks)
+        done, _ = await asyncio.wait(pending, timeout=timeout)
+        if not done:
+            return
+
+
+def cancel_background_tasks() -> None:
+    """關閉服務時把還在跑的背景工作收掉，別讓它們對著已經關掉的資料庫寫入。"""
+    for task in list(_background_tasks):
+        task.cancel()
+    _background_tasks.clear()
+
+
+async def _hydrate_over_http(
+    events: list[Event], *, db: Database, client: Any
+) -> None:
+    """搜尋回應送出之後，才去問純 HTTP 問得到的活動詳情。
+
+    這一段不含瀏覽器（G32），所以拿不到拓元的場次表，也判不出 KKTIX／ibon 的售完；
+    那些由 Worker 的 job 補。放在背景是因為它會逐一打上游，擺在請求裡會讓搜尋
+    卡上好幾秒——使用者要的是先看到活動，狀態晚一點到沒關係。
+    """
+    gate = asyncio.Semaphore(SEARCH_HYDRATE_CONCURRENCY)
+
+    async def one(ev: Event) -> Event | None:
+        if (ev.raw_metadata or {}).get("needs_browser_detail"):
+            return None
+        try:
+            async with gate:
+                resolver = build_resolver(ev.platform, client=client)
+                hydrated = await resolver.fetch_event_metadata(ev.canonical_url)
+        except Exception:
+            return None
+        merged = {**(ev.raw_metadata or {}), **(hydrated.raw_metadata or {})}
+        return hydrated.model_copy(update={"raw_metadata": merged})
+
+    hydrated = [ev for ev in await asyncio.gather(*(one(ev) for ev in events)) if ev]
+    if not hydrated:
+        return
+    try:
+        async with db.session() as session:
+            repo = EventRepository(session)
+            for ev in hydrated:
+                await repo.upsert_event(ev)
+    except Exception as exc:  # noqa: BLE001 — 背景補資料失敗不該影響任何請求
+        logger.warning("background_hydrate_upsert_failed", error=str(exc))
+
+
+@router.get("/statuses", response_model=EventStatusesResponse)
+async def get_event_statuses(
+    ids: str = Query(min_length=1, description="以逗號分隔的活動 id"),
+    db: Database = Depends(get_db),
+) -> EventStatusesResponse:
+    """批次查售票狀態，讓搜尋結果的卡片可以逐筆把狀態補上。
+
+    只讀資料庫、不打上游：寫入的是背景工作與 Worker，這裡負責把結果交出去。
+    """
+    wanted = [part.strip() for part in ids.split(",") if part.strip()]
+    if not wanted:
+        raise InvalidRequestError("ids must not be empty")
+    wanted = wanted[:STATUS_QUERY_LIMIT]
+
+    rows = await get_event_status_rows(db, wanted)
+    return EventStatusesResponse(results=[_row_to_status(row) for row in rows])
+
+
+def _row_to_status(row: dict[str, Any]) -> EventStatusOut:
+    metadata = row.get("raw_metadata") or {}
+    return EventStatusOut(
+        id=row["id"],
+        status=row["status"],
+        sale_start_at=row.get("sale_start_at"),
+        sale_end_at=row.get("sale_end_at"),
+        event_start_at=row.get("event_start_at"),
+        detail_loaded=_metadata_detail_loaded(metadata),
+        checked_at=_iso_to_datetime(metadata.get("availability_checked_at")),
+    )
+
+
+def _metadata_detail_loaded(metadata: dict[str, Any]) -> bool:
+    if metadata.get("needs_browser_detail"):
+        return False
+    return bool(metadata.get("detail_source"))
+
+
 async def _queue_browser_hydration(
     events: list[Event], *, broker: SqliteTaskBroker, settings: ApiSettings
 ) -> None:
+    """把整批活動排成**一張** job 交給 Worker。
+
+    一場一張 job 的話，Worker 對同一個 profile 是一次領一張，十幾場就排成十幾輪；
+    合成一張之後 Worker 可以用同一個瀏覽器同時開幾個分頁跑完。
+
+    三個平台都要排：拓元的狀態只有場次頁看得出來，KKTIX 與 ibon 的售完也只在要
+    瀏覽器才打得開的購票頁上。
+    """
     now = time.monotonic()
+    rows: list[dict[str, Any]] = []
     for ev in events:
         platform = (
             ev.platform.value if hasattr(ev.platform, "value") else str(ev.platform)
         )
-        # 條件是平台而不是 `needs_browser_detail`：補完說明之後那個旗標會變成
-        # False，但售票狀態還是只有場次頁看得出來，而且它會變。只看旗標的話，
-        # 一場活動從開賣到售完的整段時間都會停在第一次抓到的狀態。
-        if platform != PlatformEnum.TIXCRAFT.value:
-            continue
         queued_at = _hydration_requested.get(ev.id)
         if queued_at is not None and now - queued_at < HYDRATION_TTL_S:
             continue
         _hydration_requested[ev.id] = now
-        try:
-            await broker.enqueue(
-                kind=JobKind.EVENT_HYDRATE,
-                profile=settings.default_profile,
-                payload={
-                    "platform": ev.platform.value,
-                    "slug": ev.event_slug,
-                    "event_id": ev.id,
-                    "canonical_url": ev.canonical_url,
-                },
-            )
-        except Exception as exc:  # noqa: BLE001 — 補資料失敗不該讓搜尋失敗
-            _hydration_requested.pop(ev.id, None)
-            logger.warning("event_hydrate_enqueue_failed", event_id=ev.id, error=str(exc))
+        rows.append(
+            {
+                "platform": platform,
+                "slug": ev.event_slug,
+                "event_id": ev.id,
+                "canonical_url": ev.canonical_url,
+            }
+        )
+
+    if not rows:
+        return
+    try:
+        await broker.enqueue(
+            kind=JobKind.EVENT_HYDRATE,
+            profile=settings.default_profile,
+            payload={"events": rows},
+        )
+    except Exception as exc:  # noqa: BLE001 — 補資料失敗不該讓搜尋失敗
+        for row in rows:
+            _hydration_requested.pop(row["event_id"], None)
+        logger.warning("event_hydrate_enqueue_failed", count=len(rows), error=str(exc))
 
 
 @router.post("/resolve", response_model=ResolveEventResponse)

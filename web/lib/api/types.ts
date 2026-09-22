@@ -179,6 +179,21 @@ export interface EventOut {
   } | null
 }
 
+/** 一場活動目前的售票狀態；`checked_at` 有值才代表真的確認過。 */
+export interface EventStatus {
+  id: string
+  status: string
+  sale_start_at: string | null
+  sale_end_at: string | null
+  event_start_at: string | null
+  detail_loaded: boolean
+  checked_at: string | null
+}
+
+export interface EventStatusesResponse {
+  results: EventStatus[]
+}
+
 export interface EventSearchResult {
   id: string
   title: string

@@ -4,6 +4,7 @@ import Link from "next/link"
 import { useTranslations } from "next-intl"
 
 import { Badge } from "@/components/ui/badge"
+import { Skeleton } from "@/components/ui/skeleton"
 import { Button } from "../animate-ui/components/buttons/button"
 import { formatDateTime } from "@/lib/format"
 import { useEventStatusLabel } from "@/lib/i18n/labels"
@@ -15,13 +16,24 @@ import type { EventSearchResult } from "@/lib/api/types"
  * 刻意不顯示比對分數、原始網址、主辦代號或任何 API 內部欄位——那些是排序用的
  * 中間產物，對要挑活動的人沒有意義。
  */
-export function EventCard({ event }: { event: EventSearchResult }) {
+export function EventCard({
+  event,
+  awaitingStatus = true,
+}: {
+  event: EventSearchResult
+  /**
+   * 票況是否還在確認。預設 true——單獨使用這張卡片時，`UNKNOWN` 就當成還在等；
+   * 搜尋頁知道輪詢已經結束，會傳 false 進來把骨架收掉。
+   */
+  awaitingStatus?: boolean
+}) {
   const t = useTranslations("event")
   const eventStatusLabel = useEventStatusLabel()
-  const statusLabel =
-    event.status === "UNKNOWN" && !event.detail_loaded
-      ? t("statusPendingLoad")
-      : eventStatusLabel(event.status)
+  // 票況是搜尋之後才非同步確認的。還沒確認完時放骨架動畫，不要放一句「確認中」
+  // 的文字——那會讓人以為它是一種票況。文字只留給讀螢幕的人。
+  // 但等不到就要收手：骨架一直轉下去看起來像壞掉，那時改印「狀態未確認」。
+  const statusPending =
+    awaitingStatus && event.status === "UNKNOWN" && !event.detail_loaded
 
   const providers = event.ticketing_providers
   const saleStart = event.sale_start_at
@@ -92,9 +104,18 @@ export function EventCard({ event }: { event: EventSearchResult }) {
           </div>
         )}
 
-        <div className="flex min-w-0 gap-2">
+        <div className="flex min-w-0 items-center gap-2">
           <dt className="shrink-0 text-muted-foreground">{t("status")}</dt>
-          <dd className="min-w-0">{statusLabel}</dd>
+          <dd className="min-w-0" aria-busy={statusPending || undefined}>
+            {statusPending ? (
+              <>
+                <Skeleton className="h-4 w-16" aria-hidden />
+                <span className="sr-only">{t("statusPendingLoad")}</span>
+              </>
+            ) : (
+              eventStatusLabel(event.status)
+            )}
+          </dd>
         </div>
       </dl>
 

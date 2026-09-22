@@ -108,3 +108,31 @@ class EventSearchResponse(BaseModel):
 
     query: str
     results: list[EventSearchResultOut] = Field(default_factory=list)
+
+
+class EventStatusOut(BaseModel):
+    """一場活動目前的售票狀態。
+
+    搜尋不等狀態算完就先把活動回給前端，狀態由這支端點分批補。`checked_at` 有值
+    才代表「已經真的去確認過賣不賣得到票」——在那之前 `status` 只是還沒問到底的
+    中間值，前端據此決定要不要繼續問。
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    id: str
+    status: str
+    sale_start_at: datetime | None = None
+    sale_end_at: datetime | None = None
+    event_start_at: datetime | None = None
+    detail_loaded: bool = False
+    checked_at: datetime | None = Field(
+        default=None,
+        description="狀態最後一次被實際確認的時間；未確認過為 null。",
+    )
+
+
+class EventStatusesResponse(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    results: list[EventStatusOut] = Field(default_factory=list)

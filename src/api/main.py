@@ -82,6 +82,7 @@ def create_app(
         try:
             yield
         finally:
+            events_router.cancel_background_tasks()
             await pump.stop()
             pump_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):

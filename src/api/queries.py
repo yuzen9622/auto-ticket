@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
@@ -7,6 +8,7 @@ from sqlalchemy import func, select
 
 from domain.execution import coerce_execution_mode
 from storage.models import (
+    EventModel,
     ExperimentEventModel,
     ExperimentMetricsModel,
     ExperimentModel,
@@ -186,3 +188,37 @@ async def get_experiment_detail(
             events=[_to_event_out(e) for e in event_rows],
             metrics=_to_metrics_out(metrics) if metrics is not None else None,
         )
+
+
+async def get_event_status_rows(
+    db: Any, event_ids: Sequence[str]
+) -> list[dict[str, Any]]:
+    """批次讀活動的售票狀態欄位。
+
+    `EventRepository` 只有單筆查詢，而一頁搜尋結果要問十幾場；逐筆查就是十幾次
+    round-trip。查詢改寫集中在這一層——`src/storage` 是凍結模組。
+    """
+    ids = list(event_ids)
+    if not ids:
+        return []
+    stmt = select(
+        EventModel.id,
+        EventModel.status,
+        EventModel.sale_start_at,
+        EventModel.sale_end_at,
+        EventModel.event_start_at,
+        EventModel.raw_metadata,
+    ).where(EventModel.id.in_(ids))
+    async with db.session() as session:
+        rows = (await session.execute(stmt)).all()
+    return [
+        {
+            "id": row.id,
+            "status": row.status,
+            "sale_start_at": row.sale_start_at,
+            "sale_end_at": row.sale_end_at,
+            "event_start_at": row.event_start_at,
+            "raw_metadata": row.raw_metadata or {},
+        }
+        for row in rows
+    ]

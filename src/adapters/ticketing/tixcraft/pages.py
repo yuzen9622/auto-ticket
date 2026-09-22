@@ -38,6 +38,7 @@ NO_SESSION_TEXT = "目前無場次資訊"
 #: 該場次的購票時間已過，格子裡只剩「<日期> 截止」。
 DEADLINE_TEXT = "截止"
 
+_WHITESPACE_RE = re.compile(r"\s+")
 _DATE_RE = re.compile(r"(\d{4})/(\d{1,2})/(\d{1,2})")
 _DATETIME_RE = re.compile(r"(\d{4})/(\d{1,2})/(\d{1,2})[^\d]*?(\d{1,2}):(\d{2})")
 
@@ -205,6 +206,10 @@ class ActivityDetail:
     sessions_seen: bool = False
     """是否真的看過場次表。`sessions` 空掉有兩種原因——活動還沒開賣（場次表寫
     「目前無場次資訊」），或這次根本沒抓到場次頁。只有前者能推論出尚未開賣。"""
+    sale_start_at: datetime | None = None
+    """正式開賣時間。拓元沒有這個欄位，只有節目介紹裡主辦寫的一行公告。"""
+    sale_start_text: str | None = None
+    """讀出開賣時間的那段原文，讓人回頭核對是不是讀錯段落。"""
 
 
 def slug_of(url: str) -> str:
@@ -403,6 +408,160 @@ def extract_intro_description(html: str, *, max_chars: int = 300) -> str | None:
     return text[: max_chars - 1] + "…" if len(text) > max_chars else text
 
 
+#: 公開售票階段的標籤。拓元沒有開賣時間欄位，只有主辦寫在節目介紹裡的一行公告，
+#: 所以只能從標籤附近的時間讀回來。
+SALE_PUBLIC_LABELS = (
+    "正式開賣",
+    "全面開賣",
+    "全面啟售",
+    "一般開賣",
+    "一般售票",
+    "公開發售",
+    "正式售票",
+    "public on sale",
+    "general sale",
+)
+#: 只寫「售票時間」沒分階段的活動；同樣算數，但優先度低於明寫正式開賣的。
+SALE_GENERIC_LABELS = (
+    "售票時間",
+    "開賣時間",
+    "售票日期",
+    "購票時間",
+    "開售時間",
+    "開賣日期",
+)
+#: 預售／優先購不是開賣時間。照著它填搶票時間會早好幾天，而且那一輪多半要卡別、
+#: 要序號，一般人根本買不到。
+SALE_PRESALE_LABELS = (
+    "預售",
+    "預購",
+    "優先購",
+    "先行",
+    "卡友",
+    "vip",
+    "presale",
+    "早鳥",
+)
+#: 這些標籤後面的時間講的是別的事。演出日期長得跟售票時間一模一樣，最容易誤讀。
+SALE_NEGATIVE_LABELS = (
+    "演出日期",
+    "演出時間",
+    "公演日期",
+    "表演時間",
+    "活動日期",
+    "活動時間",
+    "入場時間",
+    "開演",
+    "節目時間",
+    "演出地點",
+    "集合時間",
+    "出發時間",
+    "退票",
+    "換票",
+)
+#: 標籤要離時間夠近才算數；隔太遠就是在講別的事。
+SALE_LABEL_WINDOW = 40
+#: 「…12:00 起全面開賣」這種把標籤寫在時間後面的也很常見。
+SALE_TRAILING_WINDOW = 22
+#: 開賣延期又還沒公告新日期時，頁面上那個舊日期是死的。照抄會讓搶票排在一個
+#: 不會開賣的時刻——寧可不給。
+SALE_POSTPONED_MARKERS = (("延期", "另行公告"), ("延後", "另行公告"), ("改期", "另行公告"))
+
+_SALE_DATE = r"(?P<y>\d{4})\s*[/.\-年]\s*(?P<mo>\d{1,2})\s*[/.\-月]\s*(?P<d>\d{1,2})\s*日?"
+#: 日期後面常跟一個括號星期（「(日)」「（週五）」「(Thu.)」），中間還可能夾空白。
+_SALE_WEEKDAY = r"(?:\s*[（(【\[]\s*[^)）】\]]{1,6}\s*[)）】\]])?"
+_SALE_MERIDIEM = r"(?P<mer1>上午|早上|中午|下午|晚上|am|AM|pm|PM)?"
+#: 分鐘只有在同時寫了 AM／PM 時才能省略（「12PM」）；否則單獨一個數字太容易是
+#: 張數、樓層或票價。
+_SALE_TIME = (
+    r"(?:(?P<h>\d{1,2})\s*(?:[:：]\s*(?P<mi>\d{2})|點|時)\s*(?P<mer2>AM|PM|am|pm)?"
+    r"|(?P<h2>\d{1,2})\s*(?P<mer3>AM|PM|am|pm))"
+)
+_SALE_DATETIME_RE = re.compile(
+    _SALE_DATE + _SALE_WEEKDAY + r"[\s　,，/｜|:：~〜\-–至起]{0,14}"
+    + _SALE_MERIDIEM + r"\s*" + _SALE_TIME
+)
+#: 「A 至 B 止」的 B 是結束時間，不是開賣時間。
+_SALE_RANGE_END_RE = re.compile(r"[至~〜–—]\s*$")
+
+
+def _sale_datetime(match: re.Match[str]) -> datetime | None:
+    meridiem = (match.group("mer2") or match.group("mer3") or match.group("mer1") or "").lower()
+    hour = int(match.group("h") or match.group("h2"))
+    minute = int(match.group("mi") or 0)
+    if meridiem in ("下午", "晚上", "pm") and hour < 12:
+        hour += 12
+    if meridiem in ("上午", "早上", "am") and hour == 12:
+        hour = 0
+    if hour > 23 or minute > 59:
+        return None
+    return _taipei(int(match.group("y")), int(match.group("mo")), int(match.group("d")), hour, minute)
+
+
+def _nearest(labels: tuple[str, ...], haystack: str) -> int:
+    return max((haystack.rfind(label.lower()) for label in labels), default=-1)
+
+
+def extract_sale_start(html: str, *, now: datetime | None = None) -> tuple[datetime | None, str | None]:
+    """從節目介紹的文字裡讀出正式開賣時間，連同讀到的那段原文一起回。
+
+    拓元的開賣時間不在任何欄位上，只有主辦自己寫的一行公告，格式各家不同：
+    「🎫售票時間： 2026/09/27 (日) 12PM」「正式開賣 時間：2026/09/14(一) 10:00」
+    「時間：2026/7/ 14 ( 二) 11:00 起全面開賣」「售票時間｜2026年8月23日(日) 15:00」。
+    所以判斷靠的是「時間旁邊那個標籤在講哪一個階段」，不是版型。
+
+    讀不出來就回 `(None, None)`：預售時間、演出時間、寫著「待確認」的階段，
+    以及延期又還沒公告新日期的活動，一律不拿來充數。
+    """
+    soup = BeautifulSoup(html, "html.parser")
+    scope = soup.select_one("#intro") or soup.select_one("#activityTabContent") or soup
+    text = _WHITESPACE_RE.sub(" ", scope.get_text(" "))
+    if any(all(word in text for word in group) for group in SALE_POSTPONED_MARKERS):
+        return (None, None)
+
+    candidates: list[tuple[datetime, int, str]] = []
+    for match in _SALE_DATETIME_RE.finditer(text):
+        parsed = _sale_datetime(match)
+        if parsed is None:
+            continue
+        before = text[max(0, match.start() - SALE_LABEL_WINDOW) : match.start()].lower()
+        if _SALE_RANGE_END_RE.search(before):
+            continue
+        after = text[match.end() : match.end() + SALE_TRAILING_WINDOW].lower()
+
+        public_at = _nearest(SALE_PUBLIC_LABELS, before)
+        generic_at = _nearest(SALE_GENERIC_LABELS, before)
+        presale_at = _nearest(SALE_PRESALE_LABELS, before)
+        if _nearest(SALE_NEGATIVE_LABELS, before) > max(public_at, generic_at):
+            continue
+
+        weight = 0
+        if any(label.lower() in after for label in SALE_PUBLIC_LABELS):
+            weight = 2
+        elif any(word in after for word in ("開賣", "啟售", "開售")):
+            weight = 1
+        if public_at >= 0 and public_at > presale_at:
+            weight = max(weight, 2)
+        elif generic_at >= 0 and generic_at > presale_at:
+            weight = max(weight, 1)
+        if weight == 0:
+            continue
+        evidence = text[max(0, match.start() - 30) : match.end() + 12].strip()
+        candidates.append((parsed, weight, evidence))
+
+    if not candidates:
+        return (None, None)
+
+    # 還沒到的那場才是使用者要搶的；全都過去了就取最後一次，當成這場活動的開賣紀錄。
+    current = now or datetime.now(TAIPEI_TZ)
+    upcoming = [c for c in candidates if c[0] > current]
+    pool = upcoming or candidates
+    top_weight = max(weight for _, weight, _ in pool)
+    pool = [c for c in pool if c[1] == top_weight]
+    chosen = min(pool, key=lambda c: c[0]) if upcoming else max(pool, key=lambda c: c[0])
+    return (chosen[0], chosen[2])
+
+
 def extract_organizer(html: str) -> str | None:
     """拓元沒有主辦單位欄位，只有節目介紹裡的「主辦單位/xxx」一行。
 
@@ -445,6 +604,8 @@ def parse_activity_detail(html: str, *, game_html: str | None = None) -> Activit
         venue = next((s.venue for s in sessions if s.venue), None)
     session_starts = [s.starts_at for s in sessions if s.starts_at is not None]
 
+    sale_start_at, sale_start_text = extract_sale_start(html)
+
     return ActivityDetail(
         title=title,
         description=extract_intro_description(html),
@@ -456,6 +617,8 @@ def parse_activity_detail(html: str, *, game_html: str | None = None) -> Activit
         ),
         sessions=sessions,
         sessions_seen=sessions_seen,
+        sale_start_at=sale_start_at,
+        sale_start_text=sale_start_text,
     )
 
 

@@ -146,15 +146,26 @@ describe("搶票時間自動帶入", () => {
     expect(screen.queryByLabelText("搶票時間")).toBeNull()
   })
 
-  it("狀態還沒更新、但開賣時間已過的活動同樣立即執行", async () => {
+  it("狀態不明、但開賣時間已過的活動同樣立即執行", async () => {
     api.getEvent.mockResolvedValue(
-      eventFixture({ status: "ANNOUNCED", sale_start_at: "2026-01-01T00:00:00Z" })
+      eventFixture({ status: "UNKNOWN", sale_start_at: "2026-01-01T00:00:00Z" })
     )
     renderWithProviders(<TaskForm eventId="ev_mayday01" />)
 
     expect(await screen.findByLabelText("執行時機")).toHaveTextContent(
       "立即執行"
     )
+  })
+
+  it("狀態說尚未開賣時，不因為公告上的舊日期就改成立即執行", async () => {
+    // 拓元的開賣時間是從主辦寫的公告文字讀來的，可能留著上一輪的日期；場次表
+    // 說還沒開賣就該照場次表走，否則任務會在活動根本還沒開賣時就衝出去。
+    api.getEvent.mockResolvedValue(
+      eventFixture({ status: "ANNOUNCED", sale_start_at: "2026-01-01T00:00:00Z" })
+    )
+    renderWithProviders(<TaskForm eventId="ev_mayday01" />)
+
+    expect(await screen.findByLabelText("搶票時間")).toBeInTheDocument()
   })
 
   it("沒有開賣時間的活動帶目前時間並顯示提醒", async () => {

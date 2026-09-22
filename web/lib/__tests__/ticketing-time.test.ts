@@ -27,10 +27,19 @@ describe("isSellingNow", () => {
     expect(isSellingNow("ON_SALE", null, Date.now())).toBe(true)
   })
 
-  it("開賣時間已過就算在賣，即使狀態還沒更新", () => {
+  it("狀態說尚未開賣時，不拿已過的開賣時間推翻它", () => {
+    // 拓元的開賣時間是從主辦寫的公告讀來的，可能是上一輪的舊日期；場次表說
+    // 還沒開賣就是還沒開賣。
     expect(isSellingNow("ANNOUNCED", "2026-01-01T00:00:00Z", Date.now())).toBe(
+      false
+    )
+  })
+
+  it("狀態不明時才用開賣時間推", () => {
+    expect(isSellingNow("UNKNOWN", "2026-01-01T00:00:00Z", Date.now())).toBe(
       true
     )
+    expect(isSellingNow(null, "2026-01-01T00:00:00Z", Date.now())).toBe(true)
   })
 
   it("開賣時間還沒到就不算在賣", () => {

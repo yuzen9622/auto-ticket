@@ -384,7 +384,9 @@ class KKTIXEventResolver(EventResolver):
         if title is None:
             raise KKTIXParseError(f"event title not found: {event_url!r}")
 
-        raw_metadata: dict[str, Any] = {}
+        # 標記詳情已經抓過。上層靠這個旗標判斷「還在補資料」與「補完了但這場
+        # 就是沒有票種」，用推論的會讓後者永遠顯示成資料不齊。
+        raw_metadata: dict[str, Any] = {"detail_source": "kktix_event_page"}
         organizer_display = _select_first_text(soup, KKTIXSelectors.EVENT_ORGANIZER)
         if organizer_display:
             raw_metadata["organizer_display"] = organizer_display

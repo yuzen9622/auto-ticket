@@ -164,6 +164,13 @@ def build_event(
             raw_metadata["organizer_display"] = detail.organizer
         if detail.sessions:
             raw_metadata["sessions"] = [s.to_dict() for s in detail.sessions]
+        if detail.sale_start_at is not None:
+            # 開賣時間是從主辦寫的公告文字讀回來的，不是拓元給的欄位。把出處和
+            # 原文一起留著，畫面上才講得出「這個時間是哪一句話讀來的」，讀錯也
+            # 查得到是哪一段。
+            raw_metadata["sale_start_source"] = "tixcraft_intro_text"
+            if detail.sale_start_text:
+                raw_metadata["sale_start_text"] = detail.sale_start_text
 
     return Event(
         id=Event.make_id(PlatformEnum.TIXCRAFT, "tixcraft", slug),
@@ -175,6 +182,7 @@ def build_event(
         status=(
             _status_from_detail(detail) if detail is not None else EventStatus.UNKNOWN
         ),
+        sale_start_at=detail.sale_start_at if detail is not None else None,
         event_start_at=event_start_at,
         ticket_types=[],
         raw_metadata=raw_metadata,

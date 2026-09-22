@@ -15,6 +15,7 @@ export default defineConfig({
     include: [
       "lib/__tests__/**/*.test.ts",
       "components/__tests__/**/*.test.tsx",
+      "hooks/__tests__/**/*.test.tsx",
       "app/__tests__/**/*.test.tsx",
     ],
   },
