@@ -63,6 +63,7 @@ export function AppSidebar() {
       <SidebarHeader className="flex h-12 flex-row items-center justify-between px-2 py-2">
         <SidebarTrigger
           tabIndex={-1}
+          aria-label={t("toggleSidebar")}
           className="size-8 border-none text-muted-foreground hover:text-foreground"
         />
       </SidebarHeader>

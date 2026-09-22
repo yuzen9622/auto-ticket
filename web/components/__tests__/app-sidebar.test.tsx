@@ -13,24 +13,12 @@ vi.mock("next/navigation", () => ({
   useSearchParams: () => new URLSearchParams(),
 }))
 
-import { AppSidebar } from "@/components/layout/app-sidebar"
-import {
-  SidebarInset,
-  SidebarProvider,
-  SidebarTrigger,
-} from "@/components/ui/sidebar"
+import { AppShell } from "@/components/layout/app-shell"
 
+/** 一律渲染正式的 AppShell，測試殼與線上結構不一致就抓不到缺少的入口。 */
 function renderShell(path = "/") {
   pathname.current = path
-  return renderWithProviders(
-    <SidebarProvider>
-      <AppSidebar />
-      <SidebarInset>
-        <SidebarTrigger aria-label="收合或展開側邊欄" />
-        <main>內容</main>
-      </SidebarInset>
-    </SidebarProvider>
-  )
+  return renderWithProviders(<AppShell>內容</AppShell>)
 }
 
 function sidebarRoot() {
@@ -145,7 +133,8 @@ describe("行動版側邊欄", () => {
     window.dispatchEvent(new Event("resize"))
 
     renderShell()
-    await user.click(screen.getByRole("button", { name: "收合或展開側邊欄" }))
+    // 抽屜關著時側邊欄自己的收合鈕不在畫面上，只能靠頂端這顆開啟。
+    await user.click(screen.getByRole("button", { name: "開啟導覽選單" }))
 
     const drawer = await screen.findByRole("dialog")
     expect(within(drawer).getByRole("link", { name: "新增任務" })).toBeVisible()
