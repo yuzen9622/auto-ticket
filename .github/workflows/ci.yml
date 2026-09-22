@@ -29,7 +29,10 @@ jobs:
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          # 前端測試鏈要新版 Node：jsdom@30 要 ^22.22.2 || ^24.15.0 || >=26，
+          # undici@8 要 >=22.19。Node 20 會在載入 jsdom 時就炸
+          # （webidl.util.markAsUncloneable is not a function），一個測試都跑不到。
+          node-version: 24
 
       - name: Install Python deps
         run: uv sync --all-extras
@@ -73,6 +76,8 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
+          # CLI 刻意釘在它宣告支援的最低版本（engines.node >= 20.10）——
+          # 要證明的就是那個下界成立，不要跟上面的前端 job 一起升。
           node-version: 20
 
       - name: Install CLI deps
