@@ -4,16 +4,21 @@ import { useTranslations } from "next-intl"
 
 import { Panel } from "@/components/terminal/panel"
 import {
-  PURCHASE_STATE_ORDER,
+  PURCHASE_PHASES,
   TONE_DOT_CLASS,
   TONE_TEXT_CLASS,
-  isFinalState,
+  purchasePhaseIndex,
   purchaseStateTone,
 } from "@/lib/fsm"
 import { usePurchaseStateLabel } from "@/lib/i18n/labels"
 import { cn } from "@/lib/utils"
 
-/** 14 個 PurchaseState 的垂直軌道，順序直接沿用後端 enum 宣告順序。 */
+/**
+ * 購票進度：五個階段的垂直軌道。
+ *
+ * 最後一格在任務結束後改寫成實際結果（已完成／已售罄／已逾時／失敗），
+ * 使用者不必再去別的面板對照才知道結局。
+ */
 export function StateRail({
   currentState,
   visitedStates,
@@ -22,48 +27,54 @@ export function StateRail({
   visitedStates: string[]
 }) {
   const t = useTranslations("taskConsole")
+  const phaseLabel = useTranslations("taskConsole.phase")
   const purchaseStateLabel = usePurchaseStateLabel()
-  const visited = new Set(visitedStates)
+
+  const currentIndex = purchasePhaseIndex(currentState)
+  const visitedIndex = visitedStates.reduce(
+    (max, state) => Math.max(max, purchasePhaseIndex(state)),
+    currentIndex
+  )
+  const lastPhase = PURCHASE_PHASES.length - 1
+  const finished = currentIndex === lastPhase
 
   return (
-    <Panel
-      title={t("stateRail")}
-      className="min-h-0"
-      bodyClassName="overflow-y-auto p-0"
-    >
-      <ol className="flex flex-col py-1">
-        {PURCHASE_STATE_ORDER.map((state, i) => {
-          const isCurrent = state === currentState
-          const wasVisited = visited.has(state)
-          const final = isFinalState(state)
-          const tone = purchaseStateTone(state)
-          const lit = isCurrent || (final && wasVisited)
+    <Panel title={t("progress")} className="min-h-0">
+      <ol className="flex flex-col">
+        {PURCHASE_PHASES.map((phase, i) => {
+          const isCurrent = i === currentIndex
+          const reached = i <= visitedIndex
+          const tone =
+            finished && i === lastPhase
+              ? purchaseStateTone(currentState as string)
+              : "accent"
+          const label =
+            finished && i === lastPhase
+              ? purchaseStateLabel(currentState)
+              : phaseLabel(phase.key)
 
           return (
             <li
-              key={state}
+              key={phase.key}
               aria-current={isCurrent ? "step" : undefined}
-              className={cn(
-                "relative flex items-center gap-2 px-3 py-1.5 text-xs",
-                isCurrent && "bg-accent font-medium"
-              )}
+              className="relative flex items-center gap-2.5 py-1.5 text-xs"
             >
               <span
                 aria-hidden
                 className={cn(
-                  "absolute top-0 bottom-0 left-[1.1rem] w-px",
+                  "absolute top-0 bottom-0 left-[0.21rem] w-px",
                   i === 0 && "top-1/2",
-                  i === PURCHASE_STATE_ORDER.length - 1 && "bottom-1/2",
-                  wasVisited ? "bg-border" : "bg-transparent"
+                  i === lastPhase && "bottom-1/2",
+                  reached ? "bg-border" : "bg-transparent"
                 )}
               />
               <span
                 aria-hidden
                 className={cn(
                   "relative z-10 size-2 shrink-0 rounded-full border",
-                  lit
+                  isCurrent
                     ? cn(TONE_DOT_CLASS[tone], "border-transparent")
-                    : wasVisited
+                    : reached
                       ? "border-muted-foreground bg-muted-foreground"
                       : "border-border bg-background"
                 )}
@@ -71,18 +82,15 @@ export function StateRail({
               <span
                 className={cn(
                   "truncate",
-                  lit
-                    ? cn(TONE_TEXT_CLASS[tone], "font-bold")
-                    : wasVisited
+                  isCurrent
+                    ? cn(TONE_TEXT_CLASS[tone], "font-semibold")
+                    : reached
                       ? "text-foreground"
                       : "text-muted-foreground"
                 )}
               >
-                {purchaseStateLabel(state)}
+                {label}
               </span>
-              {isCurrent && (
-                <span className="ml-auto shrink-0 text-primary">◀</span>
-              )}
             </li>
           )
         })}

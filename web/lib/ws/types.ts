@@ -148,14 +148,6 @@ export function isVerificationDone(p: TaskLogPayload): p is VerificationDoneLogP
   return (p as VerificationDoneLogPayload).phase === "verification_completed"
 }
 
-export function isAck(p: TaskLogPayload): p is AckLogPayload {
-  return typeof (p as AckLogPayload).action === "string"
-}
-
-export function isProtocolError(p: ErrorPayload): p is ProtocolErrorPayload {
-  return typeof (p as ProtocolErrorPayload).reason === "string"
-}
-
 /** src/api/schemas/ws.py ClientCommand。 */
 export interface ClientCommand {
   action: ClientAction

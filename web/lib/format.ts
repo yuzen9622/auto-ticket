@@ -16,14 +16,6 @@ export function formatDateTime(value: string | null | undefined): string {
   return d.toLocaleString("zh-TW", { hour12: false })
 }
 
-export function formatTimeOfDay(d: Date): string {
-  const hh = String(d.getHours()).padStart(2, "0")
-  const mm = String(d.getMinutes()).padStart(2, "0")
-  const ss = String(d.getSeconds()).padStart(2, "0")
-  const ms = String(d.getMilliseconds()).padStart(3, "0")
-  return `${hh}:${mm}:${ss}.${ms}`
-}
-
 /** 相對時間的形狀；文案由 i18n 提供，這裡只決定用哪一個單位。 */
 export type RelativeTime =
   | { unit: "never" }

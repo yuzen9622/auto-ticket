@@ -6,13 +6,11 @@ import { Badge } from "@/components/ui/badge"
 import {
   TONE_DOT_CLASS,
   TONE_TEXT_CLASS,
-  jobStateTone,
   purchaseStateTone,
   taskStatusTone,
   type SemanticTone,
 } from "@/lib/fsm"
 import {
-  useJobStateLabel,
   usePurchaseStateLabel,
   useTaskStatusLabel,
 } from "@/lib/i18n/labels"
@@ -88,24 +86,6 @@ export function PurchaseStateBadge({
       tone={purchaseStateTone(state)}
       label={label(state)}
       announce={announce}
-      className={className}
-    />
-  )
-}
-
-export function JobStateBadge({
-  state,
-  className,
-}: {
-  state: string
-  className?: string
-}) {
-  const label = useJobStateLabel()
-  return (
-    <StateBadge
-      value={state}
-      tone={jobStateTone(state)}
-      label={label(state)}
       className={className}
     />
   )

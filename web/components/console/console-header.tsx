@@ -6,11 +6,7 @@ import { useMutation, useQueryClient } from "@tanstack/react-query"
 import { toast } from "sonner"
 
 import { CopyButton } from "@/components/terminal/copy-button"
-import {
-  JobStateBadge,
-  StateBadge,
-  TaskStatusBadge,
-} from "@/components/terminal/state-badge"
+import { StateBadge, TaskStatusBadge } from "@/components/terminal/state-badge"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { ApiError } from "@/lib/api/client"
@@ -133,7 +129,6 @@ export function ConsoleHeader({
           />
           {t("connection")} {wsStatusLabel(wsStatus)}
         </Badge>
-        {detail.job_state && <JobStateBadge state={detail.job_state} />}
       </div>
 
       <div className="flex shrink-0 items-center gap-1">

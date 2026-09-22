@@ -4,6 +4,7 @@ import { screen } from "@testing-library/react"
 
 import { renderWithProviders } from "./helpers/render"
 import { ClockPanel } from "@/components/console/clock-panel"
+import { StateRail } from "@/components/console/state-rail"
 import { AutomationStatusBanner } from "@/components/console/automation-status-banner"
 import { HumanGateBanner } from "@/components/console/human-gate-banner"
 import type { ClockTickPayload, HumanGateLogPayload } from "@/lib/ws/types"
@@ -66,8 +67,6 @@ describe("倒數面板", () => {
     renderPanel(tick({}))
     expect(screen.getByText("距離開賣")).toBeInTheDocument()
     expect(screen.getByText("剩餘搶票時間")).toBeInTheDocument()
-    expect(screen.getByText("時間校正差")).toBeInTheDocument()
-    expect(screen.getByText("伺服器時間")).toBeInTheDocument()
     for (const forbidden of [
       "time_to_sale",
       "time_to_timeout",
@@ -77,6 +76,12 @@ describe("倒數面板", () => {
     ]) {
       expect(screen.queryByText(forbidden)).toBeNull()
     }
+  })
+
+  it("不顯示時間校正差與伺服器時間這類內部資訊", () => {
+    renderPanel(tick({}))
+    expect(screen.queryByText("時間校正差")).toBeNull()
+    expect(screen.queryByText("伺服器時間")).toBeNull()
   })
 
   it("還沒收到時鐘訊息時給中文說明而不是空白", () => {
@@ -191,5 +196,43 @@ describe("自動化執行狀態橫幅與互斥", () => {
     }
     renderWithProviders(<AutomationStatusBanner status={status} />)
     expect(screen.queryByRole("button")).toBeNull()
+  })
+})
+
+describe("購票進度", () => {
+  const PHASES = ["準備中", "等待開賣", "選票", "填單付款"]
+
+  it("只列出五個階段，不把 14 個內部狀態攤開", () => {
+    renderWithProviders(
+      <StateRail currentState="TICKET_SELECTION" visitedStates={["PREPARING"]} />
+    )
+    expect(screen.getAllByRole("listitem")).toHaveLength(5)
+    for (const phase of [...PHASES, "結束"]) {
+      expect(screen.getByText(phase)).toBeInTheDocument()
+    }
+    for (const internal of ["選擇票種", "選擇座位", "填寫資料", "需要驗證"]) {
+      expect(screen.queryByText(internal)).toBeNull()
+    }
+  })
+
+  it("目前狀態所屬的階段標成目前步驟", () => {
+    renderWithProviders(
+      <StateRail
+        currentState="PAYMENT_PROCESSING"
+        visitedStates={["PREPARING", "SALE_OPEN", "FORM_FILLING"]}
+      />
+    )
+    expect(screen.getByText("填單付款").closest("li")).toHaveAttribute(
+      "aria-current",
+      "step"
+    )
+  })
+
+  it("結束後最後一格改寫成實際結果", () => {
+    renderWithProviders(
+      <StateRail currentState="SOLD_OUT" visitedStates={["SALE_OPEN"]} />
+    )
+    expect(screen.getByText("已售罄")).toBeInTheDocument()
+    expect(screen.queryByText("結束")).toBeNull()
   })
 })

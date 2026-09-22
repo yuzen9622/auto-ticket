@@ -4,19 +4,11 @@ import * as React from "react"
 import { useTranslations } from "next-intl"
 import { useQuery } from "@tanstack/react-query"
 
-import {
-  Accordion,
-  AccordionContent,
-  AccordionItem,
-  AccordionTrigger,
-} from "@/components/animate-ui/components/radix/accordion"
 import { ClockPanel } from "@/components/console/clock-panel"
 import { ConsoleHeader } from "@/components/console/console-header"
 import { AutomationStatusBanner } from "@/components/console/automation-status-banner"
 import { HumanGateBanner } from "@/components/console/human-gate-banner"
 import { ControlBar } from "@/components/console/control-bar"
-import { LogStream } from "@/components/console/log-stream"
-import { ScreenshotStrip } from "@/components/console/screenshot-strip"
 import { StateRail } from "@/components/console/state-rail"
 import { EmptyState } from "@/components/terminal/empty-state"
 import { KvRow } from "@/components/terminal/kv-row"
@@ -27,7 +19,6 @@ import { isTaskFinished } from "@/lib/fsm"
 import { useApiErrorMessage } from "@/lib/i18n/errors"
 import {
   useExecutionModeLabel,
-  useJobStateLabel,
   usePurchaseStateLabel,
 } from "@/lib/i18n/labels"
 import { useTaskSocket } from "@/lib/ws/use-task-socket"
@@ -60,7 +51,6 @@ export function LiveConsole({ taskId }: { taskId: string }) {
   const apiErrorMessage = useApiErrorMessage()
   const purchaseStateLabel = usePurchaseStateLabel()
   const executionModeLabel = useExecutionModeLabel()
-  const jobStateLabel = useJobStateLabel()
   const resultLabel = useResultLabel()
 
   const { data, isLoading, isError, error } = useQuery({
@@ -84,106 +74,63 @@ export function LiveConsole({ taskId }: { taskId: string }) {
   }
 
   const currentState = socket.currentState
-  const jobState = socket.snapshotStatus?.job_state ?? data.job_state
 
-  // h-full 讓中欄的 flex-1 有可填的高度，否則日誌區會被壓成 0 高。
   return (
-    <div className="flex h-full min-h-0 min-w-0 flex-col gap-3">
-      <ConsoleHeader
-        detail={{ ...data, job_state: jobState }}
-        wsStatus={socket.status}
-      />
+    <div className="flex min-w-0 flex-col gap-3">
+      <ConsoleHeader detail={data} wsStatus={socket.status} />
 
       <AutomationStatusBanner
         status={socket.humanGate ? null : socket.automation}
       />
       <HumanGateBanner gate={socket.humanGate} />
 
-      {/* xl 以上鎖死單列高（面板各自內捲）；窄幅改成網格自己捲動，
-          兩者都不讓內容撐破 flex-1，底部 ControlBar 才不會被擠出畫面。 */}
-      <div className="grid min-h-0 min-w-0 flex-1 grid-cols-1 gap-3 overflow-y-auto xl:grid-cols-[220px_minmax(0,1fr)_260px] xl:grid-rows-[minmax(0,1fr)] xl:overflow-hidden">
+      <div className="grid min-w-0 grid-cols-1 gap-3 lg:grid-cols-[220px_minmax(0,1fr)]">
         <StateRail
           currentState={currentState}
           visitedStates={socket.visitedStates}
         />
 
-        <div className="flex min-h-0 min-w-0 flex-col gap-3">
-          <div className="grid min-w-0 shrink-0 grid-cols-1 gap-3 md:grid-cols-2">
-            <ClockPanel
-              clock={socket.clock}
-              clockReceivedAt={socket.clockReceivedAt}
-              resultLabel={resultLabel(taskStatus, currentState)}
+        <div className="grid min-w-0 grid-cols-1 gap-3 md:grid-cols-2">
+          <ClockPanel
+            clock={socket.clock}
+            clockReceivedAt={socket.clockReceivedAt}
+            resultLabel={resultLabel(taskStatus, currentState)}
+          />
+
+          <Panel title={t("summaryHeading")}>
+            <KvRow
+              label={t("currentState")}
+              value={
+                currentState ? purchaseStateLabel(currentState) : common("none")
+              }
+            />
+            <KvRow
+              label={t("executionMode")}
+              value={executionModeLabel(data.task.execution_mode)}
+            />
+            <KvRow
+              label={t("scheduledAt")}
+              value={formatDateTime(data.task.scheduled_at)}
+            />
+            <KvRow
+              label={t("startedAt")}
+              value={formatDateTime(data.task.started_at)}
+            />
+            <KvRow
+              label={t("finishedAt")}
+              value={formatDateTime(data.task.finished_at)}
             />
 
-            <Panel title={t("summaryHeading")}>
-              <KvRow
-                label={t("currentState")}
-                value={
-                  currentState
-                    ? purchaseStateLabel(currentState)
-                    : common("none")
-                }
-              />
-              <KvRow
-                label={t("visitedStates")}
-                value={String(socket.visitedStates.length)}
-              />
-              <KvRow
-                label={t("executionMode")}
-                value={executionModeLabel(data.task.execution_mode)}
-              />
-              <KvRow
-                label={t("scheduledAt")}
-                value={formatDateTime(data.task.scheduled_at)}
-              />
-              <KvRow
-                label={t("startedAt")}
-                value={formatDateTime(data.task.started_at)}
-              />
-              <KvRow
-                label={t("finishedAt")}
-                value={formatDateTime(data.task.finished_at)}
-              />
-
-              {data.task.error_message && (
-                <p className="pt-1 text-xs text-destructive">
-                  {data.task.error_message}
-                </p>
-              )}
-
-              {/* 技術資訊預設收起：一般使用者不需要看到內部識別碼。 */}
-              <Accordion type="single" collapsible className="pt-2">
-                <AccordionItem value="technical-details" className="border-0">
-                  <AccordionTrigger className="py-0 text-xs font-normal text-muted-foreground hover:no-underline">
-                    {t("technicalDetails")}
-                  </AccordionTrigger>
-                  <AccordionContent className="pt-1 pb-0">
-                    <KvRow label={t("taskId")} value={data.task.id} />
-                    <KvRow
-                      label={t("jobId")}
-                      value={data.job_id ?? common("none")}
-                    />
-                    <KvRow
-                      label={t("jobState")}
-                      value={
-                        jobState ? jobStateLabel(jobState) : common("none")
-                      }
-                    />
-                  </AccordionContent>
-                </AccordionItem>
-              </Accordion>
-            </Panel>
-          </div>
-
-          <LogStream entries={socket.entries} />
+            {data.task.error_message && (
+              <p className="pt-1 text-xs text-destructive">
+                {data.task.error_message}
+              </p>
+            )}
+          </Panel>
         </div>
-
-        <ScreenshotStrip shots={socket.screenshots} />
       </div>
 
-      <div className="shrink-0">
-        <ControlBar connected={socket.status === "open"} onSend={socket.send} />
-      </div>
+      <ControlBar connected={socket.status === "open"} onSend={socket.send} />
     </div>
   )
 }

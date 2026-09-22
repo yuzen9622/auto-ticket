@@ -4,12 +4,10 @@ import * as React from "react"
 
 import { wsBaseUrl } from "@/lib/config"
 import { isTaskFinished } from "@/lib/fsm"
-import { appendEntry, toEntry, type LogEntry } from "@/lib/log-buffer"
 import type { WsStatus } from "@/lib/task-status"
 import type {
   ClientCommand,
   ClockTickPayload,
-  ScreenshotPayload,
   ServerMessage,
   CloudflareGraceLogPayload,
   OcrProgressLogPayload,
@@ -34,19 +32,15 @@ const BACKOFF_MS = [500, 1000, 2000, 4000, 8000]
 
 export interface TaskSocketState {
   status: WsStatus
-  entries: LogEntry[]
   clock: ClockTickPayload | null
   clockReceivedAt: number
-  screenshots: ScreenshotPayload[]
   currentState: string | null
   visitedStates: string[]
-  snapshotStatus: { task_status: string; job_state: string } | null
   /** Worker 正在等人處理；狀態一往前走就清掉。 */
   humanGate: HumanGateLogPayload | null
   /** 自動化執行狀態（Cloudflare 寬限、OCR 辨識進度、完成）。 */
   automation: AutomationStatus | null
   send: (cmd: Omit<ClientCommand, "task_id">) => boolean
-  clearLogs: () => void
 }
 
 export function useTaskSocket(
@@ -56,25 +50,17 @@ export function useTaskSocket(
   const { taskStatus } = options
 
   const [status, setStatus] = React.useState<WsStatus>("connecting")
-  const [entries, setEntries] = React.useState<LogEntry[]>([])
   const [clock, setClock] = React.useState<ClockTickPayload | null>(null)
   // 收到這則時鐘訊息的本地時刻；倒數靠它補兩則訊息之間的秒數。
   const [clockReceivedAt, setClockReceivedAt] = React.useState(0)
-  const [screenshots, setScreenshots] = React.useState<ScreenshotPayload[]>([])
   const [currentState, setCurrentState] = React.useState<string | null>(null)
   const [visitedStates, setVisitedStates] = React.useState<string[]>([])
   const [humanGate, setHumanGate] =
     React.useState<HumanGateLogPayload | null>(null)
   const [automation, setAutomation] =
     React.useState<AutomationStatus | null>(null)
-  const [snapshotStatus, setSnapshotStatus] = React.useState<{
-    task_status: string
-    job_state: string
-  } | null>(null)
 
   const socketRef = React.useRef<WebSocket | null>(null)
-  const seenRef = React.useRef<Set<string>>(new Set())
-  const seqRef = React.useRef(0)
   const attemptRef = React.useRef(0)
   const timerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null)
   const closedRef = React.useRef(false)
@@ -86,7 +72,6 @@ export function useTaskSocket(
   }, [isFinished])
 
   const handleMessage = React.useCallback((msg: ServerMessage) => {
-    // CLOCK_TICK 是 1Hz ephemeral，不進日誌緩衝，否則數分鐘內淹沒畫面（R3）。
     if (msg.type === "CLOCK_TICK") {
       setClock(msg.payload)
       setClockReceivedAt(Date.now())
@@ -100,15 +85,6 @@ export function useTaskSocket(
       setCurrentState(to_state)
       setVisitedStates((prev) =>
         prev.includes(to_state) ? prev : [...prev, to_state]
-      )
-    }
-
-    if (msg.type === "SCREENSHOT_CAPTURED") {
-      const shot = msg.payload
-      setScreenshots((prev) =>
-        prev.some((s) => s.sequence === shot.sequence && s.url === shot.url)
-          ? prev
-          : [...prev, shot]
       )
     }
 
@@ -126,16 +102,10 @@ export function useTaskSocket(
       setAutomation(msg.payload)
     }
 
+    // 重連後的初始快照代表流程重新對齊，先前的自動化提示不再成立。
     if (msg.type === "TASK_LOG" && isSnapshot(msg.payload)) {
       setAutomation(null)
-      setSnapshotStatus({
-        task_status: msg.payload.task_status,
-        job_state: msg.payload.job_state,
-      })
     }
-
-    const entry = toEntry(msg, seqRef.current++)
-    setEntries((prev) => appendEntry(prev, entry, seenRef.current))
   }, [])
 
   React.useEffect(() => {
@@ -234,23 +204,14 @@ export function useTaskSocket(
     [taskId]
   )
 
-  const clearLogs = React.useCallback(() => {
-    seenRef.current = new Set()
-    setEntries([])
-  }, [])
-
   return {
     status,
-    entries,
     clock,
     clockReceivedAt,
-    screenshots,
     currentState,
     visitedStates,
-    snapshotStatus,
     humanGate,
     automation,
     send,
-    clearLogs,
   }
 }

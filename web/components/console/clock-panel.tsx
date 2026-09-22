@@ -7,11 +7,8 @@ import { Countdown } from "@/components/terminal/countdown"
 import { KvRow } from "@/components/terminal/kv-row"
 import { Panel } from "@/components/terminal/panel"
 import { deriveCountdown } from "@/lib/countdown"
-import { formatDateTime, formatMs } from "@/lib/format"
+import { formatMs } from "@/lib/format"
 import type { ClockTickPayload } from "@/lib/ws/types"
-
-/** 時鐘偏移超過此值代表本機時間不可信，標紅提醒。 */
-const OFFSET_ALERT_MS = 1000
 
 /**
  * 倒數面板。
@@ -39,7 +36,6 @@ export function ClockPanel({
   }, [ticking])
 
   const view = deriveCountdown(clock, now, clockReceivedAt)
-  const offset = clock?.clock_offset_ms ?? null
 
   const title =
     view.phase === "ticketing"
@@ -66,19 +62,6 @@ export function ClockPanel({
         <KvRow
           label={t("timeToTimeout")}
           value={formatMs(clock?.time_to_timeout_ms ?? null)}
-        />
-        <KvRow
-          label={t("clockOffset")}
-          value={formatMs(offset)}
-          tone={
-            offset !== null && Math.abs(offset) > OFFSET_ALERT_MS
-              ? "text-destructive"
-              : undefined
-          }
-        />
-        <KvRow
-          label={t("serverTime")}
-          value={formatDateTime(clock?.server_time)}
         />
 
         {clock === null && (

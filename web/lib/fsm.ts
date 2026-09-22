@@ -72,6 +72,49 @@ export function purchaseStateIndex(state: string): number {
   return PURCHASE_STATE_ORDER.indexOf(state as PurchaseState)
 }
 
+export type PurchasePhaseKey =
+  | "preparing"
+  | "waitingForSale"
+  | "picking"
+  | "checkout"
+  | "finished"
+
+/**
+ * 進度階段：把 14 個 PurchaseState 收成使用者真的在等的幾個里程碑。
+ *
+ * 細分狀態（選票種／選座位、填表／驗證／付款）對執行程式有意義，對看畫面的人
+ * 只是雜訊；他們要知道的是「現在到哪一步了」。狀態本身仍完整走 FSM，這裡只影響顯示。
+ */
+export const PURCHASE_PHASES: readonly {
+  key: PurchasePhaseKey
+  states: readonly PurchaseState[]
+}[] = [
+  { key: "preparing", states: ["IDLE", "PREPARING"] },
+  { key: "waitingForSale", states: ["WAITING_FOR_SALE"] },
+  {
+    key: "picking",
+    states: ["SALE_OPEN", "TICKET_SELECTION", "SEAT_SELECTION"],
+  },
+  {
+    key: "checkout",
+    states: [
+      "FORM_FILLING",
+      "VERIFICATION_REQUIRED",
+      "PAYMENT_REQUIRED",
+      "PAYMENT_PROCESSING",
+    ],
+  },
+  { key: "finished", states: ["COMPLETED", "SOLD_OUT", "TIMEOUT", "FAILED"] },
+]
+
+/** 該狀態落在第幾個階段；認不得的狀態回 -1。 */
+export function purchasePhaseIndex(state: string | null): number {
+  if (!state) return -1
+  return PURCHASE_PHASES.findIndex((phase) =>
+    (phase.states as readonly string[]).includes(state)
+  )
+}
+
 export const TONE_TEXT_CLASS: Record<SemanticTone, string> = {
   muted: "text-muted-foreground",
   accent: "text-primary",
