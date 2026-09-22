@@ -222,3 +222,22 @@ async def get_event_status_rows(
         }
         for row in rows
     ]
+
+
+async def count_unfinished_jobs(db: Any, kind: str) -> int:
+    """還沒跑完的 job 數（未排到、已領取、執行中都算）。
+
+    前端靠它判斷「票況還會不會再進來」。少了這個訊號，前端只能用「連續幾輪沒動靜」
+    猜——而補票況是分兩段的（純 HTTP 一段、瀏覽器一段），兩段之間的空檔會被猜成
+    「後端沒事做了」，於是在答案送達前就放棄。
+    """
+    from broker.models import BrokerJobModel
+
+    stmt = (
+        select(func.count())
+        .select_from(BrokerJobModel)
+        .where(BrokerJobModel.kind == kind)
+        .where(BrokerJobModel.state.in_(("PENDING", "CLAIMED", "RUNNING")))
+    )
+    async with db.session() as session:
+        return int((await session.execute(stmt)).scalar_one())

@@ -38,7 +38,7 @@ afterEach(() => {
 
 describe("useEventStatuses", () => {
   it("一次問一整批 id，不是每個活動各發一次請求", async () => {
-    api.getEventStatuses.mockResolvedValue({ results: [row("a"), row("b")] })
+    api.getEventStatuses.mockResolvedValue({ results: [row("a"), row("b")], pending: false })
 
     const { result } = renderHook(() => useEventStatuses(["a", "b"]), {
       wrapper,
@@ -54,7 +54,7 @@ describe("useEventStatuses", () => {
 
   it("全部票況都確認過就停止輪詢", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true })
-    api.getEventStatuses.mockResolvedValue({ results: [row("a")] })
+    api.getEventStatuses.mockResolvedValue({ results: [row("a")], pending: false })
 
     renderHook(() => useEventStatuses(["a"]), { wrapper })
 
@@ -64,22 +64,31 @@ describe("useEventStatuses", () => {
     expect(api.getEventStatuses).toHaveBeenCalledTimes(1)
   })
 
-  it("後端一直沒進展就收手，不要無止盡地問", async () => {
+  it("後端說還在補就繼續等，說補完了就立刻收手", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true })
     // 後端一直回「還沒確認」——沒有 Worker 在跑時就是這個樣子。
     api.getEventStatuses.mockResolvedValue({
       results: [row("a", { checked_at: null, status: "UNKNOWN" })],
+      pending: true,
     })
 
-    renderHook(() => useEventStatuses(["a"]), { wrapper })
+    const { result } = renderHook(() => useEventStatuses(["a"]), { wrapper })
 
     await waitFor(() => expect(api.getEventStatuses).toHaveBeenCalledTimes(1))
-    await vi.advanceTimersByTimeAsync(10_000)
-    expect(api.getEventStatuses.mock.calls.length).toBeGreaterThan(1)
+    // 後端說還在補（pending: true），就算一直沒有新答案也要繼續等。
+    await vi.advanceTimersByTimeAsync(30_000)
+    expect(api.getEventStatuses.mock.calls.length).toBeGreaterThan(10)
+    expect(result.current.isSettled).toBe(false)
 
-    await vi.advanceTimersByTimeAsync(300_000)
+    // 後端說補完了（就算最後仍判不出來），立刻停。
+    api.getEventStatuses.mockResolvedValue({
+      results: [row("a", { checked_at: null, status: "UNKNOWN" })],
+      pending: false,
+    })
+    await vi.advanceTimersByTimeAsync(6_000)
+    await waitFor(() => expect(result.current.isSettled).toBe(true))
     const settled = api.getEventStatuses.mock.calls.length
-    await vi.advanceTimersByTimeAsync(300_000)
+    await vi.advanceTimersByTimeAsync(60_000)
     expect(api.getEventStatuses.mock.calls.length).toBe(settled)
   })
 
@@ -94,6 +103,7 @@ describe("useEventStatuses", () => {
         results: ids.map((id, index) =>
           row(id, { checked_at: index < confirmed ? "2026-09-22T03:00:00Z" : null })
         ),
+        pending: confirmed < ids.length,
       }
     })
 
@@ -111,6 +121,7 @@ describe("useEventStatuses", () => {
     vi.useFakeTimers({ shouldAdvanceTime: true })
     api.getEventStatuses.mockResolvedValue({
       results: [row("a", { checked_at: null })],
+      pending: true,
     })
 
     const { rerender } = renderHook(
@@ -118,13 +129,14 @@ describe("useEventStatuses", () => {
       { wrapper, initialProps: { ids: ["a"] } }
     )
 
-    // 先把第一組問到放棄。
+    // 先讓第一組問到硬上限。
     await vi.advanceTimersByTimeAsync(300_000)
     const exhausted = api.getEventStatuses.mock.calls.length
     expect(exhausted).toBeGreaterThan(1)
 
     api.getEventStatuses.mockResolvedValue({
       results: [row("b", { checked_at: null })],
+      pending: true,
     })
     rerender({ ids: ["b"] })
 
@@ -150,7 +162,7 @@ describe("useEventStatuses", () => {
   })
 
   it("票況全部確認完就回報結束，卡片才收得掉骨架", async () => {
-    api.getEventStatuses.mockResolvedValue({ results: [row("a")] })
+    api.getEventStatuses.mockResolvedValue({ results: [row("a")], pending: false })
 
     const { result } = renderHook(() => useEventStatuses(["a"]), { wrapper })
 
@@ -158,10 +170,11 @@ describe("useEventStatuses", () => {
     await waitFor(() => expect(result.current.isSettled).toBe(true))
   })
 
-  it("問到上限仍等不到確認時也回報結束——沒有 Worker 在跑就是這個情況", async () => {
+  it("後端卡住一直說還在補時，硬上限仍會讓它停下來", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true })
     api.getEventStatuses.mockResolvedValue({
       results: [row("a", { checked_at: null, status: "UNKNOWN" })],
+      pending: true,
     })
 
     const { result } = renderHook(() => useEventStatuses(["a"]), { wrapper })

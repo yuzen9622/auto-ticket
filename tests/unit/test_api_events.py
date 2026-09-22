@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from pathlib import Path
 
 import httpx
 import pytest
@@ -649,33 +650,32 @@ async def test_search_queues_one_batched_browser_job(db: Database) -> None:
     """要瀏覽器才看得到的票況排成**一張** job，帶一整批活動。
 
     一場一張的話，Worker 對同一個 profile 是一次領一張，一頁搜尋結果會排成十幾輪。
+    只有拓元要排——KKTIX 與 ibon 的狀態純 HTTP 就問得到。
     """
+    from adapters.ticketing.tixcraft.resolver import clear_listing_cache
+    from api.routers.events import reset_hydration_bookkeeping
     from broker.broker import SqliteTaskBroker
     from broker.jobs import JobKind
     from broker.schema import create_broker_schema
 
-    atom_xml = """<?xml version="1.0" encoding="UTF-8"?>
-<feed xmlns="http://www.w3.org/2005/Atom">
-  <entry>
-    <title>批次測試活動 A</title>
-    <link rel="alternate" type="text/html" href="https://batch.kktix.cc/events/batch-a"/>
-    <author><name>測試主辦</name></author>
-    <published>2026-01-01T00:00:00+08:00</published>
-  </entry>
-  <entry>
-    <title>批次測試活動 B</title>
-    <link rel="alternate" type="text/html" href="https://batch.kktix.cc/events/batch-b"/>
-    <author><name>測試主辦</name></author>
-    <published>2026-01-01T00:00:00+08:00</published>
-  </entry>
-</feed>
-"""
+    # 這兩個是模組層的快取，會跨測試殘留：活動列表 120 秒、已排過的補資料 600 秒。
+    # 不清掉的話，同一批活動在別的測試已經排過，這裡就不會再排。
+    clear_listing_cache()
+    reset_hydration_bookkeeping()
+
+    index_html = (
+        Path(__file__).parent.parent / "fixtures" / "tixcraft_activity_index.html"
+    ).read_text(encoding="utf-8")
 
     def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "tixcraft.com" and request.url.path == "/activity":
+            return httpx.Response(200, text=index_html)
         if request.url.host == "kktix.com" and request.url.path == "/events.atom":
-            return httpx.Response(200, text=atom_xml)
-        if request.url.host == "batch.kktix.cc":
-            return httpx.Response(200, text=CLOSED_HTML)
+            return httpx.Response(
+                200,
+                text='<?xml version="1.0" encoding="UTF-8"?><feed '
+                'xmlns="http://www.w3.org/2005/Atom"></feed>',
+            )
         return httpx.Response(404)
 
     await create_broker_schema(db.engine)
@@ -688,7 +688,9 @@ async def test_search_queues_one_batched_browser_job(db: Database) -> None:
         transport=httpx.ASGITransport(app=app),
         base_url="http://test",
     ) as client:
-        resp = await client.get("/api/v1/events/search", params={"q": "批次測試"})
+        resp = await client.get(
+            "/api/v1/events/search", params={"q": "演唱會"}
+        )
         assert resp.status_code == 200
         searched = {ev["id"] for ev in resp.json()["results"]}
         assert len(searched) >= 2
@@ -704,3 +706,66 @@ async def test_search_queues_one_batched_browser_job(db: Database) -> None:
     assert await broker.claim(worker_id="test-worker-2") is None
 
     await drain_background_tasks()
+
+
+async def test_statuses_reports_whether_anyone_is_still_filling_them_in(
+    db: Database,
+) -> None:
+    """`/statuses` 要說清楚後端還在不在補。
+
+    補票況分成純 HTTP 與瀏覽器兩段，兩段之間有空檔。前端若只能用「連續幾輪沒動靜」
+    去猜，就會在空檔裡以為結束了，答案還沒到就把骨架收掉、印「狀態未確認」。
+    """
+    from adapters.ticketing.tixcraft.resolver import clear_listing_cache
+    from api.routers.events import reset_hydration_bookkeeping
+    from broker.broker import SqliteTaskBroker
+    from broker.schema import create_broker_schema
+
+    clear_listing_cache()
+    reset_hydration_bookkeeping()
+
+    index_html = (
+        Path(__file__).parent.parent / "fixtures" / "tixcraft_activity_index.html"
+    ).read_text(encoding="utf-8")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "tixcraft.com" and request.url.path == "/activity":
+            return httpx.Response(200, text=index_html)
+        if request.url.host == "kktix.com" and request.url.path == "/events.atom":
+            return httpx.Response(
+                200,
+                text='<?xml version="1.0" encoding="UTF-8"?><feed '
+                'xmlns="http://www.w3.org/2005/Atom"></feed>',
+            )
+        return httpx.Response(404)
+
+    await create_broker_schema(db.engine)
+    broker = SqliteTaskBroker(db)
+    mock_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    app = create_app(
+        ApiSettings(db_path=db.db_path, resolver_orgs=()),
+        db=db,
+        broker=broker,
+        http_client=mock_client,
+    )
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://test",
+    ) as client:
+        results = (
+            await client.get("/api/v1/events/search", params={"q": "演唱會"})
+        ).json()["results"]
+        ids = ",".join(ev["id"] for ev in results[:5])
+
+        # 拓元的 job 還在 broker 上排著，票況就還沒定案。
+        still = await client.get("/api/v1/events/statuses", params={"ids": ids})
+        assert still.json()["pending"] is True
+
+        await drain_background_tasks()
+        job = await broker.claim(worker_id="test-worker")
+        assert job is not None
+        await broker.complete(job.id, worker_id="test-worker", result={})
+
+        done = await client.get("/api/v1/events/statuses", params={"ids": ids})
+        assert done.json()["pending"] is False

@@ -136,3 +136,7 @@ class EventStatusesResponse(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     results: list[EventStatusOut] = Field(default_factory=list)
+    pending: bool = Field(
+        default=False,
+        description="後端是否還在補票況；false 代表不會再有新結果了。",
+    )

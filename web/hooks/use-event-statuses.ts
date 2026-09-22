@@ -14,6 +14,7 @@ export interface EventStatusFeed {
    *
    * 呼叫端要靠它決定「還在等」的骨架該收起來——後端如果沒有 Worker 在跑，那些
    * 要瀏覽器才看得到的票況永遠不會被確認，骨架就會一直轉下去，看起來像壞掉。
+   * 判斷依據是後端回報的 `pending`，不是前端猜的等待輪數。
    */
   isSettled: boolean
 }
@@ -21,22 +22,15 @@ export interface EventStatusFeed {
 /** 每隔多久回頭問一次還沒確認的票況。 */
 const POLL_INTERVAL_MS = 2000
 /**
- * 連續幾輪都沒有新的票況被確認就收手。
+ * 硬上限，避免後端一直回報「還在補」就無止盡地問下去。
  *
- * 用「還有沒有進展」而不是固定次數當停止條件：後端一批要補多久，取決於這次搜尋
- * 到幾筆、其中幾筆要開瀏覽器，前端猜不準。固定次數只會兩頭不對——太短會在後端
- * 正要寫回時放棄，太長會讓沒有 Worker 的環境空轉。
+ * 正常情況輪到後端說 `pending: false` 就停了；這是後端卡住時的保險絲。
  */
-const IDLE_POLLS_BEFORE_GIVING_UP = 5
-/** 硬上限，避免後端一直有零星進展就無止盡地問下去。 */
-const MAX_POLLS = 40
+const MAX_POLLS = 60
 
 interface PollState {
   key: string
   count: number
-  confirmed: number
-  idle: number
-  lastUpdatedAt: number
 }
 
 /**
@@ -48,21 +42,9 @@ interface PollState {
 export function useEventStatuses(eventIds: string[]): EventStatusFeed {
   const key = eventIds.join(",")
   // 進度跟著這一組活動走：換了搜尋結果就重新計算。
-  const polls = React.useRef<PollState>({
-    key: "",
-    count: 0,
-    confirmed: 0,
-    idle: 0,
-    lastUpdatedAt: 0,
-  })
+  const polls = React.useRef<PollState>({ key: "", count: 0 })
   if (polls.current.key !== key) {
-    polls.current = {
-      key,
-      count: 0,
-      confirmed: 0,
-      idle: 0,
-      lastUpdatedAt: 0,
-    }
+    polls.current = { key, count: 0 }
   }
 
   const query = useQuery({
@@ -73,42 +55,32 @@ export function useEventStatuses(eventIds: string[]): EventStatusFeed {
     },
     enabled: key !== "",
     refetchInterval: (q) => {
-      const rows = q.state.data?.results
-      if (!rows) return POLL_INTERVAL_MS
-
-      // 只在真的收到新回應時才計算進度；`refetchInterval` 每次重繪都會被呼叫。
-      if (q.state.dataUpdatedAt !== polls.current.lastUpdatedAt) {
-        polls.current.lastUpdatedAt = q.state.dataUpdatedAt
-        const confirmed = rows.filter((row) => row.checked_at).length
-        if (confirmed > polls.current.confirmed) {
-          polls.current.confirmed = confirmed
-          polls.current.idle = 0
-        } else {
-          polls.current.idle += 1
-        }
-      }
-
-      if (_allConfirmed(key, rows)) return false
-      if (polls.current.idle >= IDLE_POLLS_BEFORE_GIVING_UP) return false
+      const data = q.state.data
+      if (!data) return POLL_INTERVAL_MS
+      // 後端自己說還在不在補，前端就不必用「連續幾輪沒動靜」去猜。補票況分成
+      // 純 HTTP 與瀏覽器兩段，兩段之間的空檔很容易被猜成「已經沒事做了」。
+      if (!data.pending || _allConfirmed(key, data.results)) return false
       if (polls.current.count >= MAX_POLLS) return false
       return POLL_INTERVAL_MS
     },
   })
 
-  const rows = query.data?.results
+  const data = query.data
   return React.useMemo(() => {
     const statuses = new Map<string, EventStatus>()
-    for (const row of rows ?? []) {
+    for (const row of data?.results ?? []) {
       statuses.set(row.id, row)
     }
-    const stalled =
-      polls.current.idle >= IDLE_POLLS_BEFORE_GIVING_UP ||
-      polls.current.count >= MAX_POLLS
+    const backendDone = data !== undefined && !data.pending
     return {
       statuses,
-      isSettled: key === "" || _allConfirmed(key, rows) || stalled,
+      isSettled:
+        key === "" ||
+        backendDone ||
+        _allConfirmed(key, data?.results) ||
+        polls.current.count >= MAX_POLLS,
     }
-  }, [rows, key, query.dataUpdatedAt])
+  }, [data, key, query.dataUpdatedAt])
 }
 
 function _allConfirmed(key: string, rows: EventStatus[] | undefined): boolean {

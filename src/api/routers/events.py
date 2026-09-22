@@ -4,7 +4,7 @@ import asyncio
 import contextlib
 import re
 import time
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -24,7 +24,7 @@ from adapters.ticketing.kktix.resolver import (
 )
 from adapters.ticketing.kktix.selectors import KKTIX_EVENT_URL_RE
 from api.deps import get_db, get_resolver, get_settings
-from api.queries import get_event_status_rows
+from api.queries import count_unfinished_jobs, get_event_status_rows
 from api.errors import (
     InvalidRequestError,
     NotFoundError,
@@ -498,6 +498,11 @@ async def drain_background_tasks(timeout: float = 30.0) -> None:
             return
 
 
+def reset_hydration_bookkeeping() -> None:
+    """清掉「已經排過補資料」的紀錄。測試之間必須互不影響。"""
+    _hydration_requested.clear()
+
+
 def cancel_background_tasks() -> None:
     """關閉服務時把還在跑的背景工作收掉，別讓它們對著已經關掉的資料庫寫入。"""
     for task in list(_background_tasks):
@@ -510,9 +515,12 @@ async def _hydrate_over_http(
 ) -> None:
     """搜尋回應送出之後，才去問純 HTTP 問得到的活動詳情。
 
-    這一段不含瀏覽器（G32），所以拿不到拓元的場次表，也判不出 KKTIX／ibon 的售完；
-    那些由 Worker 的 job 補。放在背景是因為它會逐一打上游，擺在請求裡會讓搜尋
-    卡上好幾秒——使用者要的是先看到活動，狀態晚一點到沒關係。
+    這一段不含瀏覽器（G32），所以拿不到拓元的場次表——那個交給 Worker。KKTIX 與
+    ibon 則**到此為止就是答案**：狀態只分尚未開賣與販售中，兩者純 HTTP 都問得到，
+    不需要再進購票頁，所以這裡直接標記成已確認，前端不必再等 Worker。
+
+    放在背景是因為它會逐一打上游，擺在請求裡會讓搜尋卡上好幾秒——使用者要的是
+    先看到活動，狀態晚一點到沒關係。
     """
     gate = asyncio.Semaphore(SEARCH_HYDRATE_CONCURRENCY)
 
@@ -525,7 +533,11 @@ async def _hydrate_over_http(
                 hydrated = await resolver.fetch_event_metadata(ev.canonical_url)
         except Exception:
             return None
-        merged = {**(ev.raw_metadata or {}), **(hydrated.raw_metadata or {})}
+        merged = {
+            **(ev.raw_metadata or {}),
+            **(hydrated.raw_metadata or {}),
+            "availability_checked_at": datetime.now(UTC).isoformat(),
+        }
         return hydrated.model_copy(update={"raw_metadata": merged})
 
     hydrated = [ev for ev in await asyncio.gather(*(one(ev) for ev in events)) if ev]
@@ -547,7 +559,8 @@ async def get_event_statuses(
 ) -> EventStatusesResponse:
     """批次查售票狀態，讓搜尋結果的卡片可以逐筆把狀態補上。
 
-    只讀資料庫、不打上游：寫入的是背景工作與 Worker，這裡負責把結果交出去。
+    只讀資料庫、不打上游：寫入的是背景工作與 Worker，這裡負責把結果交出去，
+    順便說一句「還有沒有人在補」——前端要靠它決定還要不要等。
     """
     wanted = [part.strip() for part in ids.split(",") if part.strip()]
     if not wanted:
@@ -555,7 +568,24 @@ async def get_event_statuses(
     wanted = wanted[:STATUS_QUERY_LIMIT]
 
     rows = await get_event_status_rows(db, wanted)
-    return EventStatusesResponse(results=[_row_to_status(row) for row in rows])
+    return EventStatusesResponse(
+        results=[_row_to_status(row) for row in rows],
+        pending=await _hydration_in_progress(db),
+    )
+
+
+async def _hydration_in_progress(db: Database) -> bool:
+    """還有沒有人在補票況。
+
+    兩個來源都要算：這個行程自己的背景工作（KKTIX／ibon 的純 HTTP 那段），以及
+    broker 上還沒跑完的瀏覽器 job（拓元）。兩段之間有空檔，只看其中一邊會讓前端
+    在中場休息時就以為結束了。
+    """
+    if _background_tasks:
+        return True
+    with contextlib.suppress(Exception):
+        return await count_unfinished_jobs(db, JobKind.EVENT_HYDRATE.value) > 0
+    return False
 
 
 def _row_to_status(row: dict[str, Any]) -> EventStatusOut:
@@ -580,13 +610,13 @@ def _metadata_detail_loaded(metadata: dict[str, Any]) -> bool:
 async def _queue_browser_hydration(
     events: list[Event], *, broker: SqliteTaskBroker, settings: ApiSettings
 ) -> None:
-    """把整批活動排成**一張** job 交給 Worker。
+    """把要開瀏覽器的活動排成**一張** job 交給 Worker。
 
     一場一張 job 的話，Worker 對同一個 profile 是一次領一張，十幾場就排成十幾輪；
     合成一張之後 Worker 可以用同一個瀏覽器同時開幾個分頁跑完。
 
-    三個平台都要排：拓元的狀態只有場次頁看得出來，KKTIX 與 ibon 的售完也只在要
-    瀏覽器才打得開的購票頁上。
+    只有拓元要排。它的狀態只有場次頁看得出來，而那一頁擋純 HTTP；KKTIX 與 ibon
+    的狀態上面那段背景工作就問完了，不必再讓 Worker 跑一次。
     """
     now = time.monotonic()
     rows: list[dict[str, Any]] = []
@@ -594,6 +624,8 @@ async def _queue_browser_hydration(
         platform = (
             ev.platform.value if hasattr(ev.platform, "value") else str(ev.platform)
         )
+        if platform != PlatformEnum.TIXCRAFT.value:
+            continue
         queued_at = _hydration_requested.get(ev.id)
         if queued_at is not None and now - queued_at < HYDRATION_TTL_S:
             continue

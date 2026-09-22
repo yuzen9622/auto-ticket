@@ -192,6 +192,8 @@ export interface EventStatus {
 
 export interface EventStatusesResponse {
   results: EventStatus[]
+  /** 後端是否還在補票況；false 代表不會再有新結果了。 */
+  pending: boolean
 }
 
 export interface EventSearchResult {

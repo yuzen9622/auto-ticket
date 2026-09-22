@@ -58,7 +58,7 @@ beforeEach(() => {
   api.searchEvents.mockReset()
   api.getEventStatuses.mockReset()
   // 票況是搜尋之後才非同步補的；預設當成還沒補到，卡片顯示搜尋回來的狀態。
-  api.getEventStatuses.mockResolvedValue({ results: [] })
+  api.getEventStatuses.mockResolvedValue({ results: [], pending: false })
 })
 
 describe("活動搜尋", () => {
@@ -203,6 +203,7 @@ describe("活動搜尋", () => {
           checked_at: "2026-09-22T03:00:00Z",
         },
       ],
+      pending: false,
     })
 
     renderWithProviders(<EventSearch />)
@@ -228,6 +229,7 @@ describe("活動搜尋", () => {
           checked_at: "2026-09-22T03:00:00Z",
         },
       ],
+      pending: false,
     })
 
     renderWithProviders(<EventSearch />)
@@ -256,6 +258,7 @@ describe("活動搜尋", () => {
           checked_at: "2026-09-22T03:00:00Z",
         },
       ],
+      pending: false,
     })
 
     renderWithProviders(<EventSearch />)
