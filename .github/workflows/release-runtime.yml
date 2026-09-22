@@ -159,15 +159,31 @@ jobs:
           gh release edit "$TAG" --notes-file public-notes.md
 
       - name: Install CLI deps
-        run: npm --prefix packages/cli ci
+        working-directory: packages/cli
+        run: npm ci
 
       - name: CLI tests
-        run: npm --prefix packages/cli test
+        working-directory: packages/cli
+        run: npm test
+
+      # `npm --prefix` 對 publish 無效——publish 看的是 cwd，所以那樣寫會去打包
+      # repo root（實測產出 426 個檔案、名稱 auto-ticket，靠 root 的 private: true
+      # 才被 EPRIVATE 擋下）。用 working-directory，再加一道明確斷言。
+      - name: Assert we are publishing the CLI package
+        working-directory: packages/cli
+        run: |
+          set -euo pipefail
+          name=$(node -p "require('./package.json').name")
+          version=$(node -p "require('./package.json').version")
+          echo "將發佈：$name@$version"
+          test "$name" = "@yuzen9622/auto-ticket"
+          test "v$version" = "$TAG"
 
       - name: npm publish
+        working-directory: packages/cli
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: npm --prefix packages/cli publish --provenance --access public
+        run: npm publish --provenance --access public
 
       - name: Promote release out of draft
         env:

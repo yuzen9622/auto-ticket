@@ -87,9 +87,11 @@ jobs:
           node-version: 20
 
       - name: Install CLI deps
-        run: npm --prefix packages/cli ci
+        working-directory: packages/cli
+        run: npm ci
 
       # CLI 測試含假 runtime 的端到端（真 http server、真系統 tar、真檔案系統）。
       # 系統 tar 的行為三個平台不一樣，那是只有實跑才守得住的東西。
       - name: CLI tests
-        run: npm --prefix packages/cli test
+        working-directory: packages/cli
+        run: npm test
