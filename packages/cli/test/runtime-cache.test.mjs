@@ -245,12 +245,23 @@ async function makeTarball(root, name, files) {
     await fs.writeFile(path.join(stage, rel), content);
   }
   const archivePath = path.join(root, `${name}.tar.gz`);
+  const stageParent = path.dirname(stage);
   await new Promise((resolve, reject) => {
-    const child = realSpawn("tar", ["-czf", archivePath, "-C", path.dirname(stage), name], {
-      shell: false,
+    // cwd ＋ 相對路徑：Windows 上 `tar` 可能是 MSYS 的 GNU tar，而它會把
+    // `C:\\...` 當成遠端 host:path 規格拒絕掉。
+    const child = realSpawn(
+      "tar",
+      ["-czf", path.relative(stageParent, archivePath), name],
+      { shell: false, cwd: stageParent },
+    );
+    let stderr = "";
+    child.stderr?.on("data", (chunk) => {
+      stderr += chunk.toString();
     });
     child.once("error", reject);
-    child.once("exit", (code) => (code === 0 ? resolve() : reject(new Error(`tar exit ${code}`))));
+    child.once("exit", (code) =>
+      code === 0 ? resolve() : reject(new Error(`tar exit ${code}: ${stderr}`)),
+    );
   });
   return fs.readFile(archivePath);
 }

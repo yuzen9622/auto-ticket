@@ -26,12 +26,25 @@ let tmpRoot;
 let server;
 let baseUrl;
 
-async function run(cmd, args) {
+/**
+ * 跑 tar 並把 stderr 帶回錯誤訊息。
+ *
+ * 一律以 `cwd` ＋ 相對路徑呼叫：Windows 上 `tar` 可能解析到 MSYS 的 GNU tar，
+ * 而 GNU tar 會把 `C:\\...` 當成 `host:path` 的遠端規格而整個拒絕。相對路徑
+ * 對 bsdtar 與 GNU tar 都成立。
+ */
+async function run(cmd, args, cwd) {
   await new Promise((resolve, reject) => {
-    const child = spawn(cmd, args, { shell: false });
+    const child = spawn(cmd, args, { shell: false, cwd });
+    let stderr = "";
+    child.stderr?.on("data", (chunk) => {
+      stderr += chunk.toString();
+    });
     child.once("error", reject);
     child.once("exit", (code) =>
-      code === 0 ? resolve() : reject(new Error(`${cmd} exit ${code}`)),
+      code === 0
+        ? resolve()
+        : reject(new Error(`${cmd} ${args.join(" ")} exit ${code}: ${stderr}`)),
     );
   });
 }
@@ -47,7 +60,7 @@ async function buildAsset(outDir) {
   );
   await fs.mkdir(outDir, { recursive: true });
   const archive = path.join(outDir, ASSET);
-  await run("tar", ["-czf", archive, "-C", stageParent, ROOT_NAME]);
+  await run("tar", ["-czf", path.relative(stageParent, archive), ROOT_NAME], stageParent);
   const bytes = await fs.readFile(archive);
   return { archive, bytes, sha256: createHash("sha256").update(bytes).digest("hex") };
 }
