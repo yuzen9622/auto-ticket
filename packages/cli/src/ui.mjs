@@ -25,6 +25,8 @@ const BANNER_LINES = [
   "█   █  ███    █    ███      █   ███  ████ █   █ █████   █  ",
 ];
 
+const BANNER_WIDTH = Math.max(...BANNER_LINES.map((line) => line.length));
+
 /**
  * 能不能做動畫（覆寫同一行、轉 spinner、藏游標）。
  *
@@ -55,6 +57,12 @@ export function banner({ version, stream = process.stderr, env = process.env } =
   if (!isInteractive({ stream, env })) return [];
   const tag = version ? `auto-ticket ${version}` : "auto-ticket";
   const color = supportsColor({ stream, env });
+  // 視窗比圖樣窄的話，終端機會把每一行折成兩段，圖就徹底看不出是字了。
+  // 分割視窗、SSH 進小終端都常見，那時退成一行字比硬畫好。
+  const columns = stream.columns ?? 80;
+  if (columns < BANNER_WIDTH) {
+    return ["", paint(color, "36", `▌ ${tag}`), ""];
+  }
   const art = BANNER_LINES.map((line) => paint(color, "36", line));
   return ["", ...art, "", paint(color, "2", `  ${tag}  ·  本機執行，資料不出你的機器`), ""];
 }

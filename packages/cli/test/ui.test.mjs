@@ -79,9 +79,17 @@ describe("橫幅", () => {
     expect(banner({ version: "1.2.3", stream: fakeStream(false), env: {} })).toEqual([]);
   });
 
-  it("圖樣寬度守在 80 欄以內，窄終端不會被折行折爛", () => {
+  it("圖樣寬度守在 80 欄以內", () => {
     const lines = banner({ version: "1.2.3", stream: fakeStream(true), env: { NO_COLOR: "1" } });
     for (const line of lines) expect(line.length).toBeLessThanOrEqual(80);
+  });
+
+  it("視窗比圖樣窄時退成一行，不畫出被折爛的圖", () => {
+    const narrow = { ...fakeStream(true), columns: 40 };
+    const lines = banner({ version: "1.2.3", stream: narrow, env: { NO_COLOR: "1" } });
+    for (const line of lines) expect(line.length).toBeLessThanOrEqual(40);
+    expect(lines.join("\n")).toContain("auto-ticket 1.2.3");
+    expect(lines.join("\n")).not.toContain("███");
   });
 });
 
