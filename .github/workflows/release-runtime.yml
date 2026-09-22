@@ -127,7 +127,9 @@ jobs:
   publish:
     name: manifest + npm publish
     needs: build
-    runs-on: ubuntu-latest
+    # 不能用 ubuntu：packages/cli 宣告 os 只有 darwin/win32，npm 會以 EBADPLATFORM
+    # 拒絕在 Linux 上安裝它，連 devDependencies 都裝不了（發版前的 CLI 測試因此跑不了）。
+    runs-on: macos-14
     steps:
       - uses: actions/checkout@v5
         with:
