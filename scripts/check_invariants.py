@@ -109,6 +109,20 @@ G2_LITERAL_EXEMPT = (
     "tests/unit/test_clock_sync.py",
     "tests/unit/test_api_events.py",
 )
+# G2 用「URL 字面值的網域」當代理指標，抓的是「測試偷偷連外」。但有一類測試的 URL
+# 是**被解析的資料**而非連線目標：平台的 URL 辨識規則寫死了真實網域
+# （`selectors.py` 的 `KKTIX_EVENT_URL_RE` 要求 `.kktix.cc`），把它換成 RFC 2606
+# 保留網域，那些測試就什麼都驗不到了。
+#
+# 真正的連外風險在這幾個檔上由 netguard 擋住（G8 驗它掛載、G9 驗它真的有效），
+# 所以這裡只豁免「網域字面值」這條代理指標，NTP 主機與真實 client 的檢查照跑。
+# 新增檔案不得隨手加進來——要加就得先說明它為什麼非用真實網域不可。
+G2_URL_AS_DATA_EXEMPT = (
+    "tests/unit/test_kktix_adapter.py",
+    "tests/unit/test_cdp_attach.py",
+    "tests/unit/test_browser_manager.py",
+    "tests/integration/test_purchase_flow.py",
+)
 RESERVED_TEST_HOST_SUFFIXES = (
     ".invalid",
     ".test",
@@ -233,6 +247,8 @@ def g2_no_real_hosts_in_tests() -> None:
                     and not node.keywords
                 ):
                     fail("G2", f"{rel}:{node.lineno} 建立了真實 httpx.AsyncClient()")
+            continue
+        if rel in G2_URL_AS_DATA_EXEMPT:
             continue
         for node in ast.walk(tree):
             if not (isinstance(node, ast.Constant) and isinstance(node.value, str)):
