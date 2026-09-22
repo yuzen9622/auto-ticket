@@ -127,11 +127,25 @@ export function verifySha256(actualHex, expectedHex) {
 /**
  * 呼叫系統 `tar` 解壓，argv 陣列、shell:false，不串接使用者輸入。
  */
+/**
+ * 把 tar 的引數換成「以 destDir 為 cwd 的相對路徑」。
+ *
+ * Windows 上 `tar` 未必是系統內建的 bsdtar——使用者若從 Git Bash 執行，PATH 會先
+ * 命中 MSYS 的 GNU tar，而 GNU tar 把 `C:\...` 解讀成 `host:path` 的遠端規格，
+ * 直接回 `Cannot connect to C: resolve failed`。相對路徑對兩種 tar 都成立。
+ * 跨磁碟機時 path.relative 會給回絕對路徑，那時只能原樣交出去。
+ */
+function tarArchiveArg(destDir, archivePath) {
+  const relative = path.relative(destDir, archivePath);
+  return path.isAbsolute(relative) ? archivePath : relative;
+}
+
 export async function extract({ archivePath, destDir, spawnImpl }) {
   await fs.mkdir(destDir, { recursive: true });
   const run = spawnImpl ?? nodeSpawn;
   await new Promise((resolve, reject) => {
-    const child = run("tar", ["-xzf", archivePath, "-C", destDir], {
+    const child = run("tar", ["-xzf", tarArchiveArg(destDir, archivePath)], {
+      cwd: destDir,
       shell: false,
     });
     let stderr = "";

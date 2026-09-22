@@ -171,11 +171,19 @@ describe("extract", () => {
       seen = { cmd, args, opts };
       return fakeChild;
     };
-    await extract({ archivePath: "/tmp/whatever.tar.gz", destDir: path.join(tmpRoot, "out"), spawnImpl });
+    const destDir = path.join(tmpRoot, "out");
+    const archivePath = path.join(tmpRoot, "whatever.tar.gz");
+    await extract({ archivePath, destDir, spawnImpl });
     expect(seen.cmd).toBe("tar");
     expect(Array.isArray(seen.args)).toBe(true);
-    expect(seen.args).toEqual(["-xzf", "/tmp/whatever.tar.gz", "-C", path.join(tmpRoot, "out")]);
+    // 以 cwd 取代 -C，archive 給相對路徑：Windows 的 GNU tar 會把 `C:\...`
+    // 當成遠端 host:path 而拒絕（實測 `Cannot connect to C: resolve failed`）。
+    expect(seen.args).toEqual(["-xzf", path.join("..", "whatever.tar.gz")]);
+    expect(seen.opts.cwd).toBe(destDir);
     expect(seen.opts.shell).not.toBe(true);
+    for (const arg of seen.args) {
+      expect(/^[A-Za-z]:[\\/]/.test(arg), `argv 不得帶磁碟機代號: ${arg}`).toBe(false);
+    }
   });
 });
 
