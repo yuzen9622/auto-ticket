@@ -106,6 +106,24 @@ describe("guardrails: packages/cli 靜態掃描", () => {
     }
   });
 
+  it("bin 對應得到真實檔案，且路徑不帶 ./ 前綴", async () => {
+    const pkg = JSON.parse(await readFile(path.join(CLI_ROOT, "package.json"), "utf8"));
+    const target = pkg.bin?.["auto-ticket"];
+    expect(target, "package.json 缺少 bin.auto-ticket").toBeTruthy();
+    // npm 會把帶 ./ 前綴的 bin 路徑判為無效，**在 publish 時整條刪掉**——
+    // 發出去的套件就沒有任何指令，而這裡沒有任何測試會因此變紅。
+    expect(target.startsWith("./"), "bin 路徑不得帶 ./ 前綴").toBe(false);
+    await expect(readFile(path.join(CLI_ROOT, target), "utf8")).resolves.toMatch(
+      /^#!\/usr\/bin\/env node/,
+    );
+    expect(pkg.files).toContain("bin");
+  });
+
+  it("package.json 宣告 repository，否則 npm provenance 會拒發", async () => {
+    const pkg = JSON.parse(await readFile(path.join(CLI_ROOT, "package.json"), "utf8"));
+    expect(pkg.repository?.url).toContain("github.com/yuzen9622/auto-ticket");
+  });
+
   it("package.json 的 dependencies 恆為空物件", async () => {
     const pkg = JSON.parse(await readFile(path.join(CLI_ROOT, "package.json"), "utf8"));
     expect(pkg.dependencies).toEqual({});
