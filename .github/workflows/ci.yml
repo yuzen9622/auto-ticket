@@ -37,9 +37,6 @@ jobs:
       - name: Install web deps
         run: pnpm --dir web install --frozen-lockfile
 
-      - name: Install CLI deps
-        run: npm --prefix packages/cli ci
-
       - name: Invariant guards
         run: uv run python scripts/check_invariants.py
 
@@ -61,11 +58,11 @@ jobs:
       - name: contract
         run: pnpm --dir web run check:contract
 
-      - name: CLI tests
-        run: npm --prefix packages/cli test
-
-  launcher-integration:
-    name: launcher e2e (${{ matrix.os }})
+  # CLI 不在 ubuntu 上測：`packages/cli/package.json` 宣告 os 只有 darwin/win32，
+  # npm 會以 EBADPLATFORM 拒絕在 Linux 上安裝它——連 devDependencies 都裝不了。
+  # 那個宣告是給使用者的正確保護，所以改成在它真正支援的三個平台上測。
+  cli:
+    name: cli (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
