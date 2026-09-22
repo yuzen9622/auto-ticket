@@ -374,7 +374,6 @@ async function resolveRuntimeDir({ manifest, entry, target, packageVersion, p, u
   progress.start();
   try {
     const dir = await runtimeCacheMod.ensureRuntime({
-      manifest,
       manifestEntry: entry,
       target,
       version: packageVersion,

@@ -175,16 +175,22 @@ export async function extract({ archivePath, destDir, spawnImpl }) {
 
 /**
  * 以 mkdtemp + rename 達成同檔案系統內的原子提交；目標已存在則先 rename 走既有版本。
+ *
+ * 先搬走舊版而不是直接刪，是為了讓「舊版消失」與「新版就位」之間的空窗小到只有
+ * 一次 rename：中途斷電最壞也只是留下一份可辨識的備份，不會出現沒有 runtime 的狀態。
+ * 提交成功之後那份備份就沒有價值了，**當場刪掉**——一份 runtime 解開來 600MB，
+ * 留著會在使用者的家目錄裡無聲堆積，而且沒有任何指令看得到它。
  */
 export async function commitRuntime({ stagingDir, runtimeRoot, version, fsImpl = fs }) {
   const target = path.join(runtimeRoot, version);
   await fsImpl.mkdir(runtimeRoot, { recursive: true });
+  let displaced = null;
   try {
     const stat = await fsImpl.stat(target).catch(() => null);
     if (stat) {
-      const old = path.join(runtimeRoot, ".tmp", `${version}.old-${Date.now()}`);
-      await fsImpl.mkdir(path.dirname(old), { recursive: true });
-      await fsImpl.rename(target, old);
+      displaced = path.join(runtimeRoot, ".tmp", `${version}.old-${Date.now()}`);
+      await fsImpl.mkdir(path.dirname(displaced), { recursive: true });
+      await fsImpl.rename(target, displaced);
     }
     await fsImpl.rename(stagingDir, target);
   } catch (err) {
@@ -192,6 +198,10 @@ export async function commitRuntime({ stagingDir, runtimeRoot, version, fsImpl =
       "VERIFY_FAILED",
       `runtime 提交失敗（${process.platform} rename）：${err.message}`,
     );
+  }
+  // 清不掉不算失敗：新版已經就位，這一步只是回收空間。
+  if (displaced) {
+    await fsImpl.rm(displaced, { recursive: true, force: true }).catch(() => {});
   }
   return target;
 }
@@ -270,6 +280,8 @@ export async function ensureRuntime({
       fsImpl,
     });
     await fsImpl.rm(partPath, { force: true });
+    // stagingDir 已經被 rename 走，剩下的是 mkdtemp 建的空外殼。
+    await fsImpl.rm(stagingParent, { recursive: true, force: true }).catch(() => {});
     return committed;
   } catch (err) {
     await fsImpl.rm(stagingParent, { recursive: true, force: true }).catch(() => {});

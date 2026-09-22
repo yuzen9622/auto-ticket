@@ -243,6 +243,45 @@ describe("commitRuntime", () => {
       commitRuntime({ stagingDir, runtimeRoot, version: "1.0.0", fsImpl }),
     ).rejects.toMatchObject({ code: "VERIFY_FAILED" });
   });
+
+  it("重裝同一版時，被換下來的舊版會被刪掉，不在家目錄裡無聲堆積", async () => {
+    const runtimeRoot = path.join(tmpRoot, "runtime");
+    const target = path.join(runtimeRoot, "1.0.0");
+    await fs.mkdir(target, { recursive: true });
+    await fs.writeFile(path.join(target, "marker.txt"), "old");
+
+    const stagingDir = path.join(tmpRoot, "staging-1.0.0");
+    await fs.mkdir(stagingDir, { recursive: true });
+    await fs.writeFile(path.join(stagingDir, "marker.txt"), "new");
+
+    const committed = await commitRuntime({ stagingDir, runtimeRoot, version: "1.0.0" });
+
+    expect(await fs.readFile(path.join(committed, "marker.txt"), "utf8")).toBe("new");
+    // 一份解開的 runtime 是 600MB 等級，而且沒有任何指令看得到 .tmp 底下的備份。
+    const leftovers = await fs.readdir(path.join(runtimeRoot, ".tmp")).catch(() => []);
+    expect(leftovers.filter((e) => e.includes(".old-"))).toEqual([]);
+  });
+
+  it("備份刪不掉也不算失敗：新版已經就位，回收空間只是附帶", async () => {
+    const runtimeRoot = path.join(tmpRoot, "runtime");
+    const target = path.join(runtimeRoot, "1.0.0");
+    await fs.mkdir(target, { recursive: true });
+    const stagingDir = path.join(tmpRoot, "staging-1.0.0");
+    await fs.mkdir(stagingDir, { recursive: true });
+
+    const fsImpl = {
+      mkdir: fs.mkdir,
+      stat: fs.stat,
+      rename: fs.rename,
+      rm: async () => {
+        throw new Error("EBUSY");
+      },
+    };
+
+    await expect(
+      commitRuntime({ stagingDir, runtimeRoot, version: "1.0.0", fsImpl }),
+    ).resolves.toBe(target);
+  });
 });
 
 /** 用系統 tar 打一個真的 tar.gz，回傳它的位元組。 */

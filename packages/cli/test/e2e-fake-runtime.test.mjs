@@ -122,9 +122,9 @@ describe("假 runtime 端到端", () => {
     ).resolves.toBeTruthy();
     await expect(fs.stat(path.join(committed, "web", "server.js"))).resolves.toBeTruthy();
 
-    // 暫存檔清乾淨，沒有留下半個 GB 的 .part。
+    // 暫存目錄整個清乾淨：沒有半個 GB 的 .part，也沒有解壓用的空外殼。
     const leftovers = await fs.readdir(paths.runtimeTmp).catch(() => []);
-    expect(leftovers.filter((e) => e.endsWith(".part"))).toEqual([]);
+    expect(leftovers).toEqual([]);
   });
 
   it("已安裝就直接回傳，不再打網路", async () => {
