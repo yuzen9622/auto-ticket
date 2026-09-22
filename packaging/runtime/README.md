@@ -31,24 +31,29 @@ sdist 編譯——不是失敗，就是產出一個裝得起來、跑起來才�
 
 ## 重新產生鎖定檔
 
-三個平台各跑一次。注意 `--python-platform` 要用 uv 認得的 target triple，
-不是 `macos-aarch64` 這種寫法：
+三個平台各跑一次。兩個容易踩的點：`--python-platform` 要用 uv 認得的 target
+triple（不是 `macos-aarch64` 這種寫法），而且**必須帶 `--only-binary=:all:`**——
+`uv pip compile` 預設允許 sdist，會鎖到「那個平台只有原始碼包」的版本，然後在
+安裝端（帶 `--only-binary`）才爆炸，而那時已經是發版流程裡了。
 
 ```bash
 uv pip compile packaging/runtime/requirements.in \
   -c packaging/runtime/constraints.txt \
+  --only-binary=:all: \
   --python-version 3.12 \
   --python-platform aarch64-apple-darwin \
   -o packaging/runtime/requirements-darwin-arm64.txt
 
 uv pip compile packaging/runtime/requirements.in \
   -c packaging/runtime/constraints.txt \
+  --only-binary=:all: \
   --python-version 3.12 \
   --python-platform x86_64-apple-darwin \
   -o packaging/runtime/requirements-darwin-x64.txt
 
 uv pip compile packaging/runtime/requirements.in \
   -c packaging/runtime/constraints.txt \
+  --only-binary=:all: \
   --python-version 3.12 \
   --python-platform x86_64-pc-windows-msvc \
   -o packaging/runtime/requirements-win32-x64.txt

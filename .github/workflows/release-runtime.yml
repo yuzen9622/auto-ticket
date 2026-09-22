@@ -49,6 +49,9 @@ jobs:
       # --only-binary=:all: 讓任何沒有 wheel 的套件當場紅燈。靜默掉進 sdist 編譯
       # 會產出「裝得起來、跑起來才炸」的 runtime，那比建置失敗難查一百倍。
       - name: Install runtime site-packages
+        # Windows runner 的預設 shell 是 PowerShell，它不吃 `\` 續行
+        # （症狀是 ParserError: Missing expression after unary operator '--'）。
+        shell: bash
         run: |
           uv pip install --only-binary=:all: --target site-packages \
             --python-version 3.12 \
