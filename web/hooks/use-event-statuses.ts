@@ -41,15 +41,18 @@ interface PollState {
  */
 export function useEventStatuses(eventIds: string[]): EventStatusFeed {
   const key = eventIds.join(",")
-  // 進度跟著這一組活動走：換了搜尋結果就重新計算。
+  // 進度跟著這一組活動走：換了搜尋結果就重新計算。計數只在 react-query 的
+  // callback 裡讀寫——render 期間碰 ref 會讓 React 在 concurrent 下讀到撕裂的值。
   const polls = React.useRef<PollState>({ key: "", count: 0 })
-  if (polls.current.key !== key) {
-    polls.current = { key, count: 0 }
-  }
+  // render 要知道「是否已經撞到硬上限」，所以那件事必須是 state 而不是 ref。
+  const [cappedKey, setCappedKey] = React.useState<string | null>(null)
 
   const query = useQuery({
     queryKey: ["event-statuses", key],
     queryFn: ({ signal }) => {
+      if (polls.current.key !== key) {
+        polls.current = { key, count: 0 }
+      }
       polls.current.count += 1
       return getEventStatuses(key.split(","), { signal })
     },
@@ -60,7 +63,10 @@ export function useEventStatuses(eventIds: string[]): EventStatusFeed {
       // 後端自己說還在不在補，前端就不必用「連續幾輪沒動靜」去猜。補票況分成
       // 純 HTTP 與瀏覽器兩段，兩段之間的空檔很容易被猜成「已經沒事做了」。
       if (!data.pending || _allConfirmed(key, data.results)) return false
-      if (polls.current.count >= MAX_POLLS) return false
+      if (polls.current.key === key && polls.current.count >= MAX_POLLS) {
+        setCappedKey(key)
+        return false
+      }
       return POLL_INTERVAL_MS
     },
   })
@@ -78,9 +84,9 @@ export function useEventStatuses(eventIds: string[]): EventStatusFeed {
         key === "" ||
         backendDone ||
         _allConfirmed(key, data?.results) ||
-        polls.current.count >= MAX_POLLS,
+        cappedKey === key,
     }
-  }, [data, key, query.dataUpdatedAt])
+  }, [data, key, cappedKey, query.dataUpdatedAt])
 }
 
 function _allConfirmed(key: string, rows: EventStatus[] | undefined): boolean {
