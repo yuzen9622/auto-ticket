@@ -89,10 +89,40 @@ jobs:
             --site-packages site-packages \
             --out dist-runtime
 
+      # 兩個平台的 job 同時對同一個 release 上傳，`--clobber` 是「先刪再傳」，
+      # 撞在一起時 uploads API 會回 404——即使檔案其實已經落地。改成冪等：
+      # 已經在上面的就不碰。這順便把「已發佈的 asset 不得重傳」機械化，也讓
+      # tar.gz 與它的 .sha256 永遠是同一次建置產生的那一對。
       - name: Upload release assets
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release upload "$TAG" dist-runtime/* --clobber
+        run: |
+          set -euo pipefail
+          present() { gh release view "$TAG" --json assets -q '.assets[].name'; }
+          for path in dist-runtime/*; do
+            name=$(basename "$path")
+            if present | grep -qx "$name"; then
+              echo "已存在，略過：$name"
+              continue
+            fi
+            uploaded=false
+            for attempt in 1 2 3; do
+              if gh release upload "$TAG" "$path"; then
+                uploaded=true
+                break
+              fi
+              echo "上傳 $name 第 $attempt 次未成功，確認是否其實已落地…"
+              sleep 10
+              if present | grep -qx "$name"; then
+                uploaded=true
+                break
+              fi
+            done
+            if [ "$uploaded" != true ]; then
+              echo "::error::$name 上傳失敗" >&2
+              exit 1
+            fi
+          done
 
   publish:
     name: manifest + npm publish
