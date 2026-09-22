@@ -625,8 +625,9 @@ export async function main(argv, io = {}) {
             mergeMissing: Boolean(flags.mergeMissing),
           });
         }
-        await hostMod.ensureBrowsers({ paths: p, pythonPath });
+        // env 先組好再交給 ensureBrowsers：兩邊各組一份就是漏 PYTHONPATH 的來源。
         const env = hostMod.buildEnv({ paths: p, runtimeDir });
+        await hostMod.ensureBrowsers({ paths: p, pythonPath, env });
         return await supervisorMod.supervise({
           env,
           paths: p,

@@ -26,8 +26,47 @@ export const DEFAULT_PORTS = Object.freeze({ api: 8000, web: 3000 });
  * 路徑寫進 `pyvenv.cfg` 與 shebang），import 路徑完全靠它組出來。少了它，
  * `serve_api.py` 會在 `import uvicorn` 當場死掉。
  */
-export function buildEnv({ paths, runtimeDir, delimiter = path.delimiter, extra = {} } = {}) {
+/**
+ * 從呼叫端環境放行的變數。
+ *
+ * 不能整包 `...process.env` 帶過去——那會把 token 類憑證一併遞給子行程。但也不能
+ * 一個都不帶：少了 `PATH`，`spawn("node")` 直接 ENOENT；Windows 少了 `SystemRoot`
+ * 連 socket 都開不起來。所以走白名單。
+ */
+const INHERITED_ENV_KEYS = [
+  "PATH",
+  "Path",
+  "HOME",
+  "USERPROFILE",
+  "SystemRoot",
+  "SYSTEMROOT",
+  "windir",
+  "COMSPEC",
+  "TEMP",
+  "TMP",
+  "TMPDIR",
+  "LANG",
+  "LC_ALL",
+  "TZ",
+];
+
+function inheritedEnv(source) {
+  const out = {};
+  for (const key of INHERITED_ENV_KEYS) {
+    if (source[key] !== undefined) out[key] = source[key];
+  }
+  return out;
+}
+
+export function buildEnv({
+  paths,
+  runtimeDir,
+  delimiter = path.delimiter,
+  source = process.env,
+  extra = {},
+} = {}) {
   const env = {
+    ...inheritedEnv(source),
     AUTO_TICKET_DB_PATH: paths.db,
     AUTO_TICKET_SCREENSHOT_DIR: paths.screenshots,
     AUTO_TICKET_VAULT_ROOT: paths.credentials,
@@ -37,6 +76,10 @@ export function buildEnv({ paths, runtimeDir, delimiter = path.delimiter, extra 
     PLAYWRIGHT_BROWSERS_PATH: paths.msPlaywright,
     PYTHONNOUSERSITE: "1",
     PYTHONUTF8: "1",
+    // 沒有這條，Python 的 stdout 是區塊緩衝：worker 的輸出要到行程結束才一次吐出來。
+    // 後果有兩個——`logs -f` 看不到任何即時輸出，而且 supervisor 的 banner 就緒偵測
+    // 永遠等不到 banner，只能靠時間寬限落地（看起來會動，但不是設計的行為）。
+    PYTHONUNBUFFERED: "1",
     ...(runtimeDir
       ? {
           PYTHONPATH: [
@@ -89,9 +132,16 @@ function assertOnePortFree({ name, port, host, netImpl }) {
  * 確保 Playwright Chromium 已安裝於 `~/.auto-ticket/ms-playwright`。
  * 可重入：已安裝時第二次呼叫是 no-op，靠 `existsImpl` 檢查安裝標記目錄。
  */
+/**
+ * 以 runtime 內的 Python 安裝 Playwright Chromium。
+ *
+ * `env` 必須由呼叫端用 `buildEnv` 產生後傳進來——在這裡自己組第二份的話會漏掉
+ * `PYTHONPATH`，然後 `python -m playwright` 根本找不到 playwright 模組。
+ */
 export async function ensureBrowsers({
   paths,
   pythonPath,
+  env,
   spawnImpl,
   existsImpl = existsSync,
 } = {}) {
@@ -99,9 +149,19 @@ export async function ensureBrowsers({
     return { installed: true, skipped: true };
   }
   const run = spawnImpl ?? defaultSpawnSync;
-  await run(pythonPath ?? "python3", ["-m", "playwright", "install", "chromium"], {
-    env: { ...process.env, PLAYWRIGHT_BROWSERS_PATH: paths.msPlaywright },
-  });
+  try {
+    await run(
+      pythonPath ?? "python3",
+      ["-s", "-m", "playwright", "install", "chromium"],
+      { env: { ...process.env, ...env, PLAYWRIGHT_BROWSERS_PATH: paths.msPlaywright } },
+    );
+  } catch (err) {
+    throw cliError(
+      "DOWNLOAD_FAILED",
+      `安裝 Playwright Chromium 失敗：${err.message}。` +
+        "這一步可重入，確認網路後重跑 `auto-ticket start` 即可。",
+    );
+  }
   return { installed: true, skipped: false };
 }
 

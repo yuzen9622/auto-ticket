@@ -255,6 +255,43 @@ describe("supervise", () => {
     await expect(fs.stat(h.paths.supervisorState)).rejects.toThrow();
   });
 
+  it("子行程 spawn 失敗 → 走正常關閉，不留孤兒", async () => {
+    const h = makeHarness();
+    const killed = [];
+    const spawnImpl = (cmd, args) => {
+      h.spawnCalls.push({ cmd, args });
+      const child = makeFakeChild(2000 + h.spawnCalls.length);
+      if (args.some((a) => String(a).includes("server.js"))) {
+        // web 的執行檔找不到：Node 以 'error' 事件回報，不是 'exit'。
+        queueMicrotask(() => child.emit("error", new Error("spawn node ENOENT")));
+      } else {
+        h.children[args.includes("worker") ? "worker" : "api"] = child;
+      }
+      return child;
+    };
+
+    const err = await supervise({
+      env: {},
+      paths: h.paths,
+      version: "1.0.0",
+      spawnImpl,
+      fetchImpl: h.fetchImpl,
+      killImpl: (pid, signal) => killed.push([pid, signal]),
+      platform: "darwin",
+      now: h.clock.now,
+      sleepImpl: h.clock.sleepImpl,
+      signalSource: new EventEmitter(),
+      workerGraceMs: 0,
+    }).catch((e) => e);
+
+    expect(err?.name).toBe("CliError");
+    expect(ExitCode[err.code]).toBe(ExitCode.START_TIMEOUT);
+    expect(err.message).toContain("ENOENT");
+    // 已經起來的 api 與 worker 必須被收掉，否則它們會繼續佔著 8000。
+    expect(killed.some(([, sig]) => sig === "SIGTERM")).toBe(true);
+    await expect(fs.stat(h.paths.supervisorState)).rejects.toThrow();
+  });
+
   it("② api 逾時 → 全體關閉 code=7 且印出 log 末 40 行", async () => {
     const h = makeHarness({ apiReady: false });
     const errorLogs = [];

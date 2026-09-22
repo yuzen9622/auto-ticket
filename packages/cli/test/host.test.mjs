@@ -104,6 +104,7 @@ describe("buildEnv", () => {
       "PYTHONPATH",
       "PYTHONNOUSERSITE",
       "PYTHONUTF8",
+      "PYTHONUNBUFFERED",
     ]) {
       expect(env[key], `buildEnv 缺少 ${key}`).toBeTruthy();
     }
@@ -118,14 +119,71 @@ describe("buildEnv", () => {
     expect(env.PYTHONUTF8).toBe("1");
   });
 
+  it("放行 PATH 等 OS 必需變數，否則子行程 spawn 不到任何東西", () => {
+    const env = buildEnv({
+      paths: fakePaths(),
+      source: { PATH: "/usr/bin", HOME: "/home/u", SystemRoot: "C:\\Windows", SECRET: "x" },
+    });
+    // 沒有 PATH，`spawn("node")` 會直接 ENOENT——實測就是這樣掛的。
+    expect(env.PATH).toBe("/usr/bin");
+    expect(env.HOME).toBe("/home/u");
+    expect(env.SystemRoot).toBe("C:\\Windows");
+    // 白名單之外一律不放行。
+    expect(env.SECRET).toBeUndefined();
+  });
+
   it("⑤ 不含任何 token 類環境變數", () => {
-    const env = buildEnv({ paths: fakePaths() });
+    const env = buildEnv({
+      paths: fakePaths(),
+      source: {
+        PATH: "/usr/bin",
+        GITHUB_TOKEN: "leak",
+        GH_TOKEN: "leak",
+        NPM_TOKEN: "leak",
+        AWS_SECRET_ACCESS_KEY: "leak",
+      },
+    });
+    expect(JSON.stringify(env)).not.toContain("leak");
     const keys = Object.keys(env).join(",");
     expect(keys).not.toMatch(/TOKEN/i);
   });
 });
 
 describe("ensureBrowsers", () => {
+  it("把 buildEnv 的 PYTHONPATH 傳給子行程，否則 playwright 模組找不到", async () => {
+    let seen;
+    const env = buildEnv({ paths: fakePaths(), runtimeDir: "/rt" });
+    await ensureBrowsers({
+      paths: fakePaths(),
+      pythonPath: "/rt/python/bin/python3",
+      env,
+      existsImpl: () => false,
+      spawnImpl: async (cmd, args, opts) => {
+        seen = { cmd, args, opts };
+      },
+    });
+    expect(seen.args).toContain("-s");
+    expect(seen.args.slice(-3)).toEqual(["playwright", "install", "chromium"]);
+    expect(seen.opts.env.PYTHONPATH).toBe(env.PYTHONPATH);
+    expect(seen.opts.env.PLAYWRIGHT_BROWSERS_PATH).toBe(fakePaths().msPlaywright);
+  });
+
+  it("安裝失敗時丟可讀的 CliError，不是原生 Error 的 stack", async () => {
+    const err = await ensureBrowsers({
+      paths: fakePaths(),
+      existsImpl: () => false,
+      spawnImpl: async () => {
+        throw new Error("python 結束碼 1");
+      },
+    }).then(
+      () => null,
+      (e) => e,
+    );
+    expect(err?.name).toBe("CliError");
+    expect(err.code).toBe("DOWNLOAD_FAILED");
+    expect(err.message).toContain("Playwright");
+  });
+
   it("④ 第二次呼叫為 no-op（可重入）", async () => {
     let spawnCalls = 0;
     const spawnImpl = async () => {
