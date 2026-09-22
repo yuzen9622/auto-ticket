@@ -25,6 +25,7 @@ from adapters.ticketing.base import EventResolver, ResolveError
 from adapters.ticketing.tixcraft.pages import (
     ActivityDetail,
     ActivityListing,
+    SessionSaleState,
     detail_url,
     game_url,
     parse_activity_detail,
@@ -101,21 +102,27 @@ class TixcraftParseError(TixcraftResolveError):
     """拓元頁面資料解析錯誤。"""
 
 
-def _status_from_listing(listing: ActivityListing) -> EventStatus:
-    return EventStatus.ON_SALE if listing.on_sale else EventStatus.ANNOUNCED
+def _status_from_detail(detail: ActivityDetail) -> EventStatus:
+    """售票狀態只從場次表推，而且推不出來就說推不出來。
 
-
-def _status_from_detail(
-    detail: ActivityDetail, listing: ActivityListing | None
-) -> EventStatus:
-    if detail.sessions:
-        if any(s.buyable for s in detail.sessions):
-            return EventStatus.ON_SALE
-        if all(s.sold_out for s in detail.sessions):
-            return EventStatus.SOLD_OUT
+    2026-09-22 抓全站 73 個活動比對過：拿列表頁的「最新開賣」頁籤當販售中，
+    其中 18 個會判錯——14 個按得下「立即訂購」的活動被標成尚未開賣，4 個標成
+    熱賣中的其實買不到（含 2 個已售完）。頁籤是陳列方式，不是售票狀態。
+    """
+    if not detail.sessions_seen:
+        return EventStatus.UNKNOWN
+    if not detail.sessions:
+        # 場次表在，但寫著「目前無場次資訊」——場次還沒排上去，也就還不能買。
         return EventStatus.ANNOUNCED
-    if listing is not None:
-        return _status_from_listing(listing)
+
+    states = {s.state for s in detail.sessions}
+    if SessionSaleState.ON_SALE in states:
+        return EventStatus.ON_SALE
+    if states & {SessionSaleState.SOLD_OUT, SessionSaleState.ZONE_EMPTY}:
+        # 沒有任何一場買得到，而且至少一場明確售完：整場活動就是售完。
+        return EventStatus.SOLD_OUT
+    if states == {SessionSaleState.DEADLINE_PASSED}:
+        return EventStatus.CLOSED
     return EventStatus.UNKNOWN
 
 
@@ -147,6 +154,9 @@ def build_event(
         raw_metadata["image_url"] = listing.image_url
     if listing is not None and listing.date_text:
         raw_metadata["date_text"] = listing.date_text
+    if listing is not None and listing.tabs:
+        # 頁籤留著當展示用的線索（近期演出／最新開賣），但不參與售票狀態判定。
+        raw_metadata["listing_tabs"] = list(listing.tabs)
     if detail is not None:
         if detail.description:
             raw_metadata["description"] = detail.description
@@ -162,9 +172,9 @@ def build_event(
         event_slug=slug,
         title=title,
         canonical_url=detail_url(slug),
-        status=_status_from_detail(detail, listing)
-        if detail is not None
-        else (_status_from_listing(listing) if listing else EventStatus.UNKNOWN),
+        status=(
+            _status_from_detail(detail) if detail is not None else EventStatus.UNKNOWN
+        ),
         event_start_at=event_start_at,
         ticket_types=[],
         raw_metadata=raw_metadata,
@@ -240,7 +250,10 @@ class TixcraftEventResolver(EventResolver):
                             if listing.event_start_at
                             else None
                         ),
-                        "status": _status_from_listing(listing).value,
+                        # 列表頁看不出售不售得到票，硬給一個狀態只會騙人；
+                        # 真正的狀態等 Worker 用瀏覽器抓場次頁回來補。
+                        "status": EventStatus.UNKNOWN.value,
+                        "listing_tabs": list(listing.tabs),
                         "image_url": listing.image_url,
                         "needs_browser_detail": True,
                     },

@@ -11,6 +11,7 @@ import copy
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from enum import Enum
 from typing import Any
 from urllib.parse import urljoin, urlsplit
 from zoneinfo import ZoneInfo
@@ -22,13 +23,20 @@ from adapters.ticketing.tixcraft.selectors import TixcraftSelectors
 TAIPEI_TZ = ZoneInfo("Asia/Taipei")
 BASE_URL = "https://tixcraft.com"
 
-#: 列表頁的三個頁籤。`latest-selling` 就是「最新開賣」，等同販售中。
+#: 列表頁的三個頁籤：「全部節目」「近期演出」「最新開賣」。三個都只是陳列方式，
+#: 沒有一個等於「現在買得到」——`latest-selling` 是依上架時間排的推薦區，賣了一陣子
+#: 的活動會掉出去，剛上架但還沒開賣的活動則會在裡面。售票狀態只有場次頁說得準。
 TAB_ALL = "all"
 TAB_UPCOMING = "upcoming-activity"
 TAB_LATEST_SELLING = "latest-selling"
 
+#: 場次列的售完字樣。「選購一空」與「已售完」意思不同：前者購票鈕還在（還進得去
+#: 票區頁，可能有回流票），後者連鈕都不給。兩者都代表當下沒票。
 SOLD_OUT_TEXTS = ("選購一空", "已售完", "sold out", "完售")
-BUYABLE_TEXTS = ("立即訂購", "立即購票", "find tickets", "start ordering")
+#: 場次列沒有任何場次時，整張表只有這一格。
+NO_SESSION_TEXT = "目前無場次資訊"
+#: 該場次的購票時間已過，格子裡只剩「<日期> 截止」。
+DEADLINE_TEXT = "截止"
 
 _DATE_RE = re.compile(r"(\d{4})/(\d{1,2})/(\d{1,2})")
 _DATETIME_RE = re.compile(r"(\d{4})/(\d{1,2})/(\d{1,2})[^\d]*?(\d{1,2}):(\d{2})")
@@ -88,10 +96,29 @@ class ActivityListing:
     event_start_at: datetime | None = None
     image_url: str | None = None
     tabs: tuple[str, ...] = ()
+    """活動出現在哪幾個頁籤。只是陳列位置，不代表售票狀態——曾經拿
+    `latest-selling` 當販售中，全站 73 個活動有 18 個判錯。"""
 
-    @property
-    def on_sale(self) -> bool:
-        return TAB_LATEST_SELLING in self.tabs
+
+class SessionSaleState(str, Enum):
+    """場次列的售票狀態。
+
+    這五種是拓元場次頁實際會長出來的全部型態（2026-09-22 抓全站 73 個活動、
+    177 列場次核對過），每一種對應一組固定的 DOM，不是從文字猜的：
+
+    * `ON_SALE`：只有 `button[data-href]`。
+    * `ZONE_EMPTY`：`button[data-href]` 旁邊多一個「選購一空」的 div——入口還在，
+      但票區全空；這是「買不到」，不是「還沒開賣」。
+    * `SOLD_OUT`：`div.text-center` 寫「已售完」，沒有按鈕。
+    * `DEADLINE_PASSED`：`div.text-center.text-info` 寫「<日期> 截止」，沒有按鈕。
+    * `UNKNOWN`：以上皆非，留給版型變動時不要亂猜。
+    """
+
+    ON_SALE = "on_sale"
+    ZONE_EMPTY = "zone_empty"
+    SOLD_OUT = "sold_out"
+    DEADLINE_PASSED = "deadline_passed"
+    UNKNOWN = "unknown"
 
 
 @dataclass(slots=True)
@@ -105,20 +132,15 @@ class GameSession:
     venue: str | None
     status_text: str
     purchase_url: str | None
+    state: SessionSaleState = SessionSaleState.UNKNOWN
 
     @property
     def sold_out(self) -> bool:
-        lowered = self.status_text.lower()
-        return any(word.lower() in lowered for word in SOLD_OUT_TEXTS)
+        return self.state in (SessionSaleState.SOLD_OUT, SessionSaleState.ZONE_EMPTY)
 
     @property
     def buyable(self) -> bool:
-        lowered = self.status_text.lower()
-        return (
-            self.purchase_url is not None
-            and not self.sold_out
-            and any(word.lower() in lowered for word in BUYABLE_TEXTS)
-        )
+        return self.state is SessionSaleState.ON_SALE and self.purchase_url is not None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -128,6 +150,7 @@ class GameSession:
             "display_date": self.display_time,
             "starts_at": self.starts_at.isoformat() if self.starts_at else None,
             "status_text": self.status_text,
+            "state": self.state.value,
             "can_buy": self.buyable,
             "sold_out": self.sold_out,
             "purchase_url": self.purchase_url,
@@ -179,6 +202,9 @@ class ActivityDetail:
     date_text: str | None = None
     event_start_at: datetime | None = None
     sessions: list[GameSession] = field(default_factory=list)
+    sessions_seen: bool = False
+    """是否真的看過場次表。`sessions` 空掉有兩種原因——活動還沒開賣（場次表寫
+    「目前無場次資訊」），或這次根本沒抓到場次頁。只有前者能推論出尚未開賣。"""
 
 
 def slug_of(url: str) -> str:
@@ -280,17 +306,53 @@ def parse_activity_list(html: str) -> list[ActivityListing]:
     return listings
 
 
+def classify_session_cell(cell: Tag) -> SessionSaleState:
+    """從場次列最後一格的 DOM 判斷售票狀態。
+
+    刻意不做整格字串比對：可購買的場次那一格同時有「立即訂購」按鈕與「選購一空」
+    標籤，把整格文字接起來比對會讓兩個關鍵字同時命中，於是能買的場次被判成售完、
+    售完的場次又因為有按鈕被判成能買。按鈕在不在是結構事實，先看它。
+    """
+    text = cell.get_text(" ", strip=True)
+    if NO_SESSION_TEXT in text:
+        return SessionSaleState.UNKNOWN
+    if cell.select_one("button[data-href], a[href*='/ticket/area/']") is not None:
+        lowered = text.lower()
+        if any(word.lower() in lowered for word in SOLD_OUT_TEXTS):
+            return SessionSaleState.ZONE_EMPTY
+        return SessionSaleState.ON_SALE
+    lowered = text.lower()
+    if any(word.lower() in lowered for word in SOLD_OUT_TEXTS):
+        return SessionSaleState.SOLD_OUT
+    if DEADLINE_TEXT in text:
+        return SessionSaleState.DEADLINE_PASSED
+    return SessionSaleState.UNKNOWN
+
+
+def has_game_list(html: str) -> bool:
+    """頁面上是否真的有場次表。
+
+    場次是空的（「目前無場次資訊」）跟「這份 HTML 根本不是場次頁」是兩件事：
+    前者代表活動還沒開賣，後者代表我們什麼都不知道。少了這個區分，節目介紹頁
+    會被當成「查過了、沒有場次」，把每個活動都標成尚未開賣。
+    """
+    return BeautifulSoup(html, "html.parser").select_one("#gameList") is not None
+
+
 def parse_game_list(html: str) -> list[GameSession]:
     """解析 `/activity/game/<slug>` 的 `#gameList`。
 
     購票按鈕沒有 href，網址掛在 `data-href`；直接點它在無頭環境不一定觸發導頁，
-    讀出網址自己導才穩。
+    讀出網址自己導才穩。「目前無場次資訊」那一列不是場次，直接跳過。
     """
     soup = BeautifulSoup(html, "html.parser")
     sessions: list[GameSession] = []
     for row in soup.select("#gameList > table > tbody > tr"):
-        cells = [td.get_text(" ", strip=True) for td in row.select("td")]
+        tds = row.select("td")
+        cells = [td.get_text(" ", strip=True) for td in tds]
         if not cells:
+            continue
+        if NO_SESSION_TEXT in " ".join(cells):
             continue
         button = row.select_one("button[data-href]")
         anchor = row.select_one("a[href]")
@@ -313,6 +375,7 @@ def parse_game_list(html: str) -> list[GameSession]:
                 venue=venue,
                 status_text=status_text,
                 purchase_url=purchase_url,
+                state=classify_session_cell(tds[-1]),
             )
         )
     return sessions
@@ -375,7 +438,9 @@ def parse_activity_detail(html: str, *, game_html: str | None = None) -> Activit
     if len(parts) > 1:
         date_text = parts[1] or None
 
-    sessions = parse_game_list(game_html) if game_html else parse_game_list(html)
+    session_html = game_html if game_html else html
+    sessions = parse_game_list(session_html)
+    sessions_seen = has_game_list(session_html)
     if not venue:
         venue = next((s.venue for s in sessions if s.venue), None)
     session_starts = [s.starts_at for s in sessions if s.starts_at is not None]
@@ -390,6 +455,7 @@ def parse_activity_detail(html: str, *, game_html: str | None = None) -> Activit
             min(session_starts) if session_starts else parse_date_text(date_text)
         ),
         sessions=sessions,
+        sessions_seen=sessions_seen,
     )
 
 
