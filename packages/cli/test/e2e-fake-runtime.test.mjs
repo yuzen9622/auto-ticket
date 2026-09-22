@@ -151,6 +151,107 @@ describe("假 runtime 端到端", () => {
     expect(secondFetch).toBe(0);
   });
 
+  it("下載到一半斷線時從斷點續傳，最終 sha256 仍是整檔的", async () => {
+    const { bytes, sha256 } = await buildAsset(path.join(tmpRoot, "release"));
+    const cut = Math.floor(bytes.length / 2);
+    let served = 0;
+    const ranges = [];
+
+    // 第一次連線送一半就把 socket 砍掉——這正是實機在 90% 遇到的事。
+    // 之後的請求必須帶 Range，而且只送剩下的那一段。
+    server = createServer((req, res) => {
+      served += 1;
+      const range = req.headers.range;
+      ranges.push(range ?? null);
+      if (served === 1) {
+        res.writeHead(200, {
+          "content-type": "application/gzip",
+          "content-length": String(bytes.length),
+        });
+        // 先確定前半段真的送到對面再砍連線——立刻 destroy 的話客戶端一個位元組
+        // 都收不到，測到的就不是「斷線續傳」而是「第一次請求完全失敗」。
+        res.write(bytes.subarray(0, cut), () => {
+          setTimeout(() => res.socket.destroy(), 30);
+        });
+        return;
+      }
+      const from = Number(/bytes=(\d+)-/.exec(range ?? "")?.[1] ?? 0);
+      const slice = bytes.subarray(from);
+      res.writeHead(from > 0 ? 206 : 200, {
+        "content-type": "application/gzip",
+        "content-length": String(slice.length),
+        ...(from > 0
+          ? { "content-range": `bytes ${from}-${bytes.length - 1}/${bytes.length}` }
+          : {}),
+      });
+      res.end(slice);
+    });
+    await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+    baseUrl = `http://127.0.0.1:${server.address().port}`;
+
+    const paths = fakePaths(tmpRoot);
+    const progress = [];
+    const committed = await ensureRuntime({
+      manifestEntry: { file: ASSET, sha256 },
+      target: TARGET,
+      version: VERSION,
+      paths,
+      baseUrl,
+      sleepImpl: () => Promise.resolve(),
+      onProgress: (u) => progress.push(u),
+    });
+
+    // 成功提交＝整檔 sha256 對得上，續傳沒有把檔案接歪。
+    expect(committed).toBe(paths.runtimeDir(VERSION));
+    await expect(
+      fs.stat(path.join(committed, "app", "scripts", "serve_api.py")),
+    ).resolves.toBeTruthy();
+
+    // 第二次請求真的帶了 Range，而且起點就是已經拿到的位元組數。
+    expect(ranges[0]).toBeNull();
+    expect(ranges[1]).toBe(`bytes=${cut}-`);
+
+    // 進度沒有倒退回 0：續傳後的第一筆回報是接在斷點之後的。
+    const afterResume = progress.findIndex((u, i) => i > 0 && u.loaded < progress[i - 1].loaded);
+    expect(afterResume).toBe(-1);
+    // 而且回報的總長度是整檔，不是剩下那一段。
+    expect(progress.at(-1).total).toBe(bytes.length);
+  });
+
+  it("伺服器忽略 Range 回 200 全量時，從頭覆寫而不是接在半截後面", async () => {
+    const { bytes, sha256 } = await buildAsset(path.join(tmpRoot, "release"));
+    const paths = fakePaths(tmpRoot);
+
+    // 先放一個半截的 .part，模擬上一次中斷留下的殘骸。
+    await fs.mkdir(paths.runtimeTmp, { recursive: true });
+    await fs.writeFile(
+      path.join(paths.runtimeTmp, `${ASSET}.part`),
+      bytes.subarray(0, Math.floor(bytes.length / 3)),
+    );
+
+    // 這台伺服器完全不理 Range，一律回 200 全量。
+    server = createServer((req, res) => {
+      res.writeHead(200, {
+        "content-type": "application/gzip",
+        "content-length": String(bytes.length),
+      });
+      res.end(bytes);
+    });
+    await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+    baseUrl = `http://127.0.0.1:${server.address().port}`;
+
+    // 接在半截後面的話檔案會變長、雜湊必然對不上，這裡就會拋 VERIFY_FAILED。
+    await expect(
+      ensureRuntime({
+        manifestEntry: { file: ASSET, sha256 },
+        target: TARGET,
+        version: VERSION,
+        paths,
+        baseUrl,
+      }),
+    ).resolves.toBe(paths.runtimeDir(VERSION));
+  });
+
   it("server 回 404 時以 DOWNLOAD_FAILED 收場，且不留下半殘的 runtime 目錄", async () => {
     const { sha256 } = await buildAsset(path.join(tmpRoot, "release"));
     await serve(Buffer.from(""));

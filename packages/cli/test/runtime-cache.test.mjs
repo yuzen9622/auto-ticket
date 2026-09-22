@@ -1,4 +1,5 @@
 import { spawn as realSpawn } from "node:child_process";
+import { closeSync, openSync } from "node:fs";
 import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
@@ -220,6 +221,136 @@ describe("ensureRuntime：解壓中途失敗", () => {
 
     const oldStillThere = await fs.readFile(path.join(oldVersionDir, "marker.txt"), "utf8");
     expect(oldStillThere).toBe("old-and-intact");
+  });
+});
+
+describe("download：串流中途出錯", () => {
+  it("已收到的位元組會落地，下一次才有斷點可續", async () => {
+    const destPath = path.join(tmpRoot, "big.part");
+    // 1MB 遠大於 write stream 預設的 64KB 高水位，所以一定有資料還卡在緩衝區。
+    // 不把串流關乾淨就拋出去的話，這個檔案會是 0 bytes，續傳永遠不會發生。
+    const chunk = new Uint8Array(1024 * 1024).fill(7);
+    const fetchImpl = async () => ({
+      ok: true,
+      status: 200,
+      headers: { get: () => "2097152" },
+      body: {
+        getReader() {
+          let sent = false;
+          return {
+            async read() {
+              if (sent) throw new Error("socket hang up");
+              sent = true;
+              return { done: false, value: chunk };
+            },
+          };
+        },
+      },
+    });
+
+    await expect(
+      download({
+        url: "http://example.invalid/big.tar.gz",
+        destPath,
+        fetchImpl,
+        sleepImpl: () => Promise.resolve(),
+        maxRetries: 0,
+      }),
+    ).rejects.toMatchObject({ code: "DOWNLOAD_FAILED" });
+
+    const stat = await fs.stat(destPath);
+    expect(stat.size).toBe(chunk.length);
+  });
+
+  it("失敗的下載不會洩漏檔案描述符", async () => {
+    // 實測：不把 write stream 關乾淨就拋出去，20 次失敗下載就留下 20 個開著的 fd。
+    // 下載是可重入流程，使用者在爛線路上反覆重跑時這會一路累積。
+    // 用「新開一個檔案拿到的 fd 編號漲了多少」當代理指標，不依賴 lsof。
+    const probe = () => {
+      const fd = openSync(path.join(tmpRoot, "probe"), "w");
+      closeSync(fd);
+      return fd;
+    };
+    const chunk = new Uint8Array(1024 * 1024).fill(7);
+    const fetchImpl = async () => ({
+      ok: true,
+      status: 200,
+      headers: { get: () => "99999999" },
+      body: {
+        getReader() {
+          let sent = false;
+          return {
+            async read() {
+              if (sent) throw new Error("socket hang up");
+              sent = true;
+              return { done: false, value: chunk };
+            },
+          };
+        },
+      },
+    });
+
+    const before = probe();
+    for (let i = 0; i < 10; i += 1) {
+      await download({
+        url: "http://example.invalid/leak.tar.gz",
+        destPath: path.join(tmpRoot, `leak-${i}.part`),
+        fetchImpl,
+        sleepImpl: () => Promise.resolve(),
+        maxRetries: 0,
+      }).catch(() => {});
+    }
+    const after = probe();
+    expect(after - before).toBeLessThan(5);
+  });
+
+  it("重試時會帶著 Range 從斷點接續，而不是從頭再來", async () => {
+    const destPath = path.join(tmpRoot, "resume.part");
+    const whole = new Uint8Array(300).fill(3);
+    const seen = [];
+    let call = 0;
+    const fetchImpl = async (_url, init) => {
+      call += 1;
+      seen.push(init?.headers?.Range ?? null);
+      if (call === 1) {
+        return {
+          ok: true,
+          status: 200,
+          headers: { get: () => "300" },
+          body: Buffer.from(whole.subarray(0, 100)),
+        };
+      }
+      return {
+        ok: true,
+        status: 206,
+        headers: { get: () => "200" },
+        body: Buffer.from(whole.subarray(100)),
+      };
+    };
+
+    // 第一次「成功」但只拿到 100 bytes，雜湊當然不對；這裡只驗續傳的機制本身：
+    // 讓第一次拿完就人為失敗，重試必須從 100 接下去。
+    await download({
+      url: "http://example.invalid/resume.tar.gz",
+      destPath,
+      fetchImpl,
+      sleepImpl: () => Promise.resolve(),
+      maxRetries: 0,
+    });
+    const first = await fs.stat(destPath);
+    expect(first.size).toBe(100);
+
+    const result = await download({
+      url: "http://example.invalid/resume.tar.gz",
+      destPath,
+      fetchImpl,
+      sleepImpl: () => Promise.resolve(),
+      maxRetries: 0,
+    });
+    expect(seen).toEqual([null, "bytes=100-"]);
+    expect(result.size).toBe(300);
+    // 整檔雜湊，不是第二段的雜湊。
+    expect(result.sha256).toBe(createHash("sha256").update(Buffer.from(whole)).digest("hex"));
   });
 });
 

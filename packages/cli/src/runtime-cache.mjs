@@ -2,7 +2,7 @@
 // 領域模組，不得 import migration.mjs / host.mjs / supervisor.mjs。
 import { createHash } from "node:crypto";
 import { spawn as nodeSpawn } from "node:child_process";
-import { createWriteStream } from "node:fs";
+import { createReadStream, createWriteStream } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 
@@ -44,16 +44,30 @@ export async function download({
   timeoutMs = 60_000,
   onProgress,
   onRetry,
+  fsImpl = fs,
+  resume = true,
 }) {
   let lastErr;
   for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
-    // 重試是整個檔案重下，不是續傳；呼叫端的計數器得跟著歸零，否則速率與 ETA 全是假的。
+    // 重試會從斷點續傳，但速率與 ETA 的取樣視窗仍要歸零：拿上一次嘗試的耗時
+    // 當分母只會算出一個永遠偏低的假數字。
     if (attempt > 0) onRetry?.({ attempt, maxRetries, reason: lastErr?.message });
+    const have = resume ? await partialSize(destPath, fsImpl) : 0;
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
-      const response = await fetchImpl(url, { signal: controller.signal });
+      const response = await fetchImpl(url, {
+        signal: controller.signal,
+        // 只在真的有半截檔案時才帶 Range：伺服器不支援時會回 200 全量，
+        // 那一條路徑下面也處理得了。
+        ...(have > 0 ? { headers: { Range: `bytes=${have}-` } } : {}),
+      });
       clearTimeout(timer);
+      if (response.status === 416) {
+        // 「範圍不可滿足」通常代表本機這份 .part 已經跟遠端一樣長。重算雜湊交出去，
+        // 由呼叫端的 sha256 比對裁決它究竟完整還是壞掉。
+        return await hashExistingFile(destPath);
+      }
       if (!response.ok) {
         if (RETRYABLE_STATUS.has(response.status) && attempt < maxRetries) {
           lastErr = new Error(`HTTP ${response.status}`);
@@ -65,7 +79,11 @@ export async function download({
           `下載失敗：HTTP ${response.status}（${url}）。`,
         );
       }
-      return await streamToFileWithHash(response, destPath, onProgress);
+      // 只有伺服器真的回 206 才代表它接受了續傳；回 200 表示它忽略 Range 送全量，
+      // 這時必須從頭寫，否則會把新的全量接在舊的半截後面，長出一個雜湊必然對不上
+      // 的檔案。
+      const resumedFrom = response.status === 206 && have > 0 ? have : 0;
+      return await streamToFileWithHash(response, destPath, onProgress, resumedFrom);
     } catch (err) {
       clearTimeout(timer);
       if (isCliError(err)) throw err;
@@ -82,43 +100,89 @@ export async function download({
   );
 }
 
-async function streamToFileWithHash(response, destPath, onProgress) {
-  await fs.mkdir(path.dirname(destPath), { recursive: true });
+/** 已經下載了多少（檔案不存在就是 0）。 */
+async function partialSize(destPath, fsImpl = fs) {
+  const stat = await fsImpl.stat(destPath).catch(() => null);
+  return stat?.isFile?.() ? stat.size : 0;
+}
+
+/** 把磁碟上這個檔案整個過一次雜湊，不載入記憶體。 */
+async function hashExistingFile(destPath) {
   const hash = createHash("sha256");
   let size = 0;
+  await new Promise((resolve, reject) => {
+    const input = createReadStream(destPath);
+    input.on("data", (chunk) => {
+      hash.update(chunk);
+      size += chunk.length;
+    });
+    input.once("error", reject);
+    input.once("end", resolve);
+  });
+  return { sha256: hash.digest("hex"), size };
+}
+
+/**
+ * 串流寫檔並同步算雜湊。
+ *
+ * `resumedFrom > 0` 時是續傳：以附加模式開檔，並先把磁碟上那半截餵進雜湊，
+ * 這樣算出來的仍是整個檔案的 sha256，而不是這一段的。
+ */
+async function streamToFileWithHash(response, destPath, onProgress, resumedFrom = 0) {
+  await fs.mkdir(path.dirname(destPath), { recursive: true });
+  const hash = createHash("sha256");
+  let size = resumedFrom;
+  if (resumedFrom > 0) {
+    await new Promise((resolve, reject) => {
+      const input = createReadStream(destPath, { end: resumedFrom - 1 });
+      input.on("data", (chunk) => hash.update(chunk));
+      input.once("error", reject);
+      input.once("end", resolve);
+    });
+  }
   const declared = Number(response.headers?.get?.("content-length"));
-  const total = Number.isFinite(declared) && declared > 0 ? declared : null;
+  // 續傳時 content-length 只涵蓋這一段，整檔長度要加回已有的部分。
+  const total =
+    Number.isFinite(declared) && declared > 0 ? declared + resumedFrom : null;
   const report = () => onProgress?.({ loaded: size, total });
-  const out = createWriteStream(destPath);
+  const out = createWriteStream(destPath, resumedFrom > 0 ? { flags: "a" } : {});
   const body = response.body;
   if (body && typeof body.getReader === "function") {
     // Web ReadableStream（global fetch 的回應體）。
     const reader = body.getReader();
-    await new Promise((resolve, reject) => {
-      out.on("error", reject);
-      (async () => {
-        try {
-          for (;;) {
-            const { done, value } = await reader.read();
-            if (done) break;
-            hash.update(value);
-            size += value.length;
-            report();
-            if (!out.write(value)) {
-              await new Promise((r) => out.once("drain", r));
-            }
-          }
-          out.end(resolve);
-        } catch (err) {
-          reject(err);
-        }
-      })();
+    const closed = new Promise((resolve) => out.once("close", resolve));
+    let streamError = null;
+    out.once("error", (err) => {
+      streamError = streamError ?? err;
     });
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (streamError) throw streamError;
+        hash.update(value);
+        size += value.length;
+        report();
+        if (!out.write(value)) {
+          await new Promise((r) => out.once("drain", r));
+        }
+      }
+    } catch (err) {
+      // 連線中途斷掉時，已經收到的位元組還躺在 write stream 的緩衝區裡。
+      // 不把它關乾淨就拋出去的話，下一次重試 stat 到的是一個 0 bytes 的 .part，
+      // 續傳於是永遠不會發生——實機上那是白白重下 220MB。
+      out.end();
+      await closed;
+      throw err;
+    }
+    out.end();
+    await closed;
+    if (streamError) throw streamError;
   } else {
     // 測試替身：允許直接給 Buffer/string 當作 body。
     const buf = Buffer.isBuffer(body) ? body : Buffer.from(body ?? "");
     hash.update(buf);
-    size = buf.length;
+    size += buf.length;
     report();
     await new Promise((resolve, reject) => {
       out.write(buf, (err) => (err ? reject(err) : resolve()));
@@ -240,6 +304,7 @@ export async function ensureRuntime({
     destPath: partPath,
     fetchImpl,
     sleepImpl,
+    fsImpl,
     onProgress,
     onRetry,
   });
