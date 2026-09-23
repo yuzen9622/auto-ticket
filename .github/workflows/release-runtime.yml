@@ -78,8 +78,10 @@ jobs:
       - name: Build web
         # 刻意不設定任何 NEXT_PUBLIC_*：loopback base 必須以字面值內聯進 client chunk，
         # build_runtime.py 會在打包前斷言它存在。
+        # hoisted：pnpm 預設的 node_modules 靠符號連結串起來，standalone 會原樣帶走，
+        # 而 Windows 的 tar 建不了符號連結，整包解壓失敗。hoisted 是扁平的實體目錄。
         run: |
-          pnpm --dir web install --frozen-lockfile
+          pnpm --dir web install --frozen-lockfile --config.node-linker=hoisted
           pnpm --dir web build
 
       - name: Assemble runtime artifact

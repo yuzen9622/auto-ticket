@@ -286,6 +286,23 @@ def write_manifest(root: Path, target: str, version: str) -> Path:
     return manifest_path
 
 
+def assert_no_links(root: Path, target: str) -> None:
+    """Windows 的 tar 沒有權限建符號連結，包裡只要有一條，整包就解不開。"""
+    if not target.startswith("win32"):
+        return
+    links = [
+        path.relative_to(root).as_posix()
+        for path in root.rglob("*")
+        if path.is_symlink() or path.is_junction()
+    ]
+    if links:
+        preview = "\n  ".join(links[:10])
+        raise BuildError(
+            f"{target} 產物含 {len(links)} 條符號連結，Windows 會解壓失敗：\n  {preview}\n"
+            "web/ 請用 `pnpm install --config.node-linker=hoisted` 重建"
+        )
+
+
 def make_tarball(root: Path, out_dir: Path) -> Path:
     out_dir.mkdir(parents=True, exist_ok=True)
     archive = out_dir / f"{root.name}.tar.gz"
@@ -337,6 +354,7 @@ def build(args: argparse.Namespace) -> int:
         assert_web_loopback_base(REPO_ROOT / "web" / ".next")
         stage_web(REPO_ROOT / "web", root / "web")
 
+        assert_no_links(root, target)
         write_manifest(root, target, version)
         archive = make_tarball(root, out_dir)
 
