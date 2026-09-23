@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.4.0](https://github.com/yuzen9622/auto-ticket/compare/v0.3.0...v0.4.0) (2026-09-23)
+
+
+### Features
+
+* **cli:** resume an interrupted runtime download instead of restarting ([818d09a](https://github.com/yuzen9622/auto-ticket/commit/818d09a526d0137590073fd38419e77c8d3d0340))
+
+
+### Bug Fixes
+
+* **cli:** finish the phase-label rename and cover the start path ([9928977](https://github.com/yuzen9622/auto-ticket/commit/9928977d68a6cf2c7c4d70fe8f764f54bbf38f6d))
+* **cli:** hold back the rate estimate until it means something ([d1113ae](https://github.com/yuzen9622/auto-ticket/commit/d1113aeb889ecd28ef92d9bd3aa4f1d9921e6aca))
+* **cli:** never let the progress line wrap ([9d75d0b](https://github.com/yuzen9622/auto-ticket/commit/9d75d0bd846516cf533bf76083392e2e71d788cb))
+
 ## [0.3.0](https://github.com/yuzen9622/auto-ticket/compare/v0.2.1...v0.3.0) (2026-09-22)
 
 
