@@ -10,17 +10,29 @@ import { describe, expect, it, vi } from "vitest";
 import {
   banner,
   createProgress,
+  displayWidth,
   formatBytes,
   formatDuration,
   isInteractive,
   renderBar,
   supportsColor,
+  truncateToWidth,
 } from "../src/ui.mjs";
 
-function fakeStream(isTTY) {
+/** 去掉 ANSI 控制碼，只留下真正印在螢幕上的字。 */
+// eslint-disable-next-line no-control-regex
+const stripAnsi = (text) => text.replace(/\u001B\[[0-9;?]*[A-Za-z]/g, "");
+
+/**
+ * `columns` 要在這裡給，不能用 `{ ...fakeStream(true), columns }`——
+ * 物件展開會把 `text` 這個 getter 求值成當下的空字串並固定下來，
+ * 於是所有斷言都變成拿空字串去比，測試全綠卻什麼都沒測到。
+ */
+function fakeStream(isTTY, columns) {
   const chunks = [];
   return {
     isTTY,
+    ...(columns === undefined ? {} : { columns }),
     write: (text) => chunks.push(text),
     get text() {
       return chunks.join("");
@@ -95,7 +107,7 @@ describe("橫幅", () => {
 
 describe("進度列：非互動輸出", () => {
   const plainArgs = (stream, now) => ({
-    label: "下載 runtime",
+    label: "Downloading runtime",
     stream,
     env: {},
     now,
@@ -144,7 +156,7 @@ describe("進度列：非互動輸出", () => {
 
 describe("進度列：互動輸出", () => {
   const ttyArgs = (stream, extra = {}) => ({
-    label: "下載 runtime",
+    label: "Downloading runtime",
     stream,
     env: {},
     now: () => 1000,
@@ -227,6 +239,100 @@ describe("進度列：互動輸出", () => {
     p.update({ loaded: 5, total: 10 });
     p.setLabel("還在動");
     expect(stream.text).toBe("");
+  });
+});
+
+describe("進度列：不得超出視窗寬度", () => {
+  // 互動模式下重畫是 spinner 計時器在做（每個 chunk 都重畫太浪費），
+  // 所以測試得自己抓住那一拍手動觸發。
+  // 時鐘必須真的走，否則速率與預估剩餘時間都不會出現，測到的就只是半截短行——
+  // 實機上那一行連速率帶 ETA 是 93 欄，正是會折行的那個長度。
+  const clock = { t: 0 };
+  const args = (stream, ticks) => ({
+    label: "下載 runtime 0.3.0",
+    stream,
+    env: {},
+    now: () => clock.t,
+    setIntervalImpl: (fn) => {
+      ticks.push(fn);
+      return { unref: () => {} };
+    },
+    clearIntervalImpl: () => {},
+    signalSource: { once: () => {}, removeListener: () => {} },
+  });
+  const tick = (ticks) => ticks.forEach((fn) => fn());
+
+  // 折行是這條路徑最糟的失敗：ESC[2K 只清得掉游標所在的那一行，內容一旦折到
+  // 第二行，每次重畫都再折一次而舊的留在上面，整個畫面會被同一行洗版到滿。
+  for (const columns of [40, 60, 72, 80, 100, 200]) {
+    it(`${columns} 欄的視窗裡，每一幀都放得下`, () => {
+      const ticks = [];
+      clock.t = 0;
+      const stream = fakeStream(true, columns);
+      const p = createProgress(args(stream, ticks));
+      p.start();
+      clock.t = 44_000; // 1.6MB / 44s ≈ 38 KB/s，剩餘時間就是三位數分鐘
+      p.update({ loaded: 1.6 * 1024 * 1024, total: 254_351_945 });
+      tick(ticks);
+      p.update({ loaded: 120 * 1024 * 1024, total: 254_351_945 });
+      tick(ticks);
+      p.setLabel("解壓 runtime", { indeterminate: true });
+      p.done("runtime 0.3.0 就緒（darwin-arm64）");
+
+      for (const frame of stream.text.split("\u001B[2K\u001B[0G")) {
+        const visible = stripAnsi(frame).replace(/\n/g, "");
+        expect(
+          displayWidth(visible),
+          `這一幀寬 ${displayWidth(visible)} 欄，超過 ${columns}：${visible}`,
+        ).toBeLessThan(columns);
+      }
+    });
+  }
+
+  it("窄到只剩百分比時，先丟預估剩餘時間、再丟速率，不丟已下載量", () => {
+    const ticks = [];
+    clock.t = 0;
+    const stream = fakeStream(true, 46);
+    const p = createProgress(args(stream, ticks));
+    p.start();
+    clock.t = 44_000;
+    p.update({ loaded: 1.6 * 1024 * 1024, total: 254_351_945 });
+    stream.chunks.length = 0;
+    tick(ticks);
+    const visible = stripAnsi(stream.text);
+    expect(visible).toContain("%");
+    expect(visible).toContain("243 MB");
+    expect(visible).not.toContain("剩");
+    p.stop();
+  });
+
+  it("拿不到 columns 時退回 80 欄，不是無限寬", () => {
+    const ticks = [];
+    clock.t = 0;
+    const stream = fakeStream(true); // 沒有 columns
+    const p = createProgress(args(stream, ticks));
+    p.start();
+    clock.t = 44_000;
+    p.update({ loaded: 1.6 * 1024 * 1024, total: 254_351_945 });
+    tick(ticks);
+    for (const frame of stream.text.split("\u001B[2K\u001B[0G")) {
+      expect(displayWidth(stripAnsi(frame))).toBeLessThan(80);
+    }
+    p.stop();
+  });
+});
+
+describe("寬度計算", () => {
+  it("全形字算兩欄", () => {
+    expect(displayWidth("abc")).toBe(3);
+    expect(displayWidth("下載")).toBe(4);
+    expect(displayWidth("下載 runtime")).toBe(12);
+  });
+
+  it("截斷不切半個全形字", () => {
+    expect(truncateToWidth("下載 runtime", 5)).toBe("下載 ");
+    expect(truncateToWidth("下載 runtime", 3)).toBe("下");
+    expect(truncateToWidth("abc", 0)).toBe("");
   });
 });
 

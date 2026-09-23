@@ -13,6 +13,10 @@ const SHOW_CURSOR = `${ESC}?25h`;
 const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 const SPINNER_INTERVAL_MS = 80;
 
+const BAR_WIDTH = 24;
+// 拿不到終端機寬度時的保守假設；VT100 以來的預設就是 80。
+const DEFAULT_COLUMNS = 80;
+
 // 非互動終端（重導到檔案、CI）不能靠覆寫同一行，只能每隔一段距離補一行。
 const PLAIN_STEP_RATIO = 0.05;
 const PLAIN_STEP_MS = 10_000;
@@ -53,6 +57,41 @@ export function supportsColor({ stream = process.stderr, env = process.env } = {
 }
 
 const paint = (on, code, text) => (on ? `${ESC}${code}m${text}${ESC}0m` : text);
+
+/**
+ * 字串實際佔幾欄。中日韓字元是全形，一個字佔兩欄——用 `.length` 量會少算，
+ * 於是自以為放得下、實際卻折行。
+ */
+export function displayWidth(text) {
+  let width = 0;
+  for (const ch of text) {
+    const c = ch.codePointAt(0);
+    const wide =
+      (c >= 0x1100 && c <= 0x115f) ||
+      (c >= 0x2e80 && c <= 0xa4cf) ||
+      (c >= 0xac00 && c <= 0xd7a3) ||
+      (c >= 0xf900 && c <= 0xfaff) ||
+      (c >= 0xfe30 && c <= 0xfe6f) ||
+      (c >= 0xff00 && c <= 0xff60) ||
+      (c >= 0xffe0 && c <= 0xffe6);
+    width += wide ? 2 : 1;
+  }
+  return width;
+}
+
+/** 截到指定欄寬為止，不切半個全形字。 */
+export function truncateToWidth(text, maxWidth) {
+  if (maxWidth <= 0) return "";
+  let out = "";
+  let width = 0;
+  for (const ch of text) {
+    const next = width + displayWidth(ch);
+    if (next > maxWidth) break;
+    out += ch;
+    width = next;
+  }
+  return out;
+}
 
 /**
  * 啟動橫幅。只在互動終端印出；輸出被重導到檔案或跑在 CI 時回傳空陣列——
@@ -98,7 +137,7 @@ export function formatDuration(ms) {
   return m > 0 ? `${m}m ${String(s).padStart(2, "0")}s` : `${s}s`;
 }
 
-export function renderBar(ratio, width = 24) {
+export function renderBar(ratio, width = BAR_WIDTH) {
   const filled = Math.max(0, Math.min(width, Math.round(ratio * width)));
   return `${"█".repeat(filled)}${"░".repeat(width - filled)}`;
 }
@@ -147,31 +186,73 @@ export function createProgress({
     return (loaded / elapsed) * 1000;
   };
 
-  function body() {
+  /**
+   * 組出細節文字，放不下就從尾端依序捨棄。
+   *
+   * 折行是這條路徑上最糟的失敗：`ESC[2K` 只清得掉游標所在的那一行，一旦內容
+   * 折到第二行，每次重畫都會再折一次而舊的留在上面——畫面會被同一行進度洗版
+   * 到滿。寧可少顯示幾項，也不能讓它超出視窗寬度。
+   */
+  function body(budget = Infinity) {
     if (indeterminate) return "";
     const speed = rate();
-    const parts = [];
-    if (total) {
-      const ratio = Math.min(1, loaded / total);
-      parts.push(renderBar(ratio));
-      parts.push(`${String(Math.floor(ratio * 100)).padStart(3)}%`);
-      parts.push(`${formatBytes(loaded)} / ${formatBytes(total)}`);
-      if (speed > 0) {
-        parts.push(`${formatBytes(speed)}/s`);
-        parts.push(`剩 ${formatDuration(((total - loaded) / speed) * 1000)}`);
-      }
-    } else {
-      parts.push(formatBytes(loaded));
+    if (!total) {
+      const parts = [formatBytes(loaded)];
       if (speed > 0) parts.push(`${formatBytes(speed)}/s`);
+      return fitParts(parts, budget);
     }
-    return parts.join("  ");
+    const ratio = Math.min(1, loaded / total);
+    const pct = `${String(Math.floor(ratio * 100)).padStart(3)}%`;
+    const bytes = `${formatBytes(loaded)} / ${formatBytes(total)}`;
+    const rest = [];
+    if (speed > 0) {
+      rest.push(`${formatBytes(speed)}/s`);
+      rest.push(`剩 ${formatDuration(((total - loaded) / speed) * 1000)}`);
+    }
+    const render = (barWidth, drop) =>
+      [
+        ...(barWidth > 0 ? [renderBar(ratio, barWidth)] : []),
+        pct,
+        bytes,
+        ...rest.slice(0, rest.length - drop),
+      ].join("  ");
+
+    // 退讓順序：先縮短進度條，再丟預估剩餘時間，再丟速率，最後才拿掉進度條。
+    // 慢速線路上使用者盯的是速率與剩餘時間，一根寬條沒有那麼重要——百分比已經
+    // 說了同一件事。
+    for (let drop = 0; drop <= rest.length; drop += 1) {
+      for (const barWidth of [BAR_WIDTH, 12]) {
+        const text = render(barWidth, drop);
+        if (displayWidth(text) <= budget) return text;
+      }
+    }
+    for (let drop = 0; drop <= rest.length; drop += 1) {
+      const text = render(0, drop);
+      if (displayWidth(text) <= budget) return text;
+    }
+    return truncateToWidth(`${pct}  ${bytes}`, budget);
+  }
+
+  function fitParts(parts, budget) {
+    for (let drop = 0; drop < parts.length; drop += 1) {
+      const text = parts.slice(0, parts.length - drop).join("  ");
+      if (displayWidth(text) <= budget) return text;
+    }
+    return truncateToWidth(parts[0] ?? "", budget);
   }
 
   function paintLine() {
-    const spin = paint(color, "36", SPINNER_FRAMES[frame % SPINNER_FRAMES.length]);
-    const detail = body();
+    // 每次重畫都重讀寬度：使用者隨時可能拉動視窗。留一欄不用，因為有些終端機
+    // 寫滿最後一欄就會自動換行。
+    const columns = (stream.columns ?? DEFAULT_COLUMNS) - 1;
+    const spin = SPINNER_FRAMES[frame % SPINNER_FRAMES.length];
+    const label = truncateToWidth(currentLabel, Math.max(0, columns - 2));
+    const used = displayWidth(spin) + 1 + displayWidth(label);
+    const detail = body(Math.max(0, columns - used - 2));
     stream.write(
-      `${CLEAR_LINE}${spin} ${currentLabel}${detail ? `  ${paint(color, "2", detail)}` : ""}`,
+      `${CLEAR_LINE}${paint(color, "36", spin)} ${label}${
+        detail ? `  ${paint(color, "2", detail)}` : ""
+      }`,
     );
   }
 
@@ -265,11 +346,17 @@ export function createProgress({
     done(message) {
       stop();
       const mark = paint(color, "32", "✔");
+      message = interactive
+        ? truncateToWidth(message, (stream.columns ?? DEFAULT_COLUMNS) - 3)
+        : message;
       stream.write(interactive ? `${CLEAR_LINE}${mark} ${message}\n` : `${message}\n`);
     },
     fail(message) {
       stop();
       const mark = paint(color, "31", "✖");
+      message = interactive
+        ? truncateToWidth(message, (stream.columns ?? DEFAULT_COLUMNS) - 3)
+        : message;
       stream.write(interactive ? `${CLEAR_LINE}${mark} ${message}\n` : `${message}\n`);
     },
     stop,
