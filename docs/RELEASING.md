@@ -53,6 +53,7 @@ npx --yes @yuzen9622/auto-ticket@<X.Y.Z> version
 | --- | --- |
 | 合併 release PR 後沒有任何建置 | 忘了第 4 步，補跑 `gh workflow run` |
 | release-runtime 紅了，但 tag 已經打出去 | 修好後重跑同一個 `-f tag=`，asset 上傳是冪等的（已存在就跳過） |
+| build_manifest 說「找不到 asset」，但 Release 頁面上明明有 | REST 的 by-tag／列表端點會快取上傳前的空清單。manifest 已改走 GraphQL；舊 tag 重跑即可，publish job 用的是派送當下 main 上的 `scripts/release` |
 | npm 上看不到新版本 | registry 傳播延遲，等 1～2 分鐘再看；超過 5 分鐘才需要查 |
 | 使用者回報校驗失敗 | **不要重傳 asset**，往前發修補版 |
 
