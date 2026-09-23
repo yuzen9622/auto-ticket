@@ -353,13 +353,12 @@ export function runtimeOverrides(env = process.env) {
 }
 
 // 進度列上的階段名稱。`indeterminate` 表示這一步沒有位元組可數，只轉 spinner。
-const RUNTIME_PHASES = {
-  download: { label: "下載 runtime", indeterminate: false },
-  verify: { label: "校驗 sha256", indeterminate: true },
-  extract: { label: "解壓 runtime", indeterminate: true },
-  commit: { label: "安裝 runtime", indeterminate: true },
+const RUNTIME_INSTALL_PHASES = {
+  download: { label: "Downloading runtime", indeterminate: false },
+  verify: { label: "Verifying SHA-256", indeterminate: true },
+  extract: { label: "Extracting runtime", indeterminate: true },
+  commit: { label: "Installing runtime", indeterminate: true },
 };
-
 /**
  * 取得 runtime 目錄：旁路優先，否則走下載與校驗。
  *
@@ -370,7 +369,9 @@ async function resolveRuntimeDir({ manifest, entry, target, packageVersion, p, u
   const override = runtimeOverrides();
   if (override.dir) return override.dir;
 
-  const progress = ui.createProgress({ label: `${RUNTIME_PHASES.download.label} ${packageVersion}` });
+  const progress = ui.createProgress({
+    label: `${RUNTIME_INSTALL_PHASES.download.label} ${packageVersion}`,
+  });
   progress.start();
   try {
     const dir = await runtimeCacheMod.ensureRuntime({
@@ -382,18 +383,20 @@ async function resolveRuntimeDir({ manifest, entry, target, packageVersion, p, u
       onProgress: (update) => progress.update(update),
       onRetry: ({ attempt, maxRetries }) => {
         progress.reset();
-        progress.setLabel(`${RUNTIME_PHASES.download.label} ${packageVersion}（重試 ${attempt}/${maxRetries}）`);
+        progress.setLabel(
+          `${RUNTIME_INSTALL_PHASES.download.label} ${packageVersion} (retry ${attempt}/${maxRetries})`,
+        );
       },
       onPhase: (phase) => {
-        const step = RUNTIME_PHASES[phase];
+        const step = RUNTIME_INSTALL_PHASES[phase];
         if (!step || phase === "download") return;
         progress.setLabel(step.label, { indeterminate: step.indeterminate });
       },
     });
-    progress.done(`runtime ${packageVersion} 就緒（${target}）`);
+    progress.done(`Runtime ${packageVersion} ready (${target})`);
     return dir;
   } catch (err) {
-    progress.fail(`runtime ${packageVersion} 安裝失敗`);
+    progress.fail(`Runtime ${packageVersion} install failed`);
     throw err;
   }
 }
@@ -555,6 +558,8 @@ function assertAllowed(command, allowed, flag) {
 export async function main(argv, io = {}) {
   const log = io.log ?? console.log;
   const errorLog = io.errorLog ?? console.error;
+  // 顯示層可注入：整合測試要驗的是接線，不是終端機上長什麼樣。
+  const ui = io.ui ?? uiMod;
   try {
     const { command, flags } = parseArgs(argv);
     switch (command) {
@@ -637,7 +642,7 @@ export async function main(argv, io = {}) {
         const manifest = await readRuntimeManifest();
         const entry = loadManifest(manifest, { packageVersion, target });
         const p = paths();
-        uiMod.writeBanner({ version: packageVersion });
+        ui.writeBanner({ version: packageVersion });
         // 搶票一律借用使用者本機的真 Chrome，沒有它整個流程走不到最後一步。
         // 讓它在還沒下載 300MB runtime 之前就明確失敗，而不是等到領任務才炸。
         assertChromePresent();
@@ -648,6 +653,7 @@ export async function main(argv, io = {}) {
           target,
           packageVersion,
           p,
+          ui,
         });
         const pythonPath = runtimePythonIn(runtimeDir);
         if (!flags.skipMigration) {
