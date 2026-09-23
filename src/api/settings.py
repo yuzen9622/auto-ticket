@@ -43,7 +43,7 @@ class ApiSettings:
     pump_poll_ms: int = 100
     prune_interval_s: float = 60.0
     lease_ttl_s: float = 30.0
-    version: str = "0.5.0"  # x-release-please-version
+    version: str = "0.6.0"  # x-release-please-version
     resolver_orgs: tuple[str, ...] = field(default_factory=tuple)
     """票券平台 feed 的主辦來源。搜尋範圍由這裡與已同步活動推導，
     **不**向使用者索取——主辦代號是內部資料來源設定，不是使用者該懂的東西。"""
