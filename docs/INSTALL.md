@@ -1,8 +1,25 @@
 # 安裝
 
+用你慣用的套件管理工具全域安裝 `auto-ticket` 指令：
+
 ```bash
-npx @yuzen9622/auto-ticket
+# npm
+npm install -g @yuzen9622/auto-ticket
+
+# pnpm
+pnpm add -g @yuzen9622/auto-ticket
+
+# Yarn（v1 classic）
+yarn global add @yuzen9622/auto-ticket
 ```
+
+安裝後啟動：
+
+```bash
+auto-ticket
+```
+
+pnpm 若提示沒有設定全域 bin 目錄，先執行一次 `pnpm setup` 再開新終端機。Yarn 2 以上沒有全域安裝，請改用 npm 或 pnpm。
 
 第一次執行會下載約 300MB 的 runtime 與約 150MB 的 Chromium，兩者都是可重入的獨立
 階段：中斷了就再跑一次，不會留下半殘狀態。之後啟動不再下載。
@@ -12,7 +29,7 @@ npx @yuzen9622/auto-ticket
 不會寫入任何終端機控制碼：
 
 ```bash
-npx @yuzen9622/auto-ticket start > install.log 2>&1
+auto-ticket start > install.log 2>&1
 tail -f install.log
 ```
 
@@ -81,7 +98,7 @@ netstat -ano | findstr :8000
 1. 關掉該對話框
 2. 「系統設定 → 隱私權與安全性」
 3. 捲到底，在被擋下的項目旁按「仍要打開」
-4. 回到終端機重跑 `npx @yuzen9622/auto-ticket`
+4. 回到終端機重跑 `auto-ticket`
 
 **本工具不會、也不應該替你繞過這一步**：不會執行 `xattr -d com.apple.quarantine`、
 不會動 `spctl`、不會 `codesign`。一個會自己拆掉你系統防線的安裝器，比它想省掉的
@@ -112,5 +129,5 @@ MIT。完整條款見 repo 根目錄的 `LICENSE`，套件內也帶了一份。
 ~/.auto-ticket/          # runtime、瀏覽器、日誌與你的資料，整個刪掉即可
 ```
 
-npm 的部分用 `npm uninstall -g @yuzen9622/auto-ticket`，或者你本來就只用 `npx`，
-那就什麼都不用做。
+指令本身依安裝方式移除：`npm uninstall -g @yuzen9622/auto-ticket`、
+`pnpm remove -g @yuzen9622/auto-ticket` 或 `yarn global remove @yuzen9622/auto-ticket`。

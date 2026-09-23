@@ -120,9 +120,11 @@ rm ~/.auto-ticket/logs/*.log
 
 ## 升級與回滾
 
-升級就是 `npx @yuzen9622/auto-ticket@latest`；它會下載對應版本的 runtime。
+升級就是用原本的套件管理工具重裝最新版，例如 `npm install -g @yuzen9622/auto-ticket@latest`
+（pnpm：`pnpm add -g @yuzen9622/auto-ticket@latest`；Yarn：`yarn global add @yuzen9622/auto-ticket@latest`），
+下次啟動會下載對應版本的 runtime。
 
-回滾同理：`npx @yuzen9622/auto-ticket@<舊版>`。該版的 runtime 若還在本機就秒開，
+回滾同理：`npm install -g @yuzen9622/auto-ticket@<舊版>`。該版的 runtime 若還在本機就秒開，
 否則重新下載那個 tag 的 asset。**已發佈的 Release asset 不會被刪除或重傳**——重傳
 會讓已發佈 npm 套件裡釘選的 sha256 對不上，那是發版鐵律（見 RELEASING.md）。
 
