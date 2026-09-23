@@ -5,6 +5,8 @@ import asyncio
 import dataclasses
 from pathlib import Path
 
+from sqlalchemy.exc import OperationalError
+
 from broker.broker import SqliteTaskBroker
 from broker.outbox import OutboxWriter
 from storage.database import Database
@@ -122,6 +124,17 @@ def settings_from_args(args: argparse.Namespace) -> WorkerSettings:
     return dataclasses.replace(WorkerSettings.from_env(), **overrides)
 
 
+async def create_schema(db: Database) -> None:
+    """API 與 worker 啟動時都會建表，同時撞上全新資料庫時後到的那邊會拿到
+    `table ... already exists`。再跑一次就會看到表已存在而略過。"""
+    try:
+        await db.create_all()
+    except OperationalError as exc:
+        if "already exists" not in str(exc):
+            raise
+        await db.create_all()
+
+
 async def amain(args: argparse.Namespace) -> None:
     worker_id = args.worker_id or default_worker_id()
     settings = settings_from_args(args)
@@ -129,7 +142,7 @@ async def amain(args: argparse.Namespace) -> None:
     settings.db_path.parent.mkdir(parents=True, exist_ok=True)
 
     db = Database(settings.db_path)
-    await db.create_all()
+    await create_schema(db)
 
     broker = SqliteTaskBroker(db, lease_ttl_s=settings.lease_ttl_s)
     outbox = OutboxWriter(db, flush_ms=settings.outbox_flush_ms)
