@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.0](https://github.com/yuzen9622/auto-ticket/compare/v0.4.0...v0.5.0) (2026-09-23)
+
+
+### Bug Fixes
+
+* **runtime:** ship a windows runtime that extracts without symlinks ([59f29b1](https://github.com/yuzen9622/auto-ticket/commit/59f29b14f204f94d8f47084caa035fba945fbb72))
+
 ## [0.4.0](https://github.com/yuzen9622/auto-ticket/compare/v0.3.0...v0.4.0) (2026-09-23)
 
 
