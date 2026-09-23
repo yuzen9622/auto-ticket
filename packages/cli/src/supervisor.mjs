@@ -262,6 +262,22 @@ export async function supervise({
     }
   };
 
+  // 只看狀態碼不夠：Windows 上別的程式若綁在 0.0.0.0:8000，我們的 API 還在建表時，
+  // 127.0.0.1:8000 會先由它回應（連 404 都算 <500），worker 就被提早放行、跟 API
+  // 搶著建表。要回應長得像我們的 /healthz、版本也對得上，才算是自己的 API 起來了。
+  // 旁路目錄的版本不受 package.json 管，只驗形狀。
+  const apiHealthy = (url) => () => async () => {
+    try {
+      const res = await fetchImpl(url);
+      if (!res.ok) return false;
+      const body = await res.json();
+      if (typeof body?.version !== "string" || typeof body?.broker_ok !== "boolean") return false;
+      return runtimeDirOverride != null || body.version === version;
+    } catch {
+      return false;
+    }
+  };
+
   await startOne({
     name: "api",
     cmd: pythonPath,
@@ -274,7 +290,7 @@ export async function supervise({
       String(ports.api),
     ],
     timeoutMs: 90_000,
-    makeCheck: httpOk(`http://127.0.0.1:${ports.api}/healthz`),
+    makeCheck: apiHealthy(`http://127.0.0.1:${ports.api}/healthz`),
   });
 
   await startOne({

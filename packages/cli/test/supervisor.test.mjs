@@ -163,7 +163,13 @@ describe("supervise", () => {
     };
 
     const fetchImpl = async (url) => {
-      if (url.includes("8000")) return { ok: apiReady, status: apiReady ? 200 : 503 };
+      if (url.includes("8000")) {
+        return {
+          ok: apiReady,
+          status: apiReady ? 200 : 503,
+          json: async () => ({ status: "ok", version: "1.0.0", broker_ok: true, worker_seen_at: null }),
+        };
+      }
       if (url.includes("3000")) return { ok: webReady, status: webReady ? 200 : 503 };
       return { ok: false, status: 500 };
     };
@@ -320,6 +326,37 @@ describe("supervise", () => {
     ).rejects.toMatchObject({ code: "START_TIMEOUT" });
 
     expect(errorLogs.length).toBeGreaterThan(0);
+  });
+
+  it.each([
+    ["別的程式回 404", { ok: false, status: 404, json: async () => ({ detail: "Not Found" }) }],
+    ["別的程式回 200 但不是我們的 health", { ok: true, status: 200, json: async () => ({ ok: true }) }],
+    ["別的程式回 200 但不是 JSON", { ok: true, status: 200, json: async () => JSON.parse("<html>") }],
+    [
+      "另一版 auto-ticket 的 API",
+      { ok: true, status: 200, json: async () => ({ status: "ok", version: "0.9.0", broker_ok: true }) },
+    ],
+  ])("8000 上是%s → 不算就緒，worker 不會被提早啟動", async (_label, response) => {
+    const h = makeHarness();
+    const fetchImpl = async (url) => (url.includes("8000") ? response : h.fetchImpl(url));
+
+    await expect(
+      supervise({
+        env: {},
+        paths: h.paths,
+        version: "1.0.0",
+        spawnImpl: h.spawnImpl,
+        fetchImpl,
+        killImpl: h.killImpl,
+        platform: "darwin",
+        now: h.clock.now,
+        sleepImpl: h.clock.sleepImpl,
+        signalSource: new EventEmitter(),
+        errorLog: () => {},
+      }),
+    ).rejects.toMatchObject({ code: "START_TIMEOUT" });
+
+    expect(h.children.worker).toHaveLength(0);
   });
 
   it("⑤ 既有 pid 存活時第二個實例 code=8", async () => {
