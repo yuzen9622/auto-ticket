@@ -4,7 +4,7 @@
 
 **只複製，永遠不刪、不搬、不改寫來源。**
 
-第一次執行 `auto-ticket start`（或任何時候顯式跑 `auto-ticket migrate`）時，
+第一次執行 `autix start`（或任何時候顯式跑 `autix migrate`）時，
 既有的 repo `data/` 會被複製到 `~/.auto-ticket/data/`。原本的目錄一個位元組都不會動。
 
 代價是磁碟翻倍——截圖通常佔絕大部分。這是刻意的：搶票資料是不可重建的營運紀錄，
@@ -87,12 +87,12 @@ SQLite 在 WAL 模式下，最近的交易還躺在 `-wal` 裡沒有 checkpoint�
 
 任一步失敗 → 刪掉 `data.incoming-*`，目標維持原狀，**來源從頭到尾沒被碰過**。
 
-要重來，刪掉整個 `~/.auto-ticket/data/` 再跑一次 `auto-ticket migrate` 就好。
+要重來，刪掉整個 `~/.auto-ticket/data/` 再跑一次 `autix migrate` 就好。
 
 ## 先看看會發生什麼
 
 ```bash
-auto-ticket migrate --dry-run
+autix migrate --dry-run
 ```
 
 只列印計畫：來源、目標、檔案數、位元組數、會略過哪些衍生檔。零寫入。

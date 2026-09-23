@@ -164,7 +164,7 @@ export async function ensureBrowsers({
     throw cliError(
       "DOWNLOAD_FAILED",
       `安裝 Playwright Chromium 失敗：${err.message}。` +
-        "這一步可重入，確認網路後重跑 `auto-ticket start` 即可。",
+        "這一步可重入，確認網路後重跑 `autix start` 即可。",
     );
   }
   return { installed: true, skipped: false };

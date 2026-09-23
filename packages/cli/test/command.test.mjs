@@ -1,3 +1,4 @@
+import { readFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
@@ -11,6 +12,7 @@ import {
   doctor,
   ExitCode,
   loadManifest,
+  main,
   parseArgs,
   paths,
   resolveTarget,
@@ -176,6 +178,46 @@ describe("parseArgs", () => {
   it("start 旗標解析", () => {
     const { flags } = parseArgs(["start", "--headed", "--no-ocr", "--skip-migration", "--from", "/x"]);
     expect(flags).toMatchObject({ headed: true, noOcr: true, skipMigration: true, from: "/x" });
+  });
+
+  it("update 是獨立指令，不吃 start 的旗標", () => {
+    expect(parseArgs(["update"]).command).toBe("update");
+    expect(() => parseArgs(["update", "--headed"])).toThrow(CliError);
+  });
+
+  it("-h / --help 放在哪都回到 help", () => {
+    expect(parseArgs(["--help"]).command).toBe("help");
+    expect(parseArgs(["-h"]).command).toBe("help");
+    expect(parseArgs(["help"]).command).toBe("help");
+    expect(parseArgs(["start", "--help"]).command).toBe("help");
+  });
+
+  it("-v / --version 只在單獨出現時代表版本", () => {
+    expect(parseArgs(["-v"]).command).toBe("--version");
+    expect(parseArgs(["--version"]).command).toBe("--version");
+    expect(() => parseArgs(["start", "-v"])).toThrow(CliError);
+  });
+});
+
+describe("main：help 與 --version", () => {
+  it("--help 列出每個實際存在的指令", async () => {
+    const out = [];
+    const code = await main(["--help"], { log: (l) => out.push(l) });
+    expect(code).toBe(ExitCode.SUCCESS);
+    const text = out.join("\n");
+    expect(text).toMatch(/^Usage: autix/);
+    for (const cmd of ["start", "update", "doctor", "version", "migrate", "runtime"]) {
+      expect(text).toMatch(new RegExp(`^  ${cmd}\\s`, "m"));
+    }
+    expect(text).toContain("-v, --version");
+    expect(text).toContain("-h, --help");
+  });
+
+  it("--version 只印套件版本", async () => {
+    const pkg = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
+    const out = [];
+    expect(await main(["-v"], { log: (l) => out.push(l) })).toBe(ExitCode.SUCCESS);
+    expect(out).toEqual([pkg.version]);
   });
 });
 

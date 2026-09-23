@@ -1,6 +1,6 @@
 // 指令路由 + 旗標解析 + 結束碼／錯誤型別 + target 解析 + 本機路徑 + manifest 驗證 + doctor。
-// 這裡是唯一允許 import 四個領域模組（runtime-cache / migration / host / supervisor）的檔案，
-// 依賴方向固定由此向外，四個領域模組彼此不得互相 import。
+// 這裡是唯一允許 import 五個領域模組（runtime-cache / migration / host / supervisor / update）的檔案，
+// 依賴方向固定由此向外，五個領域模組彼此不得互相 import。
 import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import fsPromises, { readFile, statfs } from "node:fs/promises";
@@ -13,6 +13,7 @@ import * as migrationMod from "./migration.mjs";
 import * as runtimeCacheMod from "./runtime-cache.mjs";
 import * as supervisorMod from "./supervisor.mjs";
 import * as uiMod from "./ui.mjs";
+import * as updateMod from "./update.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PACKAGE_ROOT = path.resolve(__dirname, "..");
@@ -30,6 +31,9 @@ export const ExitCode = Object.freeze({
   ALREADY_RUNNING: 8,
   CHROME_MISSING: 9,
   PORT_IN_USE: 10,
+  UPDATE_CHECK_FAILED: 11,
+  UPDATE_FAILED: 12,
+  UPDATE_UNSUPPORTED: 13,
 });
 
 export class CliError extends Error {
@@ -72,7 +76,7 @@ export function resolveTarget({
         throw new CliError(
           "UNSUPPORTED_PLATFORM",
           "偵測到目前的 Node 透過 Rosetta 在 Apple Silicon 上轉譯執行。" +
-            "請改安裝原生 arm64 版本的 Node 後再執行 auto-ticket，" +
+            "請改安裝原生 arm64 版本的 Node 後再執行 autix，" +
             "而不是繼續在 x64 runtime 上運作（會讓瀏覽器自動化與 OCR 的時序特性失真）。",
         );
       }
@@ -199,7 +203,7 @@ export function formatVersion({ packageVersion, manifest, installed, paths: p })
   const python = installed?.python ?? manifest.python;
   const ort = installed?.onnxruntime ?? manifest.onnxruntime;
   return [
-    `auto-ticket ${packageVersion}`,
+    `autix ${packageVersion}`,
     installed
       ? `runtime ${installed.version} (${p.runtimeDir(packageVersion)})`
       : `runtime ${manifest.version} (未安裝)`,
@@ -455,9 +459,44 @@ export function formatBytes(bytes) {
   return `${value.toFixed(i === 0 ? 0 : 1)} ${units[i]}`;
 }
 
-const KNOWN_COMMANDS = new Set(["start", "doctor", "runtime", "migrate", "logs", "version"]);
+const KNOWN_COMMANDS = new Set([
+  "start",
+  "update",
+  "doctor",
+  "runtime",
+  "migrate",
+  "logs",
+  "version",
+  "help",
+]);
 const RUNTIME_SUBCOMMANDS = new Set(["install", "path", "list"]);
 const LOG_TARGETS = new Set(["api", "worker", "web"]);
+
+export const HELP_TEXT = `Usage: autix [command] [options]
+
+Commands:
+  start       Start Auto Ticket (default when no command is given)
+  update      Update Auto Ticket to the latest version
+  doctor      Run a read-only environment diagnostic
+  version     Show CLI, runtime, Python, and ONNX Runtime versions
+  migrate     Migrate data from a legacy checkout
+  runtime     Manage the local runtime (install, path, list)
+
+Start options:
+  --headed            Run the worker with a visible browser
+  --skip-migration    Skip the legacy-data migration check
+  --from <dir>        Migrate from the given checkout
+
+Migrate options:
+  --from <dir>        Legacy checkout to migrate from
+  --merge-missing     Copy only files missing from the destination
+  --dry-run           Preview without changing files
+
+Options:
+  -v, --version       Show current version
+  -h, --help          Show help
+
+"auto-ticket" is kept as an alias of "autix".`;
 
 /**
  * 解析 argv。旗標面刻意做小：固定埠位不開放 --api-port / --web-port，
@@ -465,6 +504,13 @@ const LOG_TARGETS = new Set(["api", "worker", "web"]);
  */
 export function parseArgs(argv) {
   const args = [...argv];
+  // 求助旗標放在哪裡都算：`autix start --help` 不該因為 start 不認得它而報錯。
+  if (args.includes("-h") || args.includes("--help")) {
+    return { command: "help", flags: {}, positionals: [] };
+  }
+  if (args.length === 1 && (args[0] === "-v" || args[0] === "--version")) {
+    return { command: "--version", flags: {}, positionals: [] };
+  }
   let command = "start";
   if (args.length > 0 && KNOWN_COMMANDS.has(args[0])) {
     command = args.shift();
@@ -563,6 +609,30 @@ export async function main(argv, io = {}) {
   try {
     const { command, flags } = parseArgs(argv);
     switch (command) {
+      case "help": {
+        log(HELP_TEXT);
+        return ExitCode.SUCCESS;
+      }
+      case "--version": {
+        log(await readPackageVersion());
+        return ExitCode.SUCCESS;
+      }
+      case "update": {
+        // 服務在跑時替換套件檔，Windows 會卡在檔案鎖、留下裝到一半的目錄；先擋掉。
+        const running = await supervisorMod.findRunningInstance({ paths: paths() });
+        if (running) {
+          throw new CliError(
+            "ALREADY_RUNNING",
+            `Auto Ticket 正在執行中（pid=${running}），請先按 Ctrl+C 停止後再更新。`,
+          );
+        }
+        await updateMod.update({
+          currentVersion: await readPackageVersion(),
+          packageRoot: PACKAGE_ROOT,
+          log,
+        });
+        return ExitCode.SUCCESS;
+      }
       case "doctor": {
         const report = await doctor({});
         log(JSON.stringify(report, null, 2));
@@ -632,7 +702,7 @@ export async function main(argv, io = {}) {
         return ExitCode.SUCCESS;
       }
       case "logs": {
-        // 讀日誌屬於使用者互動性質，交由呼叫端（bin/auto-ticket.mjs 或整合測試）決定實際輸出方式。
+        // 讀日誌屬於使用者互動性質，交由呼叫端（bin/autix.mjs 或整合測試）決定實際輸出方式。
         return ExitCode.SUCCESS;
       }
       case "start":

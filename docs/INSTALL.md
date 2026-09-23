@@ -1,6 +1,6 @@
 # 安裝
 
-用你慣用的套件管理工具全域安裝 `auto-ticket` 指令：
+用你慣用的套件管理工具全域安裝 `autix` 指令：
 
 ```bash
 # npm
@@ -16,7 +16,7 @@ yarn global add @yuzen9622/auto-ticket
 安裝後啟動：
 
 ```bash
-auto-ticket
+autix
 ```
 
 pnpm 若提示沒有設定全域 bin 目錄，先執行一次 `pnpm setup` 再開新終端機。Yarn 2 以上沒有全域安裝，請改用 npm 或 pnpm。
@@ -29,7 +29,7 @@ pnpm 若提示沒有設定全域 bin 目錄，先執行一次 `pnpm setup` 再�
 不會寫入任何終端機控制碼：
 
 ```bash
-auto-ticket start > install.log 2>&1
+autix start > install.log 2>&1
 tail -f install.log
 ```
 
@@ -69,7 +69,7 @@ Intel Mac 就得讓那台機器的加密庫停在一個更舊的版本，我們�
 | **`tar`** | macOS 內建 `/usr/bin/tar`；Windows 10 1803 以上內建 `tar.exe` |
 | 約 1.5GB 可用磁碟 | runtime + Chromium + 你的既有資料副本 |
 
-`auto-ticket doctor` 會把以上逐條檢查並告訴你缺哪一項。
+`autix doctor` 會把以上逐條檢查並告訴你缺哪一項。
 
 ## 固定埠 8000 / 3000
 
@@ -79,7 +79,7 @@ Intel Mac 就得讓那台機器的加密庫停在一個更舊的版本，我們�
 兩條路：發佈後掃描改寫 `.next` 產物（不受 Next.js 任何保證，而且會讓完整性雜湊失去
 意義），或是每個埠各發一份 build。首版選擇固定埠，把那條高風險的路整個關掉。
 
-埠被佔用時 `auto-ticket start` 會以結束碼 `10` 中止，並印出是哪個埠、佔用它的 pid
+埠被佔用時 `autix start` 會以結束碼 `10` 中止，並印出是哪個埠、佔用它的 pid
 與處置建議。先把佔用的程式關掉再重試：
 
 ```bash
@@ -98,7 +98,7 @@ netstat -ano | findstr :8000
 1. 關掉該對話框
 2. 「系統設定 → 隱私權與安全性」
 3. 捲到底，在被擋下的項目旁按「仍要打開」
-4. 回到終端機重跑 `auto-ticket`
+4. 回到終端機重跑 `autix`
 
 **本工具不會、也不應該替你繞過這一步**：不會執行 `xattr -d com.apple.quarantine`、
 不會動 `spctl`、不會 `codesign`。一個會自己拆掉你系統防線的安裝器，比它想省掉的
@@ -112,11 +112,12 @@ netstat -ano | findstr :8000
 ## 常用指令
 
 ```bash
-auto-ticket                 # 啟動全套（等同 start）
-auto-ticket doctor          # 只讀診斷：平台、Node、tar、Chrome、埠、runtime、磁碟、OCR
-auto-ticket version         # CLI / runtime / Python / onnxruntime 版本
-auto-ticket migrate --dry-run   # 先看看遷移會做什麼
-auto-ticket logs api -f     # 追某個行程的日誌
+autix                     # 啟動全套（等同 start）
+autix doctor              # 只讀診斷：平台、Node、tar、Chrome、埠、runtime、磁碟、OCR
+autix version             # CLI / runtime / Python / onnxruntime 版本
+autix update              # 更新到最新版
+autix migrate --dry-run   # 先看看遷移會做什麼
+autix logs api -f         # 追某個行程的日誌
 ```
 
 ## 授權

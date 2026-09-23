@@ -14,7 +14,8 @@
   },
   "license": "MIT",
   "bin": {
-    "auto-ticket": "bin/auto-ticket.mjs"
+    "autix": "bin/autix.mjs",
+    "auto-ticket": "bin/autix.mjs"
   },
   "engines": {
     "node": ">=20.10"

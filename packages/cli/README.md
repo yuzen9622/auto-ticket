@@ -6,7 +6,7 @@ A local-first launcher for auto-ticket. Install it globally to start the API, wo
 
 ## Install
 
-Install the `auto-ticket` command globally with the package manager you use:
+Install the `autix` command globally with the package manager you use:
 
 ```bash
 # npm
@@ -22,7 +22,7 @@ yarn global add @yuzen9622/auto-ticket
 Then start it:
 
 ```bash
-auto-ticket
+autix
 ```
 
 If pnpm reports that no global bin directory is configured, run `pnpm setup` once and open a new terminal. Yarn 2 and later have no global install; use npm or pnpm instead.
@@ -43,12 +43,16 @@ Intel Macs, Linux, and Windows on ARM are not supported. On Apple Silicon, use a
 
 | Command | Description |
 | --- | --- |
-| `auto-ticket` or `auto-ticket start` | Start the API, worker, and dashboard. |
-| `auto-ticket doctor` | Run a read-only environment diagnostic. |
-| `auto-ticket version` | Print CLI, runtime, Python, and ONNX Runtime versions. |
-| `auto-ticket migrate --dry-run` | Preview legacy-data migration without changing files. |
-| `auto-ticket logs api -f` | Follow logs; use `worker` or `web` for the other services. |
-| `auto-ticket runtime list` | List locally installed runtime versions. |
+| `autix` or `autix start` | Start the API, worker, and dashboard. |
+| `autix update` | Update the CLI to the latest release. |
+| `autix doctor` | Run a read-only environment diagnostic. |
+| `autix version` | Print CLI, runtime, Python, and ONNX Runtime versions. |
+| `autix migrate --dry-run` | Preview legacy-data migration without changing files. |
+| `autix logs api -f` | Follow logs; use `worker` or `web` for the other services. |
+| `autix runtime list` | List locally installed runtime versions. |
+| `autix --help` / `autix --version` | Show all commands, or print the CLI version. |
+
+`auto-ticket` still works as an alias of `autix`.
 
 The API and dashboard use fixed loopback ports `8000` and `3000` respectively. If a port is already in use, stop the process that owns it and try again.
 

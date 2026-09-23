@@ -43,7 +43,7 @@ app/scripts/migrate_db.py
 web/               Next standalone：server.js + .next/ + .next/static/ + public/
 ```
 
-**不含 Playwright 瀏覽器**。那由 `auto-ticket start` 首次執行時交給 Playwright
+**不含 Playwright 瀏覽器**。那由 `autix start` 首次執行時交給 Playwright
 官方安裝器處理，落在 `~/.auto-ticket/ms-playwright`。
 
 CLI 與 runtime **嚴格同版**：CLI 只接受 `MANIFEST.json` 的 `version` 等於自己
@@ -120,9 +120,21 @@ rm ~/.auto-ticket/logs/*.log
 
 ## 升級與回滾
 
-升級就是用原本的套件管理工具重裝最新版，例如 `npm install -g @yuzen9622/auto-ticket@latest`
-（pnpm：`pnpm add -g @yuzen9622/auto-ticket@latest`；Yarn：`yarn global add @yuzen9622/auto-ticket@latest`），
-下次啟動會下載對應版本的 runtime。
+升級跑 `autix update`：它先問 npm registry 的 `latest`，已是最新就直接結束；有新版時，
+從自己的安裝位置認出當初是 npm、pnpm 還是 Yarn 全域安裝，交給同一個工具裝那個確切版本，
+裝完再回讀全域目錄確認版本真的換了。服務還在執行時會拒絕更新（結束碼 `8`），
+避免 Windows 在檔案被佔用時裝到一半。
+
+| 結束碼 | 意義 |
+| --- | --- |
+| `11` | 連不到 npm registry 或回應格式不符，本機沒有任何變動 |
+| `12` | 套件管理工具失敗，或回報成功但版本沒換；訊息會寫出目前實際裝著的版本 |
+| `13` | 認不出安裝方式（npx 暫時執行、原始碼目錄、專案本地依賴），附上手動指令 |
+
+也可以直接用原本的套件管理工具重裝，例如 `npm install -g @yuzen9622/auto-ticket@latest`
+（pnpm：`pnpm add -g @yuzen9622/auto-ticket@latest`；Yarn：`yarn global add @yuzen9622/auto-ticket@latest`）。
+0.5.0 以前的版本沒有 `update` 指令，第一次升級只能這樣做。
+無論哪種方式，下次啟動都會下載對應版本的 runtime；要在開賣前先備好就跑 `autix runtime install`。
 
 回滾同理：`npm install -g @yuzen9622/auto-ticket@<舊版>`。該版的 runtime 若還在本機就秒開，
 否則重新下載那個 tag 的 asset。**已發佈的 Release asset 不會被刪除或重傳**——重傳
@@ -131,7 +143,7 @@ rm ~/.auto-ticket/logs/*.log
 舊版 runtime 目錄**一律保留**，首版沒有自動清理。查看佔用：
 
 ```bash
-auto-ticket runtime list      # 只讀列出本機版本與可回收大小
+autix runtime list      # 只讀列出本機版本與可回收大小
 ```
 
 要回收就手動刪目錄，那是安全的：

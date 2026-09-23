@@ -172,6 +172,12 @@ function isPidAlive(pid, killImpl) {
   }
 }
 
+/** 目前在跑的 supervisor pid；沒有、已結束或狀態檔讀不懂都回傳 null。 */
+export async function findRunningInstance({ paths, fsImpl = fs, killImpl = process.kill }) {
+  const existing = await readSupervisorState(paths, fsImpl).catch(() => null);
+  return existing && isPidAlive(existing.pid, killImpl) ? existing.pid : null;
+}
+
 /**
  * 三個子行程的完整啟動序與監督迴圈：api → worker → web，各自等就緒才進下一階段。
  * 任一階段逾時：印出該行程 log 末 40 行、關閉全部已啟動行程、回傳結束碼 7。

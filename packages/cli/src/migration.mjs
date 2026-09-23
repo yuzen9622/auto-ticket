@@ -221,7 +221,7 @@ async function defaultRunPython({ sourceDb, destDb, pythonPath, runtimeDir }) {
   if (!pythonPath || !runtimeDir) {
     throw cliError(
       "MIGRATION_CONFLICT",
-      "資料庫一致性備份需要 runtime 內的 Python；請先執行 `auto-ticket runtime install`。",
+      "資料庫一致性備份需要 runtime 內的 Python；請先執行 `autix runtime install`。",
     );
   }
   const { spawn } = await import("node:child_process");

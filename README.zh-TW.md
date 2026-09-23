@@ -18,7 +18,7 @@
 
 ## 快速開始
 
-用你慣用的套件管理工具全域安裝 `auto-ticket` 指令：
+用你慣用的套件管理工具全域安裝 `autix` 指令：
 
 ```bash
 # npm
@@ -34,7 +34,7 @@ yarn global add @yuzen9622/auto-ticket
 安裝後啟動：
 
 ```bash
-auto-ticket
+autix
 ```
 
 pnpm 若提示沒有設定全域 bin 目錄，先執行一次 `pnpm setup` 再開新終端機。Yarn 2 以上沒有全域安裝，請改用 npm 或 pnpm。
@@ -56,7 +56,7 @@ pnpm 若提示沒有設定全域 bin 目錄，先執行一次 `pnpm setup` 再�
 若安裝或啟動未如預期，先執行唯讀診斷：
 
 ```bash
-auto-ticket doctor
+autix doctor
 ```
 
 平台注意事項、埠位衝突處理與 macOS Gatekeeper 指引，請見[安裝說明](docs/INSTALL.md)。
@@ -65,12 +65,16 @@ auto-ticket doctor
 
 | 指令 | 說明 |
 | --- | --- |
-| `auto-ticket` 或 `auto-ticket start` | 啟動 API、Worker 與儀表板；按 `Ctrl+C` 停止。 |
-| `auto-ticket doctor` | 唯讀檢查平台、Node.js、`tar`、Chrome、埠位、runtime、磁碟與 OCR 設定。 |
-| `auto-ticket version` | 顯示 CLI、runtime、Python 與 ONNX Runtime 版本。 |
-| `auto-ticket migrate --dry-run` | 預覽既有資料遷移，不變更任何檔案。 |
-| `auto-ticket logs api -f` | 持續顯示應用程式日誌；可將 `api` 改為 `worker` 或 `web`。 |
-| `auto-ticket runtime list` | 列出本機 runtime 版本與可回收大小。 |
+| `autix` 或 `autix start` | 啟動 API、Worker 與儀表板；按 `Ctrl+C` 停止。 |
+| `autix update` | 檢查 npm 上是否有新版，並用當初安裝 CLI 的套件管理工具更新。 |
+| `autix doctor` | 唯讀檢查平台、Node.js、`tar`、Chrome、埠位、runtime、磁碟與 OCR 設定。 |
+| `autix version` | 顯示 CLI、runtime、Python 與 ONNX Runtime 版本。 |
+| `autix migrate --dry-run` | 預覽既有資料遷移，不變更任何檔案。 |
+| `autix logs api -f` | 持續顯示應用程式日誌；可將 `api` 改為 `worker` 或 `web`。 |
+| `autix runtime list` | 列出本機 runtime 版本與可回收大小。 |
+| `autix --help` / `autix --version` | 列出所有指令，或顯示 CLI 版本。 |
+
+舊指令名稱 `auto-ticket` 仍可使用，是 `autix` 的別名。
 
 API 固定使用 `127.0.0.1:8000`，儀表板固定使用 `127.0.0.1:3000`。首版不支援變更埠位；若埠位被占用，請停止占用程式後重試。
 
@@ -85,7 +89,7 @@ API 與儀表板只監聽 loopback 位址；本工具不收集 telemetry、不�
 第一次遷移既有 repo 的 `data/` 時，只會複製，不會搬移或覆寫。可先執行：
 
 ```bash
-auto-ticket migrate --dry-run
+autix migrate --dry-run
 ```
 
 完整資訊請參閱[資料遷移](docs/MIGRATION.md)、[Runtime 維運](docs/RUNTIME.md)與[安全性](docs/SECURITY.md)。

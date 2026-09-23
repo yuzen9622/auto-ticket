@@ -74,7 +74,7 @@ describe("guardrails: packages/cli 靜態掃描", () => {
     }
   });
 
-  it("src/ 恰好 6 個 .mjs 檔，檔名固定", async () => {
+  it("src/ 恰好 7 個 .mjs 檔，檔名固定", async () => {
     const entries = await readdir(path.join(CLI_ROOT, "src"));
     const mjsFiles = entries.filter((f) => f.endsWith(".mjs")).sort();
     expect(mjsFiles).toEqual(
@@ -85,6 +85,7 @@ describe("guardrails: packages/cli 靜態掃描", () => {
         "runtime-cache.mjs",
         "supervisor.mjs",
         "ui.mjs",
+        "update.mjs",
       ].sort(),
     );
   });
@@ -95,7 +96,7 @@ describe("guardrails: packages/cli 靜態掃描", () => {
   });
 
   it("四個領域模組彼此零 import（無循環依賴）", async () => {
-    const domainModules = ["runtime-cache.mjs", "migration.mjs", "host.mjs", "supervisor.mjs"];
+    const domainModules = ["runtime-cache.mjs", "migration.mjs", "host.mjs", "supervisor.mjs", "update.mjs"];
     for (const mod of domainModules) {
       const text = await readFile(path.join(CLI_ROOT, "src", mod), "utf8");
       for (const other of domainModules) {
@@ -108,7 +109,7 @@ describe("guardrails: packages/cli 靜態掃描", () => {
   });
 
   it("領域模組不得反向 import command.mjs（依賴方向單一，無循環）", async () => {
-    const domainModules = ["runtime-cache.mjs", "migration.mjs", "host.mjs", "supervisor.mjs"];
+    const domainModules = ["runtime-cache.mjs", "migration.mjs", "host.mjs", "supervisor.mjs", "update.mjs"];
     for (const mod of domainModules) {
       const text = await readFile(path.join(CLI_ROOT, "src", mod), "utf8");
       expect(
@@ -118,10 +119,18 @@ describe("guardrails: packages/cli 靜態掃描", () => {
     }
   });
 
+  it("autix 與舊名 auto-ticket 指向同一支 entry point", async () => {
+    const pkg = JSON.parse(await readFile(path.join(CLI_ROOT, "package.json"), "utf8"));
+    expect(Object.keys(pkg.bin ?? {}).sort()).toEqual(["autix", "auto-ticket"]);
+    // 兩個名字各指一支檔案，就會長出兩套 CLI 邏輯。
+    // 舊名也不能拿掉：`npx @yuzen9622/auto-ticket` 在套件有多個 bin 時，挑的是跟套件同名的那一個。
+    expect(pkg.bin["auto-ticket"]).toBe(pkg.bin.autix);
+  });
+
   it("bin 對應得到真實檔案，且路徑不帶 ./ 前綴", async () => {
     const pkg = JSON.parse(await readFile(path.join(CLI_ROOT, "package.json"), "utf8"));
-    const target = pkg.bin?.["auto-ticket"];
-    expect(target, "package.json 缺少 bin.auto-ticket").toBeTruthy();
+    const target = pkg.bin?.autix;
+    expect(target, "package.json 缺少 bin.autix").toBeTruthy();
     // npm 會把帶 ./ 前綴的 bin 路徑判為無效，**在 publish 時整條刪掉**——
     // 發出去的套件就沒有任何指令，而這裡沒有任何測試會因此變紅。
     expect(target.startsWith("./"), "bin 路徑不得帶 ./ 前綴").toBe(false);

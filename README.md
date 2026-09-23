@@ -18,7 +18,7 @@ A local-first ticketing workflow application that installs as a global command a
 
 ## Quick start
 
-Install the `auto-ticket` command globally with the package manager you use:
+Install the `autix` command globally with the package manager you use:
 
 ```bash
 # npm
@@ -34,7 +34,7 @@ yarn global add @yuzen9622/auto-ticket
 Then start it:
 
 ```bash
-auto-ticket
+autix
 ```
 
 If pnpm reports that no global bin directory is configured, run `pnpm setup` once and open a new terminal. Yarn 2 and later have no global install; use npm or pnpm instead.
@@ -56,7 +56,7 @@ Intel Macs, Linux, and Windows on ARM are not supported. On Apple Silicon, use a
 Run the read-only diagnostic command if setup does not start as expected:
 
 ```bash
-auto-ticket doctor
+autix doctor
 ```
 
 For platform notes, port-conflict guidance, and macOS Gatekeeper instructions, see [Installation](docs/INSTALL.md).
@@ -65,12 +65,16 @@ For platform notes, port-conflict guidance, and macOS Gatekeeper instructions, s
 
 | Command | Description |
 | --- | --- |
-| `auto-ticket` or `auto-ticket start` | Start the API, worker, and dashboard. Press `Ctrl+C` to stop them. |
-| `auto-ticket doctor` | Check the platform, Node.js, `tar`, Chrome, ports, runtime, disk space, and OCR configuration without writing data. |
-| `auto-ticket version` | Print CLI, runtime, Python, and ONNX Runtime versions. |
-| `auto-ticket migrate --dry-run` | Preview legacy-data migration without changing files. |
-| `auto-ticket logs api -f` | Follow an application log. Replace `api` with `worker` or `web` as needed. |
-| `auto-ticket runtime list` | List local runtime versions and reclaimable size. |
+| `autix` or `autix start` | Start the API, worker, and dashboard. Press `Ctrl+C` to stop them. |
+| `autix update` | Check npm for a newer release and reinstall it with the package manager that installed the CLI. |
+| `autix doctor` | Check the platform, Node.js, `tar`, Chrome, ports, runtime, disk space, and OCR configuration without writing data. |
+| `autix version` | Print CLI, runtime, Python, and ONNX Runtime versions. |
+| `autix migrate --dry-run` | Preview legacy-data migration without changing files. |
+| `autix logs api -f` | Follow an application log. Replace `api` with `worker` or `web` as needed. |
+| `autix runtime list` | List local runtime versions and reclaimable size. |
+| `autix --help` / `autix --version` | Show all commands, or print the CLI version. |
+
+The previous command name, `auto-ticket`, still works as an alias of `autix`.
 
 The API uses `127.0.0.1:8000` and the dashboard uses `127.0.0.1:3000`. These ports are fixed in the first release. If either port is busy, stop the process using it and run the command again.
 
@@ -85,7 +89,7 @@ Credentials are kept in a local encrypted vault. Do not delete `~/.auto-ticket/d
 Existing repository `data/` is copied, never moved or overwritten, during its first migration. Review the plan first with:
 
 ```bash
-auto-ticket migrate --dry-run
+autix migrate --dry-run
 ```
 
 See [Migration](docs/MIGRATION.md), [Runtime operations](docs/RUNTIME.md), and [Security](docs/SECURITY.md) for complete details.
