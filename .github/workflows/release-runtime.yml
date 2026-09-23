@@ -100,7 +100,13 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          present() { gh release view "$TAG" --json assets -q '.assets[].name'; }
+          # 不用 `gh release view`：它走的 REST by-tag 端點會快取上傳前的空清單，
+          # 重跑時誤判「還沒傳」而撞上 422 already exists。GraphQL 即時。
+          present() {
+            gh api graphql -f query='query($owner:String!,$name:String!,$tag:String!){repository(owner:$owner,name:$name){release(tagName:$tag){releaseAssets(first:50){nodes{name}}}}}' \
+              -f owner="${GITHUB_REPOSITORY%/*}" -f name="${GITHUB_REPOSITORY#*/}" -f tag="$TAG" \
+              -q '.data.repository.release.releaseAssets.nodes[].name'
+          }
           for path in dist-runtime/*; do
             name=$(basename "$path")
             if present | grep -qx "$name"; then
