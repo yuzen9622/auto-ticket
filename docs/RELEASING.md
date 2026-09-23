@@ -1,5 +1,61 @@
 # 發版
 
+## 自己發一版：照這個順序做
+
+```bash
+# 1. 寫程式，然後用 Conventional Commits 提交。
+#    前綴決定版號，這是唯一的版號控制方式——不要手改 package.json。
+git commit -m "fix(cli): 修好某件事"        # → patch   0.4.0 → 0.4.1
+git commit -m "feat(cli): 加了某個功能"      # → minor   0.4.0 → 0.5.0
+git commit -m "feat(cli)!: 改掉某個介面"     # → major   0.4.0 → 1.0.0
+git commit -m "chore: 整理"                 # → 不發版
+
+# 2. 推上 main，等 CI 綠（約 2 分鐘）
+git push origin main
+gh run list --branch main --limit 2
+
+# 3. release-please 會自動開一個 "chore(main): release X.Y.Z" 的 PR。
+#    確認它的版號與 CHANGELOG 沒問題後合併——合併的瞬間就會打 tag。
+gh pr list
+gh pr merge <PR 編號> --squash
+
+# 4. 手動派送建置與發佈（見下方的警告，這一步不會自己跑）
+gh workflow run release-runtime.yml -f tag=v<X.Y.Z>
+gh run list --workflow=release-runtime.yml --limit 1
+
+# 5. 等它全綠（約 5 分鐘），再等 npm registry 傳播（約 1～2 分鐘）
+npm view @yuzen9622/auto-ticket version
+
+# 6. 驗一次真的能裝
+npx --yes @yuzen9622/auto-ticket@<X.Y.Z> version
+```
+
+**只有第 3、4 步需要你判斷**，其餘都是等待。整條鏈約 10 分鐘。
+
+### 幾個只有踩過才知道的地方
+
+- **第 4 步絕對不能省**。合併 release PR 之後看起來「什麼都沒發生」是正常的，
+  原因見下一節：`GITHUB_TOKEN` 打的 tag 不會觸發 workflow。
+- **版號不是你決定的，是 commit 前綴決定的**。想發 patch 卻寫了 `feat:`，
+  release-please 就會開 minor 的 PR。要改只能改 commit message 重推。
+- **發錯了不要刪、不要 unpublish**，往前發一版修掉。理由見「發版鐵律」。
+- **`npm deprecate` 要 2FA**，CI 的 token 做不到，只能你本機手動跑：
+  ```bash
+  npm login          # 一次就好
+  npm deprecate "@yuzen9622/auto-ticket@<壞掉的版本>" "說明與建議改用的版本"
+  ```
+- **發佈用的是 CI 的 `NPM_TOKEN`**，本機沒登入也能發版；只有 `deprecate`／
+  `dist-tag` 這類帳號層操作才需要本機登入。
+
+### 出事了怎麼辦
+
+| 症狀 | 原因與處置 |
+| --- | --- |
+| 合併 release PR 後沒有任何建置 | 忘了第 4 步，補跑 `gh workflow run` |
+| release-runtime 紅了，但 tag 已經打出去 | 修好後重跑同一個 `-f tag=`，asset 上傳是冪等的（已存在就跳過） |
+| npm 上看不到新版本 | registry 傳播延遲，等 1～2 分鐘再看；超過 5 分鐘才需要查 |
+| 使用者回報校驗失敗 | **不要重傳 asset**，往前發修補版 |
+
 ## 拓撲
 
 ```
@@ -9,7 +65,7 @@ PR ──► ci.yml            invariants / pytest / audit / typecheck / lint / 
 main ─► release-please.yml ──► Release PR（CHANGELOG.md + 版本號寫入 4 處）
    merge ─► tag vX.Y.Z + GitHub Release（草稿）
          └─► release-runtime.yml
-              ├─ build matrix（3 targets）→ smoke_ocr → 上傳 tar.gz + .sha256
+              ├─ build matrix（2 targets）→ smoke_ocr → 上傳 tar.gz + .sha256
               ├─ build_manifest.mjs   → packages/cli/runtime-manifest.json
               ├─ build_manifest --verify（雜湊交叉檢查）
               ├─ redact_notes.mjs     → 覆寫 Release body
