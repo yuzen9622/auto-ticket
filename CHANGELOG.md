@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.6.0](https://github.com/yuzen9622/auto-ticket/compare/v0.5.0...v0.6.0) (2026-09-23)
+
+
+### Features
+
+* **cli:** rename the command to autix and add autix update ([9e061da](https://github.com/yuzen9622/auto-ticket/commit/9e061dad73b08e0c5e15953ea264cd2a2f72243c))
+
+
+### Bug Fixes
+
+* **cli:** only start the worker once our own api answers the health check ([cb36483](https://github.com/yuzen9622/auto-ticket/commit/cb36483406e75884e9b108683c0b47b5d38eea7d))
+* **worker:** survive the api creating the schema at the same moment ([255a73f](https://github.com/yuzen9622/auto-ticket/commit/255a73ff1a54a24c8b7be1dfc037e075221d3687))
+
 ## [0.5.0](https://github.com/yuzen9622/auto-ticket/compare/v0.4.0...v0.5.0) (2026-09-23)
 
 
