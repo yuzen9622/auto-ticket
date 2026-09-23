@@ -142,6 +142,13 @@ jobs:
           node-version: 20
           registry-url: https://registry.npmjs.org
 
+      # 發版工具用派送當下的版本：tag 上的 scripts/release 若有 bug，修好後重跑同一個
+      # tag 才吃得到修正。tag 觸發時 GITHUB_SHA 就是 tag 本身，這步等於沒做事。
+      - name: Use release tooling from the dispatching commit
+        run: |
+          git fetch --depth=1 origin "$GITHUB_SHA"
+          git checkout FETCH_HEAD -- scripts/release
+
       - name: Build runtime manifest from release assets
         env:
           GH_TOKEN: ${{ github.token }}
