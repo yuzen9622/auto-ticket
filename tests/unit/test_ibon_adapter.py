@@ -15,6 +15,7 @@ from adapters.ticketing.ibon.selectors import IbonSelectors
 from adapters.ticketing.page_state import (
     REASON_SELECTED,
     CloudflareChallengeError,
+    LoginState,
     PageKind,
     PageState,
 )
@@ -540,3 +541,25 @@ def test_ibon_login_redirect_is_guest_modal() -> None:
     )
     state = pytest.importorskip("asyncio").run(adapter.detect_page_state(page))
     assert state == PageState.GUEST_MODAL
+
+
+@pytest.mark.asyncio
+async def test_ibon_probe_login_state_logged_in() -> None:
+    adapter = IbonAdapter()
+    page = MockPage(
+        url="https://ticket.ibon.com.tw/ActivityInfo/Details/123",
+        html="<html><body><a href='/account/logoff'>會員中心 登出</a></body></html>",
+    )
+    state = await adapter.probe_login_state(page)
+    assert state == LoginState.LOGGED_IN
+
+
+@pytest.mark.asyncio
+async def test_ibon_probe_login_state_logged_out() -> None:
+    adapter = IbonAdapter()
+    page = MockPage(
+        url="https://ticket.ibon.com.tw/ActivityInfo/Details/123",
+        html="<html><body><a href='https://huiwan.ibon.com.tw/userlogin.aspx'>登入</a></body></html>",
+    )
+    state = await adapter.probe_login_state(page)
+    assert state == LoginState.LOGGED_OUT

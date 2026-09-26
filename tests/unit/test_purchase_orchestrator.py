@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -25,6 +25,7 @@ from adapters.ticketing.kktix.adapter import (
     KKTIXPageKind,
     PageState,
 )
+from adapters.ticketing.page_state import LoginState
 from domain.event import PlatformEnum
 from domain.preference import SeatPreference, TicketPreference, TicketPriority
 from domain.task import PurchaseTaskSpec, UserContactProfile
@@ -136,6 +137,7 @@ class StubAdapter:
         reset_ok: bool = True,
         dismiss_ok: bool = True,
         login_ok: bool = True,
+        login_state: LoginState = LoginState.LOGGED_IN,
     ) -> None:
         self.page_states = (
             list(page_states)
@@ -159,6 +161,7 @@ class StubAdapter:
         self.reset_ok = reset_ok
         self.dismiss_ok = dismiss_ok
         self.login_ok = login_ok
+        self.login_state = login_state
         self.on_login: Any = None
         self.calls: list[str] = []
         self.payment = "stub-payment-provider"
@@ -185,13 +188,18 @@ class StubAdapter:
             self.probe_kinds.pop(0) if self.probe_kinds else KKTIXPageKind.REGISTRATION
         )
 
-    async def navigate_to_event(self, page: Any, url: str, session_preference: str | None = None) -> bool:
+    async def navigate_to_event(
+        self, page: Any, url: str, session_preference: str | None = None
+    ) -> bool:
         self.calls.append("navigate")
         return True
 
     async def detect_sale_opened(self, page: Any, timeout_ms: int) -> bool:
         self.calls.append("detect_sale")
         return True
+
+    async def probe_login_state(self, page: Any) -> LoginState:
+        return self.login_state
 
     async def read_registration_tickets(self, page: Any) -> list[TicketOption]:
         self.calls.append("read_registration_tickets")
@@ -208,9 +216,7 @@ class StubAdapter:
             )
         ]
 
-    async def apply_ticket_decision(
-        self, page: Any, decision: Any
-    ) -> tuple[bool, str]:
+    async def apply_ticket_decision(self, page: Any, decision: Any) -> tuple[bool, str]:
         self.calls.append("apply_ticket_decision")
         self.last_ticket_decision = decision
         return (
@@ -744,9 +750,7 @@ async def test_gate_never_waits_past_the_sale_moment(tmp_path: Path) -> None:
     orchestrator.session_gate_timeout_s = 600.0
     orchestrator.gate_must_finish_before_sale_s = 60.0
     orchestrator.spec = orchestrator.spec.model_copy(
-        update={
-            "sale_start_at": datetime.now(UTC) + timedelta(seconds=70)
-        }
+        update={"sale_start_at": datetime.now(UTC) + timedelta(seconds=70)}
     )
 
     cap = orchestrator._gate_budget_cap()
@@ -761,9 +765,7 @@ async def test_gate_budget_is_unclamped_once_the_sale_has_started(
     adapter = StubAdapter()
     orchestrator, _, _, _ = build(tmp_path, adapter)
     orchestrator.spec = orchestrator.spec.model_copy(
-        update={
-            "sale_start_at": datetime.now(UTC) - timedelta(seconds=5)
-        }
+        update={"sale_start_at": datetime.now(UTC) - timedelta(seconds=5)}
     )
     assert orchestrator._gate_budget_cap() is None
 
@@ -805,9 +807,7 @@ async def test_a_page_that_needs_a_human_keeps_the_long_interval(
     async def gate(kind: str, attempt: int) -> None:
         announced.append((kind, attempt))
 
-    adapter = StubAdapter(
-        probe_kinds=[KKTIXPageKind.LOGIN, KKTIXPageKind.REGISTRATION]
-    )
+    adapter = StubAdapter(probe_kinds=[KKTIXPageKind.LOGIN, KKTIXPageKind.REGISTRATION])
     orchestrator, _, browser, _ = build(tmp_path, adapter)
     orchestrator._rt.page = browser.page
     orchestrator.session_gate_poll_s = 5.0
@@ -1098,9 +1098,7 @@ async def test_qualification_code_missing_fails_closed(
     monkeypatch.delenv("AUTO_TICKET_MEMBER_CODE", raising=False)
     monkeypatch.setattr("sys.stdin.isatty", lambda: False)
     spec = make_spec(qualification_code="")
-    adapter = StubAdapter(
-        page_states=[PageState.QUALIFICATION_CODE]
-    )
+    adapter = StubAdapter(page_states=[PageState.QUALIFICATION_CODE])
     orchestrator, _, browser, telemetry = build(tmp_path, adapter, spec=spec)
     browser.page = FakePage(QUALIFICATION_CODE_HTML)
     report = await orchestrator.run()
@@ -1259,8 +1257,9 @@ async def test_challenge_grace_does_not_extend_the_deadline(tmp_path: Path) -> N
     orchestrator.challenge_poll_s = 2.0
     sleep, slept = _fake_clock(orchestrator)
 
-    with patch("asyncio.sleep", sleep), pytest.raises(
-        PurchaseStepError, match="page not ready before sale: CHALLENGE"
+    with (
+        patch("asyncio.sleep", sleep),
+        pytest.raises(PurchaseStepError, match="page not ready before sale: CHALLENGE"),
     ):
         await orchestrator._check_session(_ctx())
 
@@ -1286,13 +1285,17 @@ async def test_challenge_grace_respects_gate_budget_cap(tmp_path: Path) -> None:
     assert sum(slept) <= 12.0
 
 
-async def test_grace_disabled_by_default_keeps_current_behaviour(tmp_path: Path) -> None:
+async def test_grace_disabled_by_default_keeps_current_behaviour(
+    tmp_path: Path,
+) -> None:
     announced: list[tuple[str, int]] = []
 
     async def gate(kind: str, attempt: int) -> None:
         announced.append((kind, attempt))
 
-    adapter = StubAdapter(probe_kinds=[KKTIXPageKind.CHALLENGE, KKTIXPageKind.REGISTRATION])
+    adapter = StubAdapter(
+        probe_kinds=[KKTIXPageKind.CHALLENGE, KKTIXPageKind.REGISTRATION]
+    )
     orchestrator, _, browser, _ = build(tmp_path, adapter)
     orchestrator._rt.page = browser.page
     orchestrator.challenge_grace_s = 0.0
@@ -1305,7 +1308,9 @@ async def test_grace_disabled_by_default_keeps_current_behaviour(tmp_path: Path)
     assert announced == [("CHALLENGE", 1)]
 
 
-async def test_bot_check_unclearable_still_fails_fast_during_grace(tmp_path: Path) -> None:
+async def test_bot_check_unclearable_still_fails_fast_during_grace(
+    tmp_path: Path,
+) -> None:
     adapter = StubAdapter(probe_kinds=[KKTIXPageKind.CHALLENGE] * 20)
     orchestrator, _, browser, _ = build(tmp_path, adapter)
     orchestrator._rt.page = browser.page
@@ -1315,8 +1320,11 @@ async def test_bot_check_unclearable_still_fails_fast_during_grace(tmp_path: Pat
     orchestrator.unattended_gate_grace_s = 6.0
     sleep, slept = _fake_clock(orchestrator)
 
-    with patch("asyncio.sleep", sleep), pytest.raises(
-        PurchaseStepError, match="bot check cannot be cleared by this browser"
+    with (
+        patch("asyncio.sleep", sleep),
+        pytest.raises(
+            PurchaseStepError, match="bot check cannot be cleared by this browser"
+        ),
     ):
         await orchestrator._check_session(_ctx())
 
@@ -1410,3 +1418,100 @@ async def test_auto_submit_is_the_default(tmp_path: Path) -> None:
     assert orchestrator.auto_submit_verification is True
     await orchestrator._handle_form_filling(browser.page)
     assert "submit_order" in adapter.calls
+
+
+async def test_pre_sale_standby_on_event_page_succeeds_without_error(
+    tmp_path: Path,
+) -> None:
+    """開賣前停在活動主頁是合法待命，不得逾時拋錯 page not ready before sale: EVENT。"""
+    adapter = StubAdapter(probe_kinds=[KKTIXPageKind.EVENT] * 10)
+    orchestrator, _, browser, _ = build(tmp_path, adapter)
+    orchestrator._rt.page = browser.page
+    orchestrator.session_gate_poll_s = 0.01
+    orchestrator.spec = orchestrator.spec.model_copy(
+        update={"sale_start_at": datetime.now(UTC) + timedelta(minutes=5)}
+    )
+
+    await orchestrator._check_session(_ctx())
+    assert orchestrator._rt.is_pre_sale_standby is True
+    events = [e for e in orchestrator.telemetry.events() if e.name == "session_ready"]
+    assert len(events) == 1
+    assert events[0].detail.get("mode") == "pre_sale_standby"
+
+
+async def test_pre_sale_standby_triggers_navigation_at_sale_start(
+    tmp_path: Path,
+) -> None:
+    """開賣前待命狀態在 T=0 開賣瞬間，會自動導航推進進登記頁。"""
+    adapter = StubAdapter()
+    orchestrator, _, browser, _ = build(tmp_path, adapter)
+    orchestrator.fsm = PurchaseWorkflow(orchestrator.spec, orchestrator.telemetry)
+    orchestrator.fsm.send("prepare_session")
+    orchestrator.fsm.send("session_ready")
+    orchestrator.fsm.send("sale_triggered")
+    orchestrator._rt.page = browser.page
+    orchestrator._rt.is_pre_sale_standby = True
+
+    with patch.object(orchestrator, "_run_race_loop", AsyncMock()):
+        await orchestrator._trigger_purchase(_ctx())
+    assert "navigate" in adapter.calls
+
+
+async def test_pre_sale_standby_prompts_login_when_logged_out(
+    tmp_path: Path,
+) -> None:
+    """開賣前即使在活動頁，若檢測到未登入，應發出 LOGIN 提醒，且順利完成待命不崩潰。"""
+    announced: list[tuple[str, int]] = []
+
+    async def gate(kind: str, attempt: int) -> None:
+        announced.append((kind, attempt))
+
+    adapter = StubAdapter(
+        probe_kinds=[KKTIXPageKind.EVENT] * 10,
+        login_state=LoginState.LOGGED_OUT,
+    )
+    orchestrator, _, browser, _ = build(tmp_path, adapter)
+    orchestrator._rt.page = browser.page
+    orchestrator.session_gate_poll_s = 0.01
+    orchestrator.session_gate_timeout_s = 0.05
+    orchestrator.session_gate = gate
+    orchestrator.spec = orchestrator.spec.model_copy(
+        update={"sale_start_at": datetime.now(UTC) + timedelta(minutes=5)}
+    )
+
+    await orchestrator._check_session(_ctx())
+
+    assert any(kind == "LOGIN" for kind, _ in announced)
+    assert orchestrator._rt.is_pre_sale_standby is True
+
+
+async def test_pre_sale_standby_succeeds_when_user_logs_in(
+    tmp_path: Path,
+) -> None:
+    """開賣前檢測到未登入，使用者於等待期間完成登入後，應順利就緒。"""
+    announced: list[tuple[str, int]] = []
+
+    adapter = StubAdapter(
+        probe_kinds=[KKTIXPageKind.EVENT] * 10,
+        login_state=LoginState.LOGGED_OUT,
+    )
+
+    async def gate(kind: str, attempt: int) -> None:
+        announced.append((kind, attempt))
+        # 模擬使用者在收到登入提示後完成登入
+        adapter.login_state = LoginState.LOGGED_IN
+
+    orchestrator, _, browser, _ = build(tmp_path, adapter)
+    orchestrator._rt.page = browser.page
+    orchestrator.session_gate_poll_s = 0.01
+    orchestrator.session_gate = gate
+    orchestrator.spec = orchestrator.spec.model_copy(
+        update={"sale_start_at": datetime.now(UTC) + timedelta(minutes=5)}
+    )
+
+    await orchestrator._check_session(_ctx())
+    assert orchestrator._rt.is_pre_sale_standby is True
+    events = [e for e in orchestrator.telemetry.events() if e.name == "session_ready"]
+    assert len(events) == 1
+    assert any(kind == "LOGIN" for kind, _ in announced)
+

@@ -403,3 +403,35 @@ async def test_flow_multi_platform_factory_dispatch(flow: Flow) -> None:
     )
     assert isinstance(adapter_ibon, IbonAdapter)
     assert adapter_ibon._target_quantity == 2
+
+
+EVENT_PAGE_HTML = (
+    "<div class='description-wrapper'><h1>演唱會活動介紹</h1>"
+    "<div class='event-dates'>2026/10/01</div>"
+    "<p>尚未開賣，請於開賣時間前往購票</p></div>"
+)
+
+
+async def test_flow_pre_sale_standby_to_open_transitions_smoothly(flow: Flow) -> None:
+    """模擬從『未開賣待命』到『T=0 開賣瞬間自動推進』的全流程。"""
+    spec = make_spec(
+        flow.clock.wall + timedelta(milliseconds=200),
+    )
+    orch = flow.wire(start_html=EVENT_PAGE_HTML, spec=spec)
+
+    async def nav_on_sale(page: Any, url: str, session_preference: str | None = None) -> bool:
+        from bs4 import BeautifulSoup
+
+        if flow.clock.wall >= spec.sale_start_at:
+            flow.page.soup = BeautifulSoup(load_page_html("kktix_registration_new.html"), "html.parser")
+        return True
+
+    orch.adapter.navigate_to_event = nav_on_sale
+
+    report = await orch.run()
+    assert report.final_state == "COMPLETED"
+    assert report.error is None
+    # 驗證歷程中確實記錄了 pre_sale_standby
+    events = [e for e in flow.telemetry.events() if e.name == "session_ready"]
+    assert any(e.detail.get("mode") == "pre_sale_standby" for e in events)
+

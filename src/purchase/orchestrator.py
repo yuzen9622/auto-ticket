@@ -7,6 +7,8 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import inspect
 import os
 import sys
 from collections.abc import Awaitable, Callable, Mapping
@@ -18,7 +20,7 @@ from typing import Any
 
 from accounts.vault import get_env_credentials
 from adapters.payment.base import PaymentOutcome, PaymentProvider, PaymentResult
-from adapters.ticketing.page_state import CloudflareChallengeError, PageKind, PageState
+from adapters.ticketing.page_state import LoginState, PageKind, PageState
 from adapters.verification.base import VerificationProvider
 from browser.context_factory import sanitize_path_component
 from browser.manager import PlaywrightManager
@@ -117,6 +119,7 @@ class _Runtime:
     auto_login_attempted: bool = False
     # 就緒閘門確認過「可以下單」的那一個網址。頁面沒離開它就沒有重新導航的理由。
     session_ready_url: str | None = None
+    is_pre_sale_standby: bool = False
     # 動作進度協議：每一格都對應一個「已經做過就不得再做一次」的副作用。
     excluded_ticket_names: set[str] = field(default_factory=set)
     current_ticket_name: str | None = None
@@ -428,6 +431,24 @@ class PurchaseOrchestrator:
                 kind=str(getattr(kind, "value", kind)),
                 attempt=attempt,
             )
+
+            # 主動探測登入狀態
+            login_state = LoginState.UNKNOWN
+            probe_login = getattr(self.adapter, "probe_login_state", None)
+            if callable(probe_login):
+                with contextlib.suppress(Exception):
+                    raw_res = probe_login(page)
+                    if inspect.isawaitable(raw_res):
+                        login_state = await raw_res
+                    elif isinstance(raw_res, LoginState):
+                        login_state = raw_res
+                    self.telemetry.record(
+                        TimelineEventType.MARK,
+                        "login_state_probe",
+                        state=str(getattr(login_state, "value", login_state)),
+                        attempt=attempt,
+                    )
+
             if kind is PageKind.REGISTRATION:
                 if challenge_seen_at is not None:
                     self.telemetry.record(
@@ -442,6 +463,17 @@ class PurchaseOrchestrator:
                     TimelineEventType.MARK, "session_ready", attempts=attempt
                 )
                 return
+
+            # 若未登入且未在登入頁或驗證頁，嘗試自動登入；手動模式則提示人登入
+            if login_state is LoginState.LOGGED_OUT and kind not in (PageKind.LOGIN, PageKind.CHALLENGE):
+                if await self._handle_guest_modal(page, is_guest_modal=False):
+                    kind = await self.adapter.probe_page(page)
+                    attempt += 1
+                    continue
+                if self.session_gate is not None and not announced:
+                    await self.session_gate("LOGIN", attempt)
+                    announced = True
+
             if await self._try_auto_login(page, kind):
                 kind = await self.adapter.probe_page(page)
                 attempt += 1
@@ -461,6 +493,18 @@ class PurchaseOrchestrator:
                 if kind is PageKind.REGISTRATION:
                     attempt += 1
                     continue
+                # 開賣前情境：活動主頁正常載入，且尚未開賣（如 ibon / 拓元在開賣前無法進入登記頁）
+                # 只要沒有被 Cloudflare 或登入頁擋住，活動主頁即為合法的待命就緒狀態。
+                if kind is PageKind.EVENT and self._is_pre_sale():
+                    self._rt.session_ready_url = self._page_url(page)
+                    self._rt.is_pre_sale_standby = True
+                    self.telemetry.record(
+                        TimelineEventType.MARK,
+                        "session_ready",
+                        attempts=attempt,
+                        mode="pre_sale_standby",
+                    )
+                    return
             blocked_reason = self._gate_blocker(kind)
             if self._loop_time() >= deadline:
                 kind_value = str(getattr(kind, "value", kind))
@@ -470,6 +514,17 @@ class PurchaseOrchestrator:
                     raise CloudflareStepError(
                         "check_session", f"page not ready before sale: {kind_value}"
                     )
+                # 開賣前收工線抵達：若仍停在活動主頁，視為合法待命完成，順利進入開賣流程，不得拋錯中止
+                if kind is PageKind.EVENT and self._is_pre_sale():
+                    self._rt.session_ready_url = self._page_url(page)
+                    self._rt.is_pre_sale_standby = True
+                    self.telemetry.record(
+                        TimelineEventType.MARK,
+                        "session_ready",
+                        attempts=attempt,
+                        mode="pre_sale_standby",
+                    )
+                    return
                 raise PurchaseStepError(
                     "check_session",
                     f"page not ready before sale: {kind_value}",
@@ -583,6 +638,19 @@ class PurchaseOrchestrator:
         """
         return kind in (PageKind.LOGIN, PageKind.CHALLENGE)
 
+    def _now_wall(self) -> datetime:
+        wall = getattr(self.scheduler, "_wall", None)
+        if callable(wall):
+            val = wall()
+            if isinstance(val, datetime):
+                return val
+        return datetime.now(UTC)
+
+    def _is_pre_sale(self) -> bool:
+        if self.spec.start_timing is StartTiming.IMMEDIATE:
+            return False
+        return (self.spec.sale_start_at - self._now_wall()).total_seconds() > 0
+
     def _gate_budget_cap(self) -> float | None:
         """就緒閘門最多還能花多少秒，None 代表不受開賣時間限制。
 
@@ -596,11 +664,15 @@ class PurchaseOrchestrator:
         if self.spec.start_timing is StartTiming.IMMEDIATE:
             return None
         remaining_to_sale = (
-            self.spec.sale_start_at - datetime.now(UTC)
+            self.spec.sale_start_at - self._now_wall()
         ).total_seconds()
         if remaining_to_sale <= 0:
             return None
-        return max(0.0, remaining_to_sale - self.gate_must_finish_before_sale_s)
+        # 若剩餘時間小於等於收工線（例如開賣前 30 秒才啟動），保留到開賣前 1 秒，
+        # 給予瀏覽器充足的本地 DOM 渲染時間，而非瞬間歸零失敗。
+        if remaining_to_sale <= self.gate_must_finish_before_sale_s:
+            return max(0.0, remaining_to_sale - 1.0)
+        return remaining_to_sale - self.gate_must_finish_before_sale_s
 
     def _gate_blocker(self, kind: Any) -> str | None:
         """這個閘門在目前的瀏覽器條件下有沒有可能被通過；不可能就回傳該說的話。"""
@@ -663,6 +735,13 @@ class PurchaseOrchestrator:
     async def _trigger_purchase(self, ctx: WarmupContext) -> None:
         page = self._require_page()
         self._send(EVENT_PAGE_LOADED)
+        # 開賣瞬間：若開賣前是在活動主頁待命，開賣瞬間自動推進進入登記頁
+        if self._rt.is_pre_sale_standby:
+            await self.adapter.navigate_to_event(
+                page,
+                self.spec.event_url,
+                session_preference=self.spec.session_preference,
+            )
         await self._run_race_loop(page)
 
     # -------------------------------------------------------- 反應式驅動迴圈

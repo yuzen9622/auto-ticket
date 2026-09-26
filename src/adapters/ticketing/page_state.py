@@ -97,3 +97,11 @@ class PageState(str, Enum):
 
 class CloudflareChallengeError(RuntimeError):
     """偵測到人機驗證挑戰；一律 fail-closed 中止，不嘗試繞過。"""
+
+
+class LoginState(str, Enum):
+    """登入狀態的三種可能，刻意不把「不知道」摺進「未登入」。"""
+
+    LOGGED_IN = "LOGGED_IN"
+    LOGGED_OUT = "LOGGED_OUT"
+    UNKNOWN = "UNKNOWN"
