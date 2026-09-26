@@ -801,9 +801,11 @@ class KKTIXAdapter(TicketingAdapter):
             page, KKTIXSelectors.LOGIN_FORM
         ):
             return KKTIXPageKind.LOGIN
-        if await self._has(
-            page, KKTIXSelectors.EVENT_TICKET_TABLE_ROWS
-        ) or await self._has(page, KKTIXSelectors.EVENT_TITLE):
+        if (
+            await self._has(page, KKTIXSelectors.EVENT_TICKET_TABLE_ROWS)
+            or await self._has(page, KKTIXSelectors.EVENT_TITLE)
+            or await self._has(page, ".description-wrapper, .event-dates, .event-list")
+        ):
             return KKTIXPageKind.EVENT
         if await self._has(page, KKTIXSelectors.CONTACT_NAME) or await self._has(
             page, KKTIXSelectors.RESELECT_TICKET_LINK

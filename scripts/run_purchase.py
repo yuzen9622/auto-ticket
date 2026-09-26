@@ -32,9 +32,10 @@ from adapters.payment import (  # noqa: E402
     PaymentOutcome,
     masked_last4,
 )
-from adapters.ticketing.kktix.adapter import KKTIXAdapter  # noqa: E402
-from adapters.verification import ManualVerificationProvider
-from adapters.verification.rule_based import RuleBasedVerificationProvider
+from adapters.ticketing.factory import build_adapter, detect_platform  # noqa: E402
+from adapters.ticketing.kktix.adapter import KKTIXAdapter  # noqa: F401, E402
+from adapters.verification import ManualVerificationProvider  # noqa: E402
+from adapters.verification.rule_based import RuleBasedVerificationProvider  # noqa: E402
 from browser.cdp_attach import (  # noqa: E402
     CdpEndpointError,
     parse_cdp_endpoint,
@@ -148,7 +149,12 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def load_spec(path: Path) -> PurchaseTaskSpec:
-    return PurchaseTaskSpec.model_validate(json.loads(path.read_text(encoding="utf-8")))
+    try:
+        content = path.read_text(encoding="utf-8")
+        data = json.loads(content)
+        return PurchaseTaskSpec.model_validate(data)
+    except Exception as exc:
+        raise ValueError(f"Failed to load task spec from {path}: {exc}") from exc
 
 
 def card_from_env() -> CreditCardProfile | None:
@@ -252,12 +258,23 @@ async def run(args: argparse.Namespace) -> int:
             prompt_for_answer, telemetry=telemetry
         )
 
-    adapter = KKTIXAdapter(
-        telemetry=telemetry,
-        payment=payment,
-        verification=verification,
-        attendees=spec.attendees,
-    )
+    try:
+        platform = detect_platform(spec.event_url)
+        adapter = build_adapter(
+            platform,
+            ticket_preference=spec.ticket_preference,
+            telemetry=telemetry,
+            payment=payment,
+            verification=verification,
+            attendees=spec.attendees,
+        )
+    except Exception:
+        adapter = KKTIXAdapter(
+            telemetry=telemetry,
+            payment=payment,
+            verification=verification,
+            attendees=spec.attendees,
+        )
     scheduler = WarmupScheduler(telemetry)
     updates: dict[str, Any] = {}
     if profile is not None:

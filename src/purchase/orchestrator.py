@@ -651,7 +651,11 @@ class PurchaseOrchestrator:
         ).total_seconds()
         if remaining_to_sale <= 0:
             return None
-        return max(0.0, remaining_to_sale - self.gate_must_finish_before_sale_s)
+        # 若剩餘時間小於等於收工線（例如開賣前 30 秒才啟動），保留到開賣前 1 秒，
+        # 給予瀏覽器充足的本地 DOM 渲染時間，而非瞬間歸零失敗。
+        if remaining_to_sale <= self.gate_must_finish_before_sale_s:
+            return max(0.0, remaining_to_sale - 1.0)
+        return remaining_to_sale - self.gate_must_finish_before_sale_s
 
     def _gate_blocker(self, kind: Any) -> str | None:
         """這個閘門在目前的瀏覽器條件下有沒有可能被通過；不可能就回傳該說的話。"""
