@@ -7,6 +7,8 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import inspect
 import os
 import sys
 from collections.abc import Awaitable, Callable, Mapping
@@ -18,7 +20,7 @@ from typing import Any
 
 from accounts.vault import get_env_credentials
 from adapters.payment.base import PaymentOutcome, PaymentProvider, PaymentResult
-from adapters.ticketing.page_state import PageKind, PageState
+from adapters.ticketing.page_state import LoginState, PageKind, PageState
 from adapters.verification.base import VerificationProvider
 from browser.context_factory import sanitize_path_component
 from browser.manager import PlaywrightManager
@@ -429,6 +431,24 @@ class PurchaseOrchestrator:
                 kind=str(getattr(kind, "value", kind)),
                 attempt=attempt,
             )
+
+            # 主動探測登入狀態
+            login_state = LoginState.UNKNOWN
+            probe_login = getattr(self.adapter, "probe_login_state", None)
+            if callable(probe_login):
+                with contextlib.suppress(Exception):
+                    raw_res = probe_login(page)
+                    if inspect.isawaitable(raw_res):
+                        login_state = await raw_res
+                    elif isinstance(raw_res, LoginState):
+                        login_state = raw_res
+                    self.telemetry.record(
+                        TimelineEventType.MARK,
+                        "login_state_probe",
+                        state=str(getattr(login_state, "value", login_state)),
+                        attempt=attempt,
+                    )
+
             if kind is PageKind.REGISTRATION:
                 if challenge_seen_at is not None:
                     self.telemetry.record(
@@ -443,6 +463,15 @@ class PurchaseOrchestrator:
                     TimelineEventType.MARK, "session_ready", attempts=attempt
                 )
                 return
+
+            # 若未登入且未在登入頁或驗證頁，嘗試自動登入；若無憑證則提升為 LOGIN 等待人登入
+            if login_state is LoginState.LOGGED_OUT and kind not in (PageKind.LOGIN, PageKind.CHALLENGE):
+                if await self._handle_guest_modal(page, is_guest_modal=False):
+                    kind = await self.adapter.probe_page(page)
+                    attempt += 1
+                    continue
+                kind = PageKind.LOGIN
+
             if await self._try_auto_login(page, kind):
                 kind = await self.adapter.probe_page(page)
                 attempt += 1
@@ -463,8 +492,12 @@ class PurchaseOrchestrator:
                     attempt += 1
                     continue
                 # 開賣前情境：活動主頁正常載入，且尚未開賣（如 ibon / 拓元在開賣前無法進入登記頁）
-                # 只要沒有被 Cloudflare 或登入頁擋住，活動主頁即為合法的待命就緒狀態。
-                if kind is PageKind.EVENT and self._is_pre_sale():
+                # 只要沒有被 Cloudflare 或登入頁擋住，且非 LOGGED_OUT，活動主頁即為合法的待命就緒狀態。
+                if (
+                    kind is PageKind.EVENT
+                    and self._is_pre_sale()
+                    and login_state is not LoginState.LOGGED_OUT
+                ):
                     self._rt.session_ready_url = self._page_url(page)
                     self._rt.is_pre_sale_standby = True
                     self.telemetry.record(

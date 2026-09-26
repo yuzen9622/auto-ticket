@@ -11,10 +11,11 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from adapters.ticketing.page_state import (
+    REASON_SELECTED,
     CloudflareChallengeError,
+    LoginState,
     PageKind,
     PageState,
-    REASON_SELECTED,
 )
 from adapters.ticketing.tixcraft.adapter import TixcraftAdapter
 from adapters.verification.base import (
@@ -110,7 +111,9 @@ class MockLocator:
     async def screenshot(self, **kwargs: Any) -> bytes:
         return f"screenshot-{self.name}-{self.clicked}".encode()
 
-    async def wait_for(self, state: str = "visible", timeout: float | None = None) -> None:
+    async def wait_for(
+        self, state: str = "visible", timeout: float | None = None
+    ) -> None:
         if not self._visible:
             raise RuntimeError(f"{self.name} not visible")
 
@@ -137,7 +140,9 @@ class MockPage:
     async def wait_for_url(self, pattern: str, timeout: float | None = None) -> None:
         self.wait_urls.append(pattern)
 
-    async def wait_for_load_state(self, state: str = "domcontentloaded", timeout: float | None = None) -> None:
+    async def wait_for_load_state(
+        self, state: str = "domcontentloaded", timeout: float | None = None
+    ) -> None:
         pass
 
     def locator(self, selector: str) -> MockLocator:
@@ -163,21 +168,38 @@ def test_tixcraft_probe_page() -> None:
 
     # Area / Ticket / Verify -> REGISTRATION
     page = MockPage(url="https://tixcraft.com/ticket/area/24_test/1001")
-    assert pytest.importorskip("asyncio").run(adapter.probe_page(page)) == PageKind.REGISTRATION
+    assert (
+        pytest.importorskip("asyncio").run(adapter.probe_page(page))
+        == PageKind.REGISTRATION
+    )
 
     page = MockPage(url="https://tixcraft.com/ticket/ticket/24_test/1001/1")
-    assert pytest.importorskip("asyncio").run(adapter.probe_page(page)) == PageKind.REGISTRATION
+    assert (
+        pytest.importorskip("asyncio").run(adapter.probe_page(page))
+        == PageKind.REGISTRATION
+    )
 
     page = MockPage(url="https://tixcraft.com/ticket/verify/24_test/1001")
-    assert pytest.importorskip("asyncio").run(adapter.probe_page(page)) == PageKind.REGISTRATION
+    assert (
+        pytest.importorskip("asyncio").run(adapter.probe_page(page))
+        == PageKind.REGISTRATION
+    )
 
     # Login
     page = MockPage(url="https://tixcraft.com/login")
-    assert pytest.importorskip("asyncio").run(adapter.probe_page(page)) == PageKind.LOGIN
+    assert (
+        pytest.importorskip("asyncio").run(adapter.probe_page(page)) == PageKind.LOGIN
+    )
 
     # Cloudflare
-    page = MockPage(url="https://tixcraft.com/ticket/area", html="請啟用 JavaScript 與 Cookie 以繼續")
-    assert pytest.importorskip("asyncio").run(adapter.probe_page(page)) == PageKind.CHALLENGE
+    page = MockPage(
+        url="https://tixcraft.com/ticket/area",
+        html="請啟用 JavaScript 與 Cookie 以繼續",
+    )
+    assert (
+        pytest.importorskip("asyncio").run(adapter.probe_page(page))
+        == PageKind.CHALLENGE
+    )
 
 
 def test_tixcraft_ticket_page_is_form_filling_regardless_of_select_value() -> None:
@@ -243,9 +265,13 @@ def test_tixcraft_quantity_decision_propagation() -> None:
     )
     page = MockPage(url="https://tixcraft.com/ticket/area/1")
     zone_link = MockLocator("zone_a", text="特A區 4800", visible=True)
-    page.locators[".zone a, ul.area-list a"] = MockLocator("zones", children=[zone_link])
+    page.locators[".zone a, ul.area-list a"] = MockLocator(
+        "zones", children=[zone_link]
+    )
 
-    ok, reason = pytest.importorskip("asyncio").run(adapter.apply_ticket_decision(page, decision))
+    ok, reason = pytest.importorskip("asyncio").run(
+        adapter.apply_ticket_decision(page, decision)
+    )
     assert ok is True
     assert reason == REASON_SELECTED
     assert adapter._target_quantity == 4
@@ -255,11 +281,18 @@ def test_tixcraft_quantity_decision_propagation() -> None:
     ticket_page = MockPage(url="https://tixcraft.com/ticket/ticket/1")
     select_loc = MockLocator("select", visible=True)
     agree_loc = MockLocator("agree", visible=True, checked=False)
-    ticket_page.locators["select[id*='TicketForm_ticketPrice_'], .mobile-select"] = select_loc
+    ticket_page.locators["select[id*='TicketForm_ticketPrice_'], .mobile-select"] = (
+        select_loc
+    )
     ticket_page.locators["#TicketForm_agree"] = agree_loc
 
     fill_ok = pytest.importorskip("asyncio").run(
-        adapter.fill_contact_form(ticket_page, UserContactProfile(name="Test", phone="0912345678", email="test@example.com"))
+        adapter.fill_contact_form(
+            ticket_page,
+            UserContactProfile(
+                name="Test", phone="0912345678", email="test@example.com"
+            ),
+        )
     )
     assert fill_ok is True
     assert select_loc.selected == ["4"]
@@ -271,7 +304,9 @@ def test_tixcraft_dismiss_failure_modal_returns_to_area() -> None:
     page = MockPage(url="https://tixcraft.com/ticket/ticket/1")
 
     close_btn = MockLocator("close_btn", visible=True)
-    page.locators[".modal.in button.close, .bootbox button[data-bb-handler='ok'], .modal.show button.btn-primary"] = close_btn
+    page.locators[
+        ".modal.in button.close, .bootbox button[data-bb-handler='ok'], .modal.show button.btn-primary"
+    ] = close_btn
     area_container = MockLocator("area_container", visible=True)
     page.locators[".zone, ul.area-list, #area-list"] = area_container
 
@@ -319,7 +354,10 @@ def test_tixcraft_handle_cloudflare() -> None:
 
     # Challenge absent -> returns True
     clean_page = MockPage(html="<html><body>normal content</body></html>")
-    assert pytest.importorskip("asyncio").run(adapter.handle_cloudflare(clean_page)) is True
+    assert (
+        pytest.importorskip("asyncio").run(adapter.handle_cloudflare(clean_page))
+        is True
+    )
 
 
 def test_tixcraft_checkout_url_is_payment_required() -> None:
@@ -368,12 +406,14 @@ def _ticket_page_with_two_rows() -> str:
     的同一段 markup，只換掉票種名、票價與下拉 id。
     """
     html = load_fixture("tixcraft_ticket.html")
-    match = re.search(r'<tr class="gridc">.*?</tr>', html, re.S)
+    match = re.search(r'<tr class="gridc">.*?</tr>', html, re.DOTALL)
     assert match is not None, "fixture 不再含票種列，解析測試失去依據"
     full_row = match.group(0)
-    concession_row = full_row.replace("全票 1,450", "優待票 725").replace(
-        "ticketPrice_01", "ticketPrice_02"
-    ).replace("ticketPrice][01]", "ticketPrice][02]")
+    concession_row = (
+        full_row.replace("全票 1,450", "優待票 725")
+        .replace("ticketPrice_01", "ticketPrice_02")
+        .replace("ticketPrice][01]", "ticketPrice][02]")
+    )
     return html.replace(full_row, concession_row + full_row)
 
 
@@ -412,7 +452,9 @@ def test_tixcraft_fills_quantity_on_the_preferred_ticket_row() -> None:
     ok = pytest.importorskip("asyncio").run(
         adapter.fill_contact_form(
             page,
-            UserContactProfile(name="Test", phone="0912345678", email="test@example.com"),
+            UserContactProfile(
+                name="Test", phone="0912345678", email="test@example.com"
+            ),
         )
     )
     assert ok is True
@@ -433,12 +475,16 @@ def test_tixcraft_refuses_to_fill_when_no_ticket_row_matches() -> None:
         html=_ticket_page_with_two_rows(),
     )
     page.locators["#TicketForm_ticketPrice_01"] = MockLocator("full", visible=True)
-    page.locators["#TicketForm_ticketPrice_02"] = MockLocator("concession", visible=True)
+    page.locators["#TicketForm_ticketPrice_02"] = MockLocator(
+        "concession", visible=True
+    )
 
     ok = pytest.importorskip("asyncio").run(
         adapter.fill_contact_form(
             page,
-            UserContactProfile(name="Test", phone="0912345678", email="test@example.com"),
+            UserContactProfile(
+                name="Test", phone="0912345678", email="test@example.com"
+            ),
         )
     )
     assert ok is False
@@ -510,3 +556,25 @@ def test_tixcraft_zone_remaining_blocks_orders_that_cannot_fit() -> None:
     )
     assert decision.option is not None
     assert decision.option.name != "1樓身障 Bubble Bay E區"
+
+
+@pytest.mark.asyncio
+async def test_tixcraft_probe_login_state_logged_in() -> None:
+    adapter = TixcraftAdapter()
+    page = MockPage(
+        url="https://tixcraft.com/activity/game/123",
+        html="<html><body><a href='/user/logout'>登出</a></body></html>",
+    )
+    state = await adapter.probe_login_state(page)
+    assert state == LoginState.LOGGED_IN
+
+
+@pytest.mark.asyncio
+async def test_tixcraft_probe_login_state_logged_out() -> None:
+    adapter = TixcraftAdapter()
+    page = MockPage(
+        url="https://tixcraft.com/activity/game/123",
+        html="<html><body><a href='/login'>會員登入</a></body></html>",
+    )
+    state = await adapter.probe_login_state(page)
+    assert state == LoginState.LOGGED_OUT

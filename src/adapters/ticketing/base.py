@@ -3,7 +3,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, Any, ClassVar
 
-from adapters.ticketing.page_state import PageKind, PageState
+from adapters.ticketing.page_state import LoginState, PageKind, PageState
 from domain.event import Event, EventCandidate, PlatformEnum, ResolveResult
 from domain.preference import SeatPreference, TicketPreference
 from domain.task import CreditCardProfile, UserContactProfile
@@ -145,6 +145,11 @@ class TicketingAdapter(ABC):
     @abstractmethod
     async def handle_cloudflare(self, page: Page) -> bool:
         """單次探測並嘗試解決 Cloudflare / Turnstile 挑戰"""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def probe_login_state(self, page: Page) -> LoginState:
+        """探測當前頁面與 Cookie 的登入狀態（LOGGED_IN / LOGGED_OUT / UNKNOWN）。"""
         raise NotImplementedError
 
 

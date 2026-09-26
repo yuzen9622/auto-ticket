@@ -38,9 +38,6 @@ from adapters.ticketing.page_state import (
     CLOUDFLARE_MARK,
     FAILURE_MODAL_MARK,
     FAILURE_MODAL_MISSING_MARK,
-    KKTIXPageKind,
-    PageKind,
-    PageState,
     REASON_CLOUDFLARE,
     REASON_NO_TICKET_UNITS,
     REASON_NOT_REGISTRATION_PAGE,
@@ -57,6 +54,10 @@ from adapters.ticketing.page_state import (
     RESET_REASON_UNREADABLE,
     ZERO_QUANTITY,
     CloudflareChallengeError,
+    KKTIXPageKind,
+    LoginState,
+    PageKind,
+    PageState,
 )
 from adapters.verification.base import (
     ChallengeKind,
@@ -79,16 +80,11 @@ else:
 __all__ = [
     "ALL_TICKET_REASONS",
     "CLOUDFLARE_MARK",
-    "CloudflareChallengeError",
     "FAILURE_MODAL_MARK",
     "FAILURE_MODAL_MISSING_MARK",
-    "KKTIXAdapter",
-    "KKTIXPageKind",
-    "PageKind",
-    "PageState",
     "REASON_CLOUDFLARE",
-    "REASON_NO_TICKET_UNITS",
     "REASON_NOT_REGISTRATION_PAGE",
+    "REASON_NO_TICKET_UNITS",
     "REASON_PLUS_BUTTON_MISSING",
     "REASON_QUANTITY_MISMATCH",
     "REASON_SELECTED",
@@ -97,10 +93,15 @@ __all__ = [
     "REASON_VERIFICATION_REQUIRED",
     "RESET_MARK",
     "RESET_REASON_MINUS_MISSING",
-    "RESET_REASON_NO_QUANTITY_FIELD",
     "RESET_REASON_NOT_ZERO",
+    "RESET_REASON_NO_QUANTITY_FIELD",
     "RESET_REASON_UNREADABLE",
     "ZERO_QUANTITY",
+    "CloudflareChallengeError",
+    "KKTIXAdapter",
+    "KKTIXPageKind",
+    "PageKind",
+    "PageState",
     "to_registration_url",
 ]
 
@@ -138,7 +139,9 @@ EVENT_SESSION_LINKS = "a[href*='registrations/new']"
 #: 主辦自訂的 radio 欄位（聯絡人與參加者兩種範圍）。KKTIX 用「單一選項的 radio
 #: 群組」表達必選的確認事項（例如「我同意系統配位、不得更改或退款」），沒選就送不出
 #: 訂單；既有程式只處理 checkbox，於是停在填表頁直到預算耗盡。
-DYNAMIC_RADIO = "input[type='radio'][name^='contact['], input[type='radio'][name^='attendees[']"
+DYNAMIC_RADIO = (
+    "input[type='radio'][name^='contact['], input[type='radio'][name^='attendees[']"
+)
 
 #: 登入頁要求人工驗證時的字樣。出現它代表帳密沒被受理，**不是**帳密錯誤。
 LOGIN_HUMAN_VERIFICATION_TEXTS = (
@@ -161,9 +164,6 @@ def to_registration_url(event_url: str) -> str:
     if match is None or match.group("registration") is not None:
         return event_url
     return f"{REGISTRATION_ORIGIN}/events/{match.group('slug')}/registrations/new"
-
-
-
 
 
 class KKTIXAdapter(TicketingAdapter):
@@ -191,7 +191,8 @@ class KKTIXAdapter(TicketingAdapter):
         challenge_grace_s: float = 0.0,
         challenge_poll_s: float = 2.0,
         cloudflare_max_retries: int = 3,
-        on_challenge_grace: Callable[[str, float, float, int], Awaitable[Any]] | None = None,
+        on_challenge_grace: Callable[[str, float, float, int], Awaitable[Any]]
+        | None = None,
     ) -> None:
         super().__init__(ticket_preference=ticket_preference)
         self.telemetry = telemetry
@@ -249,7 +250,10 @@ class KKTIXAdapter(TicketingAdapter):
         marker = contains_cloudflare_challenge(await page_text(page))
         if marker is None:
             return
-        if self.challenge_grace_s > 0 and self._grace_rounds < self.cloudflare_max_retries:
+        if (
+            self.challenge_grace_s > 0
+            and self._grace_rounds < self.cloudflare_max_retries
+        ):
             marker = await self._wait_out_challenge(page, stage, marker)
             if marker is None:
                 return
@@ -523,9 +527,12 @@ class KKTIXAdapter(TicketingAdapter):
         # 多場次活動：母活動的登記頁沒有票種表單，真正的入口在各場次底下。
         # 這一步刻意留在預熱期做完——開賣瞬間才去找場次就來不及了。
         if await self.detect_page_kind(page) is not KKTIXPageKind.REGISTRATION:
-            target = await self._enter_session_registration(
-                page, event_url, session_preference
-            ) or target
+            target = (
+                await self._enter_session_registration(
+                    page, event_url, session_preference
+                )
+                or target
+            )
 
         self.telemetry.record(
             TimelineEventType.MARK, "navigated", url=target, reused=reused
@@ -570,9 +577,7 @@ class KKTIXAdapter(TicketingAdapter):
             timeout=self.navigation_timeout_ms,
         )
         await self._guard_cloudflare(page, "session")
-        self.telemetry.record(
-            TimelineEventType.MARK, "session_selected", url=chosen
-        )
+        self.telemetry.record(TimelineEventType.MARK, "session_selected", url=chosen)
         return chosen
 
     # ------------------------------------------------------------- 1b. 登入
@@ -784,10 +789,7 @@ class KKTIXAdapter(TicketingAdapter):
             except Exception:
                 # 讀不到內容時不要擅自升級判定；交給下一輪重探。
                 return False
-        return not any(
-            marker in html
-            for marker in REGISTRATION_UNRENDERED_MARKERS
-        )
+        return not any(marker in html for marker in REGISTRATION_UNRENDERED_MARKERS)
 
     async def detect_page_kind(
         self, page: Page, html: str | None = None
@@ -1768,7 +1770,40 @@ class KKTIXAdapter(TicketingAdapter):
 
     async def handle_cloudflare(self, page: Page) -> bool:
         """單次探測並嘗試受控解決 Cloudflare / Turnstile 挑戰。"""
+
         async def is_active() -> bool:
             return contains_cloudflare_challenge(await page_text(page)) is not None
 
         return await try_solve_cloudflare_turnstile(page, is_challenge_active=is_active)
+
+    async def probe_login_state(self, page: Page) -> LoginState:
+        text = await page_text(page)
+        if contains_cloudflare_challenge(text) is not None:
+            return LoginState.UNKNOWN
+
+        curr_url = getattr(page, "url", "").lower()
+        if "users/sign_in" in curr_url or "/login" in curr_url:
+            return LoginState.LOGGED_OUT
+
+        with contextlib.suppress(Exception):
+            cookies = await page.context.cookies()
+            auth_names = {
+                "_kktix_session",
+                "remember_user_token",
+                "user_credentials",
+                "kktix_session",
+            }
+            for c in cookies:
+                if c.get("name") in auth_names and c.get("value"):
+                    return LoginState.LOGGED_IN
+
+        html = ""
+        with contextlib.suppress(Exception):
+            html = (await page.content()).lower()
+
+        if "/users/sign_out" in html or "sign_out" in html or "登出" in html:
+            return LoginState.LOGGED_IN
+        if "/users/sign_in" in html or "sign_in" in html:
+            return LoginState.LOGGED_OUT
+
+        return LoginState.LOGGED_OUT

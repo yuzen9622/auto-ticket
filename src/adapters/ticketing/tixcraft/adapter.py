@@ -15,8 +15,8 @@ from adapters.ticketing.dom import (
     contains_cloudflare_challenge,
     first_present_visible,
     first_visible,
-    present_count,
     page_text,
+    present_count,
     try_solve_cloudflare_turnstile,
 )
 from adapters.ticketing.page_state import (
@@ -24,6 +24,7 @@ from adapters.ticketing.page_state import (
     REASON_SELECTED,
     REASON_SOLD_OUT,
     CloudflareChallengeError,
+    LoginState,
     PageKind,
     PageState,
 )
@@ -136,7 +137,9 @@ class TixcraftAdapter(TicketingAdapter):
                 await page.goto(url, wait_until="domcontentloaded")
 
         text = await page_text(page)
-        if contains_cloudflare_challenge(text, TixcraftSelectors.CLOUDFLARE_CHALLENGE_TEXTS):
+        if contains_cloudflare_challenge(
+            text, TixcraftSelectors.CLOUDFLARE_CHALLENGE_TEXTS
+        ):
             return PageKind.CHALLENGE
 
         curr_url = getattr(page, "url", "").lower()
@@ -146,7 +149,10 @@ class TixcraftAdapter(TicketingAdapter):
         if "/activity/detail" in curr_url or "/activity/game" in curr_url:
             return PageKind.EVENT
 
-        if any(seg in curr_url for seg in ("/ticket/area", "/ticket/ticket", "/ticket/verify")):
+        if any(
+            seg in curr_url
+            for seg in ("/ticket/area", "/ticket/ticket", "/ticket/verify")
+        ):
             return PageKind.REGISTRATION
 
         if (
@@ -163,11 +169,17 @@ class TixcraftAdapter(TicketingAdapter):
         text = await page_text(page)
 
         # 1. Queue-It 等候室優先判定，絕不觸發任何導航
-        if "queue-it.net" in curr_url or "queue-it" in text.lower() or "#lbheaderh2" in text.lower():
+        if (
+            "queue-it.net" in curr_url
+            or "queue-it" in text.lower()
+            or "#lbheaderh2" in text.lower()
+        ):
             return PageState.QUEUE
 
         # 2. 開賣後遇 Cloudflare 直接拋出 fail-closed 例外
-        if contains_cloudflare_challenge(text, TixcraftSelectors.CLOUDFLARE_CHALLENGE_TEXTS):
+        if contains_cloudflare_challenge(
+            text, TixcraftSelectors.CLOUDFLARE_CHALLENGE_TEXTS
+        ):
             raise CloudflareChallengeError("偵測到人機驗證挑戰；一律 fail-closed 中止")
 
         # 3. 售完或失敗彈窗
@@ -187,9 +199,11 @@ class TixcraftAdapter(TicketingAdapter):
         # 5. 購票頁但沒有登入：拓元要按下「確認張數」才會把人踢回登入頁，在那之前
         #    選區域、選張數、填驗證碼都照走。不先認出來的話，送出被拒會被讀成
         #    「驗證碼錯誤」，把驗證次數耗光後回報一個與真正原因無關的失敗。
-        if "/ticket/" in curr_url and not any(
-            marker in text for marker in TixcraftSelectors.LOGGED_IN_TEXTS
-        ) and any(marker in text for marker in TixcraftSelectors.LOGGED_OUT_TEXTS):
+        if (
+            "/ticket/" in curr_url
+            and not any(marker in text for marker in TixcraftSelectors.LOGGED_IN_TEXTS)
+            and any(marker in text for marker in TixcraftSelectors.LOGGED_OUT_TEXTS)
+        ):
             return PageState.GUEST_MODAL
 
         # 6. 特權碼／資格審查
@@ -512,16 +526,55 @@ class TixcraftAdapter(TicketingAdapter):
 
     async def handle_cloudflare(self, page: Page) -> bool:
         async def is_active() -> bool:
-            return contains_cloudflare_challenge(
-                await page_text(page), TixcraftSelectors.CLOUDFLARE_CHALLENGE_TEXTS
-            ) is not None
+            return (
+                contains_cloudflare_challenge(
+                    await page_text(page), TixcraftSelectors.CLOUDFLARE_CHALLENGE_TEXTS
+                )
+                is not None
+            )
 
         return await try_solve_cloudflare_turnstile(page, is_challenge_active=is_active)
 
+    async def probe_login_state(self, page: Page) -> LoginState:
+        text = await page_text(page)
+        if contains_cloudflare_challenge(
+            text, TixcraftSelectors.CLOUDFLARE_CHALLENGE_TEXTS
+        ):
+            return LoginState.UNKNOWN
+
+        curr_url = getattr(page, "url", "").lower()
+        if "/login" in curr_url or "user/login" in curr_url:
+            return LoginState.LOGGED_OUT
+
+        html = ""
+        with contextlib.suppress(Exception):
+            html = (await page.content()).lower()
+
+        if any(marker in html for marker in ("/user/logout", "/logout", "登出")):
+            return LoginState.LOGGED_IN
+        if any(marker in html for marker in ("/login", "user/login")):
+            return LoginState.LOGGED_OUT
+
+        with contextlib.suppress(Exception):
+            cookies = await page.context.cookies()
+            auth_names = {"SID", "tixcraft_session", "REMEMBERME"}
+            for c in cookies:
+                if c.get("name") in auth_names and c.get("value"):
+                    return LoginState.LOGGED_IN
+
+        if "登入" in html:
+            return LoginState.LOGGED_OUT
+
+        return LoginState.UNKNOWN
+
     async def login(self, page: Page, username: str, secret_token: str) -> bool:
         with contextlib.suppress(Exception):
-            user_input = page.locator("#login_user, input[name='user'], input[name='account']").first
-            pwd_input = page.locator("#login_password, input[name='password'], input[name='pwd']").first
+            user_input = page.locator(
+                "#login_user, input[name='user'], input[name='account']"
+            ).first
+            pwd_input = page.locator(
+                "#login_password, input[name='password'], input[name='pwd']"
+            ).first
             btn = page.locator("button[type='submit'], input[type='submit']").first
             if await user_input.is_visible() and await pwd_input.is_visible():
                 await user_input.fill(username)
@@ -562,6 +615,15 @@ class TixcraftAdapter(TicketingAdapter):
 
         target_url = await self._pick_session_url(page, session_preference)
         if target_url is None:
+            # 開賣瞬間重整嘗試：若場次列尚未刷新出立即購票按鈕，重整一次抓最新狀態
+            with contextlib.suppress(Exception):
+                await page.reload(wait_until="domcontentloaded")
+                await page.wait_for_selector(
+                    TixcraftSelectors.GAME_LIST_ROWS, timeout=self.timeout_ms
+                )
+                target_url = await self._pick_session_url(page, session_preference)
+
+        if target_url is None:
             return False
 
         await page.goto(target_url, wait_until="domcontentloaded")
@@ -587,7 +649,9 @@ class TixcraftAdapter(TicketingAdapter):
             button = row.locator(TixcraftSelectors.SESSION_BUY_BUTTON).first
             href = None
             with contextlib.suppress(Exception):
-                href = await button.get_attribute("data-href") or await button.get_attribute("href")
+                href = await button.get_attribute(
+                    "data-href"
+                ) or await button.get_attribute("href")
             if not href:
                 continue
             url = urljoin(TIXCRAFT_BASE_URL, href)

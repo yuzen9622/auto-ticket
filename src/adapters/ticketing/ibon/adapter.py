@@ -16,8 +16,8 @@ from adapters.ticketing.dom import (
     contains_cloudflare_challenge,
     first_present_visible,
     first_visible,
-    present_count,
     page_text,
+    present_count,
     try_solve_cloudflare_turnstile,
 )
 from adapters.ticketing.ibon.selectors import IbonSelectors
@@ -26,6 +26,7 @@ from adapters.ticketing.page_state import (
     REASON_SELECTED,
     REASON_SOLD_OUT,
     CloudflareChallengeError,
+    LoginState,
     PageKind,
     PageState,
 )
@@ -540,6 +541,36 @@ class IbonAdapter(TicketingAdapter):
 
         return await try_solve_cloudflare_turnstile(page, is_challenge_active=is_active)
 
+    async def probe_login_state(self, page: Page) -> LoginState:
+        text = await page_text(page)
+        if contains_cloudflare_challenge(text, IbonSelectors.CLOUDFLARE_CHALLENGE_TEXTS):
+            return LoginState.UNKNOWN
+
+        curr_url = getattr(page, "url", "").lower()
+        if "loginhuiwan" in curr_url or "/login" in curr_url or "userlogin.aspx" in curr_url:
+            return LoginState.LOGGED_OUT
+
+        html = ""
+        with contextlib.suppress(Exception):
+            html = (await page.content()).lower()
+
+        if any(marker in html for marker in ("/account/logoff", "logoff", "登出", "會員中心")):
+            return LoginState.LOGGED_IN
+        if any(marker in html for marker in ("/account/login", "userlogin.aspx", "loginhuiwan", "快速登入")):
+            return LoginState.LOGGED_OUT
+
+        with contextlib.suppress(Exception):
+            cookies = await page.context.cookies()
+            auth_names = {"ASP.NET_SessionId", "ibon_token", ".ASPXAUTH", "huiwan_token"}
+            for c in cookies:
+                if c.get("name") in auth_names and c.get("value"):
+                    return LoginState.LOGGED_IN
+
+        if "登入" in html:
+            return LoginState.LOGGED_OUT
+
+        return LoginState.UNKNOWN
+
     async def login(self, page: Page, username: str, secret_token: str) -> bool:
         pwd_input: Any | None = None
         login_succeeded = False
@@ -651,6 +682,8 @@ class IbonAdapter(TicketingAdapter):
                                 submitted_fingerprint = refreshed_fingerprint
                                 break
 
+                    if self.verification is None:
+                        return False
                     res = await self.verification.solve(
                         VerificationChallenge(
                             question="ibon 登入驗證碼",
@@ -765,6 +798,13 @@ class IbonAdapter(TicketingAdapter):
                 telemetry=self.telemetry,
             )
             if buy_btn is None:
+                # 再次嘗試向 API 抓取開賣後的 purchase_url
+                purchase_url = await self._resolve_session_url(
+                    target_url, session_preference
+                )
+                if purchase_url is not None:
+                    await page.goto(purchase_url, wait_until="domcontentloaded")
+                    return True
                 return False
             await buy_btn.click()
             with contextlib.suppress(Exception):

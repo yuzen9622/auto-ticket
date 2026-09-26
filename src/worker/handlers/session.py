@@ -5,7 +5,6 @@ import contextlib
 import logging
 import time
 from collections.abc import Sequence
-from enum import Enum
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -13,7 +12,7 @@ from accounts.models import CredentialKind, CredentialRecord
 from accounts.vault import EncryptedFileVault, EnvCredentialSource, VaultDecryptError
 from adapters.payment.mock import MockPaymentProvider
 from adapters.ticketing.factory import build_adapter
-from adapters.ticketing.page_state import PageKind
+from adapters.ticketing.page_state import LoginState, PageKind
 from adapters.verification.ddddocr_provider import DdddOcrProvider
 from api.schemas.ws import ServerMessageType
 from broker.broker import SqliteTaskBroker
@@ -117,14 +116,6 @@ def summarize_cookies(
     return len(relevant), has_session
 
 
-class LoginState(str, Enum):
-    """登入狀態的三種可能，刻意不把「不知道」摺進「未登入」。"""
-
-    LOGGED_IN = "LOGGED_IN"
-    LOGGED_OUT = "LOGGED_OUT"
-    UNKNOWN = "UNKNOWN"
-
-
 async def probe_login_state(
     adapter: Any,
     page: Any,
@@ -137,6 +128,13 @@ async def probe_login_state(
     若在登入頁，回傳 LOGGED_OUT。
     三平台一致使用 page kind 與平台專屬 auth cookie 判斷。
     """
+    adapter_probe = getattr(adapter, "probe_login_state", None)
+    if adapter_probe is not None and callable(adapter_probe):
+        with contextlib.suppress(Exception):
+            state = await adapter.probe_login_state(page)
+            if state is not LoginState.UNKNOWN:
+                return state
+
     kind = await adapter.probe_page(page, getattr(page, "url", ""))
     if kind is PageKind.CHALLENGE:
         return LoginState.UNKNOWN
