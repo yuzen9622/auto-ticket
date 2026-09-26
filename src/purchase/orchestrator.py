@@ -464,13 +464,15 @@ class PurchaseOrchestrator:
                 )
                 return
 
-            # 若未登入且未在登入頁或驗證頁，嘗試自動登入；若無憑證則提升為 LOGIN 等待人登入
+            # 若未登入且未在登入頁或驗證頁，嘗試自動登入；手動模式則提示人登入
             if login_state is LoginState.LOGGED_OUT and kind not in (PageKind.LOGIN, PageKind.CHALLENGE):
                 if await self._handle_guest_modal(page, is_guest_modal=False):
                     kind = await self.adapter.probe_page(page)
                     attempt += 1
                     continue
-                kind = PageKind.LOGIN
+                if self.session_gate is not None and not announced:
+                    await self.session_gate("LOGIN", attempt)
+                    announced = True
 
             if await self._try_auto_login(page, kind):
                 kind = await self.adapter.probe_page(page)
@@ -492,12 +494,8 @@ class PurchaseOrchestrator:
                     attempt += 1
                     continue
                 # 開賣前情境：活動主頁正常載入，且尚未開賣（如 ibon / 拓元在開賣前無法進入登記頁）
-                # 只要沒有被 Cloudflare 或登入頁擋住，且非 LOGGED_OUT，活動主頁即為合法的待命就緒狀態。
-                if (
-                    kind is PageKind.EVENT
-                    and self._is_pre_sale()
-                    and login_state is not LoginState.LOGGED_OUT
-                ):
+                # 只要沒有被 Cloudflare 或登入頁擋住，活動主頁即為合法的待命就緒狀態。
+                if kind is PageKind.EVENT and self._is_pre_sale():
                     self._rt.session_ready_url = self._page_url(page)
                     self._rt.is_pre_sale_standby = True
                     self.telemetry.record(
@@ -516,6 +514,17 @@ class PurchaseOrchestrator:
                     raise CloudflareStepError(
                         "check_session", f"page not ready before sale: {kind_value}"
                     )
+                # 開賣前收工線抵達：若仍停在活動主頁，視為合法待命完成，順利進入開賣流程，不得拋錯中止
+                if kind is PageKind.EVENT and self._is_pre_sale():
+                    self._rt.session_ready_url = self._page_url(page)
+                    self._rt.is_pre_sale_standby = True
+                    self.telemetry.record(
+                        TimelineEventType.MARK,
+                        "session_ready",
+                        attempts=attempt,
+                        mode="pre_sale_standby",
+                    )
+                    return
                 raise PurchaseStepError(
                     "check_session",
                     f"page not ready before sale: {kind_value}",
@@ -629,10 +638,18 @@ class PurchaseOrchestrator:
         """
         return kind in (PageKind.LOGIN, PageKind.CHALLENGE)
 
+    def _now_wall(self) -> datetime:
+        wall = getattr(self.scheduler, "_wall", None)
+        if callable(wall):
+            val = wall()
+            if isinstance(val, datetime):
+                return val
+        return datetime.now(UTC)
+
     def _is_pre_sale(self) -> bool:
         if self.spec.start_timing is StartTiming.IMMEDIATE:
             return False
-        return (self.spec.sale_start_at - datetime.now(UTC)).total_seconds() > 0
+        return (self.spec.sale_start_at - self._now_wall()).total_seconds() > 0
 
     def _gate_budget_cap(self) -> float | None:
         """就緒閘門最多還能花多少秒，None 代表不受開賣時間限制。
@@ -647,7 +664,7 @@ class PurchaseOrchestrator:
         if self.spec.start_timing is StartTiming.IMMEDIATE:
             return None
         remaining_to_sale = (
-            self.spec.sale_start_at - datetime.now(UTC)
+            self.spec.sale_start_at - self._now_wall()
         ).total_seconds()
         if remaining_to_sale <= 0:
             return None

@@ -1460,7 +1460,7 @@ async def test_pre_sale_standby_triggers_navigation_at_sale_start(
 async def test_pre_sale_standby_prompts_login_when_logged_out(
     tmp_path: Path,
 ) -> None:
-    """開賣前即使在活動頁，若檢測到未登入，必須發出 LOGIN 提醒等待登入。"""
+    """開賣前即使在活動頁，若檢測到未登入，應發出 LOGIN 提醒，且順利完成待命不崩潰。"""
     announced: list[tuple[str, int]] = []
 
     async def gate(kind: str, attempt: int) -> None:
@@ -1479,11 +1479,10 @@ async def test_pre_sale_standby_prompts_login_when_logged_out(
         update={"sale_start_at": datetime.now(UTC) + timedelta(minutes=5)}
     )
 
-    with pytest.raises(PurchaseStepError, match="page not ready before sale: LOGIN"):
-        await orchestrator._check_session(_ctx())
+    await orchestrator._check_session(_ctx())
 
     assert any(kind == "LOGIN" for kind, _ in announced)
-    assert orchestrator._rt.is_pre_sale_standby is False
+    assert orchestrator._rt.is_pre_sale_standby is True
 
 
 async def test_pre_sale_standby_succeeds_when_user_logs_in(

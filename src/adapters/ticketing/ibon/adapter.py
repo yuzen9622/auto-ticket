@@ -566,8 +566,14 @@ class IbonAdapter(TicketingAdapter):
                 if c.get("name") in auth_names and c.get("value"):
                     return LoginState.LOGGED_IN
 
-        if "登入" in html:
-            return LoginState.LOGGED_OUT
+        # 檢查是否有具體的登入按鈕/連結（避免內文「請先登入」說明誤判）
+        with contextlib.suppress(Exception):
+            login_link = await first_visible(
+                page,
+                "a[href*='userlogin.aspx'], a[href*='LoginHuiwan'], a[href*='/login'], #btnLogin, #login",
+            )
+            if login_link is not None:
+                return LoginState.LOGGED_OUT
 
         return LoginState.UNKNOWN
 
