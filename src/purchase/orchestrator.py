@@ -18,7 +18,7 @@ from typing import Any
 
 from accounts.vault import get_env_credentials
 from adapters.payment.base import PaymentOutcome, PaymentProvider, PaymentResult
-from adapters.ticketing.page_state import CloudflareChallengeError, PageKind, PageState
+from adapters.ticketing.page_state import PageKind, PageState
 from adapters.verification.base import VerificationProvider
 from browser.context_factory import sanitize_path_component
 from browser.manager import PlaywrightManager
@@ -117,6 +117,7 @@ class _Runtime:
     auto_login_attempted: bool = False
     # 就緒閘門確認過「可以下單」的那一個網址。頁面沒離開它就沒有重新導航的理由。
     session_ready_url: str | None = None
+    is_pre_sale_standby: bool = False
     # 動作進度協議：每一格都對應一個「已經做過就不得再做一次」的副作用。
     excluded_ticket_names: set[str] = field(default_factory=set)
     current_ticket_name: str | None = None
@@ -461,6 +462,18 @@ class PurchaseOrchestrator:
                 if kind is PageKind.REGISTRATION:
                     attempt += 1
                     continue
+                # 開賣前情境：活動主頁正常載入，且尚未開賣（如 ibon / 拓元在開賣前無法進入登記頁）
+                # 只要沒有被 Cloudflare 或登入頁擋住，活動主頁即為合法的待命就緒狀態。
+                if kind is PageKind.EVENT and self._is_pre_sale():
+                    self._rt.session_ready_url = self._page_url(page)
+                    self._rt.is_pre_sale_standby = True
+                    self.telemetry.record(
+                        TimelineEventType.MARK,
+                        "session_ready",
+                        attempts=attempt,
+                        mode="pre_sale_standby",
+                    )
+                    return
             blocked_reason = self._gate_blocker(kind)
             if self._loop_time() >= deadline:
                 kind_value = str(getattr(kind, "value", kind))
@@ -583,6 +596,11 @@ class PurchaseOrchestrator:
         """
         return kind in (PageKind.LOGIN, PageKind.CHALLENGE)
 
+    def _is_pre_sale(self) -> bool:
+        if self.spec.start_timing is StartTiming.IMMEDIATE:
+            return False
+        return (self.spec.sale_start_at - datetime.now(UTC)).total_seconds() > 0
+
     def _gate_budget_cap(self) -> float | None:
         """就緒閘門最多還能花多少秒，None 代表不受開賣時間限制。
 
@@ -663,6 +681,13 @@ class PurchaseOrchestrator:
     async def _trigger_purchase(self, ctx: WarmupContext) -> None:
         page = self._require_page()
         self._send(EVENT_PAGE_LOADED)
+        # 開賣瞬間：若開賣前是在活動主頁待命，開賣瞬間自動推進進入登記頁
+        if self._rt.is_pre_sale_standby:
+            await self.adapter.navigate_to_event(
+                page,
+                self.spec.event_url,
+                session_preference=self.spec.session_preference,
+            )
         await self._run_race_loop(page)
 
     # -------------------------------------------------------- 反應式驅動迴圈

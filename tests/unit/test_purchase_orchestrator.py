@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -1410,3 +1410,37 @@ async def test_auto_submit_is_the_default(tmp_path: Path) -> None:
     assert orchestrator.auto_submit_verification is True
     await orchestrator._handle_form_filling(browser.page)
     assert "submit_order" in adapter.calls
+
+
+async def test_pre_sale_standby_on_event_page_succeeds_without_error(tmp_path: Path) -> None:
+    """開賣前停在活動主頁是合法待命，不得逾時拋錯 page not ready before sale: EVENT。"""
+    adapter = StubAdapter(probe_kinds=[KKTIXPageKind.EVENT] * 10)
+    orchestrator, _, browser, _ = build(tmp_path, adapter)
+    orchestrator._rt.page = browser.page
+    orchestrator.session_gate_poll_s = 0.01
+    orchestrator.spec = orchestrator.spec.model_copy(
+        update={"sale_start_at": datetime.now(UTC) + timedelta(minutes=5)}
+    )
+
+    await orchestrator._check_session(_ctx())
+    assert orchestrator._rt.is_pre_sale_standby is True
+    events = [e for e in orchestrator.telemetry.events() if e.name == "session_ready"]
+    assert len(events) == 1
+    assert events[0].detail.get("mode") == "pre_sale_standby"
+
+
+async def test_pre_sale_standby_triggers_navigation_at_sale_start(tmp_path: Path) -> None:
+    """開賣前待命狀態在 T=0 開賣瞬間，會自動導航推進進登記頁。"""
+    adapter = StubAdapter()
+    orchestrator, _, browser, _ = build(tmp_path, adapter)
+    orchestrator.fsm = PurchaseWorkflow(orchestrator.spec, orchestrator.telemetry)
+    orchestrator.fsm.send("prepare_session")
+    orchestrator.fsm.send("session_ready")
+    orchestrator.fsm.send("sale_triggered")
+    orchestrator._rt.page = browser.page
+    orchestrator._rt.is_pre_sale_standby = True
+
+    with patch.object(orchestrator, "_run_race_loop", AsyncMock()):
+        await orchestrator._trigger_purchase(_ctx())
+    assert "navigate" in adapter.calls
+
