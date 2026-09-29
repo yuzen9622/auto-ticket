@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.3](https://github.com/yuzen9622/auto-ticket/compare/v0.6.2...v0.6.3) (2026-09-29)
+
+
+### Bug Fixes
+
+* **release:** authenticate draft asset checksum downloads ([aa6963f](https://github.com/yuzen9622/auto-ticket/commit/aa6963f6128d0890c2ac7afd25411ed5801f4a57))
+
 ## [0.6.2](https://github.com/yuzen9622/auto-ticket/compare/v0.6.1...v0.6.2) (2026-09-29)
 
 
