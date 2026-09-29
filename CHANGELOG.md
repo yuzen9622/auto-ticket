@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.2](https://github.com/yuzen9622/auto-ticket/compare/v0.6.1...v0.6.2) (2026-09-29)
+
+
+### Bug Fixes
+
+* **storage:** recover from concurrent ticket hydration ([88866e8](https://github.com/yuzen9622/auto-ticket/commit/88866e8268eaa509f9d8fed92dd39d23fa472ac4))
+
 ## [0.6.1](https://github.com/yuzen9622/auto-ticket/compare/v0.6.0...v0.6.1) (2026-09-29)
 
 
