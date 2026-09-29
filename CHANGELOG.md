@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.6.1](https://github.com/yuzen9622/auto-ticket/compare/v0.6.0...v0.6.1) (2026-09-29)
+
+
+### Bug Fixes
+
+* **orchestrator:** ensure pre-sale to sale-open transition runs end-to-end ([b6609ae](https://github.com/yuzen9622/auto-ticket/commit/b6609ae360de699fc0647926b1b834c3e6129448))
+* **orchestrator:** refine pre-sale budget cap and kktix event page detection ([44be04b](https://github.com/yuzen9622/auto-ticket/commit/44be04b5f33e1a32c6dd1eb3bed353296e41c83b))
+* **purchase:** add pre-sale proactive login check and sale-start navigation retry ([af0b1fa](https://github.com/yuzen9622/auto-ticket/commit/af0b1fa59bf37d89da37a19553b9717247e541bd))
+* **purchase:** hold login gate and retry sale-start advance ([a4dcf1a](https://github.com/yuzen9622/auto-ticket/commit/a4dcf1a8ba6c6148710f5b47140e506157a958ce))
+* **purchase:** treat pre-sale event page as ready and auto-advance at sale start ([7b90c01](https://github.com/yuzen9622/auto-ticket/commit/7b90c01ab78571edf4623a4d36a03630630c2fd0))
+
 ## [0.6.0](https://github.com/yuzen9622/auto-ticket/compare/v0.5.0...v0.6.0) (2026-09-23)
 
 
