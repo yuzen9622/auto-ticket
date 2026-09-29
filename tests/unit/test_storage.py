@@ -373,6 +373,44 @@ async def test_upsert_recovers_from_concurrent_insert_race(db: Database) -> None
     assert int(ticket_rows) == 3
 
 
+async def test_upsert_recovers_from_concurrent_ticket_hydration(db: Database) -> None:
+    """A detail request may hold an empty collection while hydration commits tickets."""
+    async with db.session() as session:
+        await EventRepository(session).upsert_event(make_event(ticket_count=0))
+
+    async with db.session() as session:
+        repo = EventRepository(session)
+        real_load = repo._load_orm
+        first_call = True
+        task_id = "task_hydration"
+
+        async def racing_load(event_id: str) -> EventModel | None:
+            nonlocal first_call
+            orm = await real_load(event_id)
+            if first_call:
+                first_call = False
+                assert orm is not None and orm.ticket_types == []
+                async with db.session() as competitor:
+                    await EventRepository(competitor).upsert_event(make_event())
+                await TaskRepository(session).create(make_spec(task_id))
+            return orm
+
+        repo._load_orm = racing_load  # type: ignore[method-assign]
+        saved = await repo.upsert_event(make_event(ticket_count=3))
+        assert len(saved.ticket_types) == 3
+
+    async with db.session() as session:
+        loaded = await EventRepository(session).get_by_id(EVENT_ID)
+        persisted_task = await TaskRepository(session).get(task_id)
+        ticket_rows = (
+            await session.execute(text("SELECT COUNT(*) FROM ticket_types"))
+        ).scalar()
+
+    assert loaded is not None and len(loaded.ticket_types) == 3
+    assert persisted_task is not None
+    assert int(ticket_rows) == 3
+
+
 async def test_upsert_race_uses_savepoint_without_rolling_back_prior_flush(
     db: Database,
 ) -> None:

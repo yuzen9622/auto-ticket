@@ -20,19 +20,26 @@ class EventRepository:
     ) -> Event:
         orm = await self._load_orm(event.id)
 
+        inserting = orm is None
         if orm is None:
             orm = EventModel(id=event.id)
-            self._apply_domain(orm, event, preserve_tickets_on_empty)
-            try:
-                async with self._session.begin_nested():
+        try:
+            # Apply changes inside the savepoint: begin_nested() flushes pending
+            # state first, so applying earlier would leave updates unprotected.
+            async with self._session.begin_nested():
+                self._apply_domain(orm, event, preserve_tickets_on_empty)
+                if inserting:
                     self._session.add(orm)
-                    await self._session.flush()
-            except IntegrityError:
-                # Another session inserted this id between our SELECT and INSERT.
-                # Savepoint was rolled back, outer transaction remains active.
-                existing = await self._load_orm(event.id)
-                if existing is None:
-                    raise
+                else:
+                    orm.updated_at = datetime.now(timezone.utc)
+                await self._session.flush()
+        except IntegrityError:
+            # Another session may insert the event or hydrate its tickets after
+            # our SELECT. Roll back only this upsert, reload, and retry once.
+            existing = await self._load_orm(event.id)
+            if existing is None:
+                raise
+            async with self._session.begin_nested():
                 self._apply_domain(
                     existing,
                     event,
@@ -40,11 +47,7 @@ class EventRepository:
                 )
                 existing.updated_at = datetime.now(timezone.utc)
                 await self._session.flush()
-                orm = existing
-        else:
-            self._apply_domain(orm, event, preserve_tickets_on_empty)
-            orm.updated_at = datetime.now(timezone.utc)
-            await self._session.flush()
+            orm = existing
 
         return self._to_domain(orm)
 
@@ -53,6 +56,7 @@ class EventRepository:
             select(EventModel)
             .where(EventModel.id == event_id)
             .options(selectinload(EventModel.ticket_types))
+            .execution_options(populate_existing=True)
         )
         return (await self._session.execute(stmt)).scalar_one_or_none()
 
