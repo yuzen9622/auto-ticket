@@ -35,7 +35,7 @@ from ..telemetry_bridge import ClockTicker, StreamingTimelineRecorder
 GATE_HINTS = {
     "CHALLENGE": "自動處理未通過，請接手完成驗證（本程式不會代為繞過）",
     "VERIFICATION": "已自動填入辨識結果，請在瀏覽器確認後自行送出",
-    "LOGIN": "被導到登入頁，請在瀏覽器裡自行登入",
+    "LOGIN": "尚未登入，請在開賣前於瀏覽器內自行登入",
     "EVENT": "已在活動主頁就緒，開賣時將自動推進",
     "ORDER": "目前停在訂單頁，請確認是不是拿錯網址",
     "UNKNOWN": "頁面無法辨識，請自行確認瀏覽器狀態",

@@ -435,3 +435,39 @@ async def test_flow_pre_sale_standby_to_open_transitions_smoothly(flow: Flow) ->
     events = [e for e in flow.telemetry.events() if e.name == "session_ready"]
     assert any(e.detail.get("mode") == "pre_sale_standby" for e in events)
 
+
+async def test_flow_pre_sale_standby_retries_until_sale_really_opens(flow: Flow) -> None:
+    """開賣瞬間站台稍慢開放時，重試機制要撑到真的能推進為止。"""
+    spec = make_spec(
+        flow.clock.wall + timedelta(milliseconds=200),
+    )
+    orch = flow.wire(start_html=EVENT_PAGE_HTML, spec=spec)
+    orch.sale_advance_retry_s = 0.0
+    after_sale_calls = 0
+
+    async def nav_on_sale(
+        page: Any, url: str, session_preference: str | None = None
+    ) -> bool:
+        nonlocal after_sale_calls
+        from bs4 import BeautifulSoup
+
+        if flow.clock.wall < spec.sale_start_at:
+            return True
+        after_sale_calls += 1
+        if after_sale_calls < 3:
+            flow.page.soup = BeautifulSoup(EVENT_PAGE_HTML, "html.parser")
+            return False
+        flow.page.soup = BeautifulSoup(
+            load_page_html("kktix_registration_new.html"), "html.parser"
+        )
+        return True
+
+    orch.adapter.navigate_to_event = nav_on_sale
+
+    report = await orch.run()
+    assert report.final_state == "COMPLETED"
+    assert report.error is None
+    sale_advance_events = [
+        e for e in flow.telemetry.events() if e.name == "sale_advance"
+    ]
+    assert len(sale_advance_events) >= 3

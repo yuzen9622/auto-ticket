@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any, ClassVar
 from urllib.parse import urlsplit
 
 from adapters.payment.base import PaymentOutcome, PaymentProvider, PaymentResult
+from adapters.ticketing.auth_cookies import has_platform_auth_cookies
 from adapters.ticketing.base import TicketingAdapter
 from adapters.ticketing.dom import (
     contains_cloudflare_challenge,
@@ -45,6 +46,11 @@ if TYPE_CHECKING:
     from playwright.async_api import Page
 else:
     Page = Any
+
+IBON_LOGIN_URL = (
+    "https://huiwan.ibon.com.tw/huiwan/LoginHuiwan/UserLogin.aspx"
+    "?taxid=775995263&targeturl=https://ticket.ibon.com.tw/login"
+)
 
 PRICE_RE = re.compile(r"(\d[\d,]*)")
 
@@ -550,30 +556,23 @@ class IbonAdapter(TicketingAdapter):
         if "loginhuiwan" in curr_url or "/login" in curr_url or "userlogin.aspx" in curr_url:
             return LoginState.LOGGED_OUT
 
+        cookies: list[Any] = []
+        with contextlib.suppress(Exception):
+            cookies = await page.context.cookies()
+        if has_platform_auth_cookies(cookies, "ibon"):
+            return LoginState.LOGGED_IN
+
         html = ""
         with contextlib.suppress(Exception):
             html = (await page.content()).lower()
 
-        if any(marker in html for marker in ("/account/logoff", "logoff", "登出", "會員中心")):
+        if any(marker in html for marker in ("/account/logoff", "logoff", "登出")):
             return LoginState.LOGGED_IN
-        if any(marker in html for marker in ("/account/login", "userlogin.aspx", "loginhuiwan", "快速登入")):
+        if any(
+            marker in html
+            for marker in ("/account/login", "userlogin.aspx", "loginhuiwan", "快速登入")
+        ):
             return LoginState.LOGGED_OUT
-
-        with contextlib.suppress(Exception):
-            cookies = await page.context.cookies()
-            auth_names = {"ASP.NET_SessionId", "ibon_token", ".ASPXAUTH", "huiwan_token"}
-            for c in cookies:
-                if c.get("name") in auth_names and c.get("value"):
-                    return LoginState.LOGGED_IN
-
-        # 檢查是否有具體的登入按鈕/連結（避免內文「請先登入」說明誤判）
-        with contextlib.suppress(Exception):
-            login_link = await first_visible(
-                page,
-                "a[href*='userlogin.aspx'], a[href*='LoginHuiwan'], a[href*='/login'], #btnLogin, #login",
-            )
-            if login_link is not None:
-                return LoginState.LOGGED_OUT
 
         return LoginState.UNKNOWN
 
@@ -584,11 +583,7 @@ class IbonAdapter(TicketingAdapter):
             # 1. 若尚未在會員登入頁，先導航至登入入口
             curr_url = getattr(page, "url", "").lower()
             if "userlogin.aspx" not in curr_url:
-                login_url = (
-                    "https://huiwan.ibon.com.tw/huiwan/LoginHuiwan/UserLogin.aspx"
-                    "?taxid=775995263&targeturl=https://ticket.ibon.com.tw/login"
-                )
-                await page.goto(login_url, wait_until="domcontentloaded")
+                await page.goto(IBON_LOGIN_URL, wait_until="domcontentloaded")
 
             # 2. 若當前在 Cloudflare 挑戰，先嘗試處理
             text = await page_text(page)
@@ -773,6 +768,13 @@ class IbonAdapter(TicketingAdapter):
         return False
 
     async def navigate_to_login_from_guest_modal(self, page: Page) -> bool:
+        return True
+
+    async def navigate_to_login(self, page: Page) -> bool:
+        curr_url = getattr(page, "url", "").lower()
+        if "userlogin.aspx" in curr_url:
+            return True
+        await page.goto(IBON_LOGIN_URL, wait_until="domcontentloaded")
         return True
 
     async def navigate_to_event(

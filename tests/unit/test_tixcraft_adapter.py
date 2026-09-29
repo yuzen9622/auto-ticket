@@ -5,7 +5,8 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import Any
+from types import SimpleNamespace
+from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -578,3 +579,53 @@ async def test_tixcraft_probe_login_state_logged_out() -> None:
     )
     state = await adapter.probe_login_state(page)
     assert state == LoginState.LOGGED_OUT
+
+
+@pytest.mark.asyncio
+async def test_tixcraft_probe_login_state_tixuisid_cookie_is_logged_in() -> None:
+    adapter = TixcraftAdapter()
+    page = MockPage(
+        url="https://tixcraft.com/activity/game/123",
+        html="<html><body>歡迎光臨</body></html>",
+    )
+    cast(Any, page).context = SimpleNamespace(
+        cookies=AsyncMock(return_value=[{"name": "TIXUISID", "value": "abc"}])
+    )
+    state = await adapter.probe_login_state(page)
+    assert state == LoginState.LOGGED_IN
+
+
+@pytest.mark.asyncio
+async def test_tixcraft_probe_login_state_sid_alone_is_unknown() -> None:
+    """SID 不在契約的 cookie 集合裡，需改採 TIXUISID。"""
+    adapter = TixcraftAdapter()
+    page = MockPage(
+        url="https://tixcraft.com/activity/game/123",
+        html="<html><body>歡迎光臨</body></html>",
+    )
+    cast(Any, page).context = SimpleNamespace(
+        cookies=AsyncMock(return_value=[{"name": "SID", "value": "abc"}])
+    )
+    state = await adapter.probe_login_state(page)
+    assert state == LoginState.UNKNOWN
+
+
+@pytest.mark.asyncio
+async def test_tixcraft_probe_login_state_bare_login_text_is_unknown() -> None:
+    """僅文字「登入」不帶 /login 連結不能當 LOGGED_OUT 後備。"""
+    adapter = TixcraftAdapter()
+    page = MockPage(
+        url="https://tixcraft.com/activity/game/123",
+        html="<html><body>請先登入才能購票</body></html>",
+    )
+    state = await adapter.probe_login_state(page)
+    assert state == LoginState.UNKNOWN
+
+
+@pytest.mark.asyncio
+async def test_tixcraft_navigate_to_login_returns_false_without_navigating() -> None:
+    adapter = TixcraftAdapter()
+    page = MockPage(url="https://tixcraft.com/activity/game/123")
+    ok = await adapter.navigate_to_login(page)
+    assert ok is False
+    assert page.goto_urls == []

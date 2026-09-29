@@ -152,6 +152,11 @@ class TicketingAdapter(ABC):
         """探測當前頁面與 Cookie 的登入狀態（LOGGED_IN / LOGGED_OUT / UNKNOWN）。"""
         raise NotImplementedError
 
+    @abstractmethod
+    async def navigate_to_login(self, page: Page) -> bool:
+        """開賣前主動導到可自動填表的登入頁；平台不支援自動填表時回 False 且不得導航。"""
+        raise NotImplementedError
+
 
 class ResolveError(Exception):
     """Event resolver 基礎例外。"""

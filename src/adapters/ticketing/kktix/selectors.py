@@ -21,6 +21,7 @@ class KKTIXSelectors:
         "#order-now a",
     ]
     EVENT_TICKET_TABLE_ROWS = "div.tickets table tbody tr"
+    EVENT_PAGE_MARKERS = ".description-wrapper, .event-dates, .event-list"
 
     # -------------------------------------------------------------------------
     # 1b. 主頁 metadata 離線解析專用（offline metadata parsing）

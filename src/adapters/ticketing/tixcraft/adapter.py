@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any, ClassVar
 from urllib.parse import urljoin
 
 from adapters.payment.base import PaymentOutcome, PaymentProvider, PaymentResult
+from adapters.ticketing.auth_cookies import has_platform_auth_cookies
 from adapters.ticketing.base import TicketingAdapter
 from adapters.ticketing.dom import (
     contains_cloudflare_challenge,
@@ -543,8 +544,14 @@ class TixcraftAdapter(TicketingAdapter):
             return LoginState.UNKNOWN
 
         curr_url = getattr(page, "url", "").lower()
-        if "/login" in curr_url or "user/login" in curr_url:
+        if "/login" in curr_url:
             return LoginState.LOGGED_OUT
+
+        cookies: list[Any] = []
+        with contextlib.suppress(Exception):
+            cookies = await page.context.cookies()
+        if has_platform_auth_cookies(cookies, "tixcraft"):
+            return LoginState.LOGGED_IN
 
         html = ""
         with contextlib.suppress(Exception):
@@ -553,16 +560,6 @@ class TixcraftAdapter(TicketingAdapter):
         if any(marker in html for marker in ("/user/logout", "/logout", "登出")):
             return LoginState.LOGGED_IN
         if any(marker in html for marker in ("/login", "user/login")):
-            return LoginState.LOGGED_OUT
-
-        with contextlib.suppress(Exception):
-            cookies = await page.context.cookies()
-            auth_names = {"SID", "tixcraft_session", "REMEMBERME"}
-            for c in cookies:
-                if c.get("name") in auth_names and c.get("value"):
-                    return LoginState.LOGGED_IN
-
-        if "登入" in html:
             return LoginState.LOGGED_OUT
 
         return LoginState.UNKNOWN
@@ -586,6 +583,10 @@ class TixcraftAdapter(TicketingAdapter):
 
     async def navigate_to_login_from_guest_modal(self, page: Page) -> bool:
         return True
+
+    async def navigate_to_login(self, page: Page) -> bool:
+        """tixcraft 走第三方登入，沒有證據顯示登入頁可自動填表，改由人手動登入。"""
+        return False
 
     async def navigate_to_event(
         self, page: Page, event_url: str, session_preference: str | None = None
@@ -614,15 +615,6 @@ class TixcraftAdapter(TicketingAdapter):
             )
 
         target_url = await self._pick_session_url(page, session_preference)
-        if target_url is None:
-            # 開賣瞬間重整嘗試：若場次列尚未刷新出立即購票按鈕，重整一次抓最新狀態
-            with contextlib.suppress(Exception):
-                await page.reload(wait_until="domcontentloaded")
-                await page.wait_for_selector(
-                    TixcraftSelectors.GAME_LIST_ROWS, timeout=self.timeout_ms
-                )
-                target_url = await self._pick_session_url(page, session_preference)
-
         if target_url is None:
             return False
 

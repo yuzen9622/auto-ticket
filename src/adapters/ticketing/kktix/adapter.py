@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING, Any, ClassVar
 from urllib.parse import urlsplit
 
 from adapters.payment.base import PaymentOutcome, PaymentProvider, PaymentResult
+from adapters.ticketing.auth_cookies import has_platform_auth_cookies
 from adapters.ticketing.base import TicketingAdapter
 from adapters.ticketing.dom import try_solve_cloudflare_turnstile
 from adapters.ticketing.kktix.captcha_selectors import CaptchaSelectors
@@ -122,6 +123,7 @@ EVENT_PATH_RE = re.compile(
 # 登記頁只掛在 `kktix.com` 上：org 子網域的 `/registrations/new` 會被 301 打回
 # kktix.com 首頁（連 path 都不保留），活動主頁上的購票連結指的也是這個主機。
 REGISTRATION_ORIGIN = "https://kktix.com"
+KKTIX_LOGIN_URL = f"{REGISTRATION_ORIGIN}/users/sign_in"
 
 # 以下選擇器刻意放在這裡而不是 selectors.py：後者是凍結模組（check_invariants G1），
 # 任何改動都會讓守門員紅燈。
@@ -582,6 +584,18 @@ class KKTIXAdapter(TicketingAdapter):
 
     # ------------------------------------------------------------- 1b. 登入
 
+    async def navigate_to_login(self, page: Page) -> bool:
+        curr_url = getattr(page, "url", "").lower()
+        if "users/sign_in" in curr_url:
+            return True
+        await page.goto(
+            KKTIX_LOGIN_URL,
+            wait_until=NAVIGATION_WAIT_UNTIL,
+            timeout=self.navigation_timeout_ms,
+        )
+        await self._guard_cloudflare(page, "login")
+        return True
+
     async def navigate_to_login_from_guest_modal(self, page: Page) -> bool:
         """從「立刻成為 KKTIX 會員」彈窗跳到登入頁。"""
         link = await self._locate(
@@ -804,7 +818,7 @@ class KKTIXAdapter(TicketingAdapter):
         if (
             await self._has(page, KKTIXSelectors.EVENT_TICKET_TABLE_ROWS)
             or await self._has(page, KKTIXSelectors.EVENT_TITLE)
-            or await self._has(page, ".description-wrapper, .event-dates, .event-list")
+            or await self._has(page, KKTIXSelectors.EVENT_PAGE_MARKERS)
         ):
             return KKTIXPageKind.EVENT
         if await self._has(page, KKTIXSelectors.CONTACT_NAME) or await self._has(
@@ -1784,20 +1798,14 @@ class KKTIXAdapter(TicketingAdapter):
             return LoginState.UNKNOWN
 
         curr_url = getattr(page, "url", "").lower()
-        if "users/sign_in" in curr_url or "/login" in curr_url:
+        if "users/sign_in" in curr_url:
             return LoginState.LOGGED_OUT
 
+        cookies: list[Any] = []
         with contextlib.suppress(Exception):
             cookies = await page.context.cookies()
-            auth_names = {
-                "_kktix_session",
-                "remember_user_token",
-                "user_credentials",
-                "kktix_session",
-            }
-            for c in cookies:
-                if c.get("name") in auth_names and c.get("value"):
-                    return LoginState.LOGGED_IN
+        if has_platform_auth_cookies(cookies, "kktix"):
+            return LoginState.LOGGED_IN
 
         html = ""
         with contextlib.suppress(Exception):
@@ -1805,7 +1813,7 @@ class KKTIXAdapter(TicketingAdapter):
 
         if "/users/sign_out" in html or "sign_out" in html or "登出" in html:
             return LoginState.LOGGED_IN
-        if "/users/sign_in" in html or "sign_in" in html:
+        if "/users/sign_in" in html:
             return LoginState.LOGGED_OUT
 
-        return LoginState.LOGGED_OUT
+        return LoginState.UNKNOWN

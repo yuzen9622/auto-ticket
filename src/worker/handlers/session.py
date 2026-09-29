@@ -11,6 +11,10 @@ from urllib.parse import urlsplit
 from accounts.models import CredentialKind, CredentialRecord
 from accounts.vault import EncryptedFileVault, EnvCredentialSource, VaultDecryptError
 from adapters.payment.mock import MockPaymentProvider
+from adapters.ticketing.auth_cookies import (
+    PLATFORM_AUTH_COOKIE_NAMES,
+    has_platform_auth_cookies,
+)
 from adapters.ticketing.factory import build_adapter
 from adapters.ticketing.page_state import LoginState, PageKind
 from adapters.verification.ddddocr_provider import DdddOcrProvider
@@ -62,37 +66,7 @@ LOGIN_HUMAN_VERIFICATION_TEXTS = (
     "complete the verification",
 )
 
-PLATFORM_AUTH_COOKIE_NAMES: dict[str, set[str]] = {
-    "kktix": {
-        "user_id_v2",
-        "user_display_name_v2",
-        "user_avatar_url_v2",
-        "user_path_v2",
-        "user_time_zone_offset_v2",
-        "user_time_zone",
-        "user_time_zone_v2",
-    },
-    "tixcraft": {"TIXUISID"},
-    "ibon": {"ibonqware", "mem_id", "mem_email", "huiwanTK"},
-}
-
 KKTIX_AUTH_COOKIE_NAMES = PLATFORM_AUTH_COOKIE_NAMES["kktix"]
-
-
-def has_platform_auth_cookies(
-    cookies: Sequence[dict[str, Any]] | None, platform: str = "kktix"
-) -> bool:
-    """檢查是否有對應平台的登入認證 Cookie。"""
-    if not cookies:
-        return False
-    plat = platform.lower()
-    expected = PLATFORM_AUTH_COOKIE_NAMES.get(plat, set())
-    for c in cookies:
-        name = str(c.get("name", ""))
-        val = str(c.get("value", "")).strip()
-        if name in expected and val:
-            return True
-    return False
 
 
 def has_kktix_auth_cookies(cookies: Sequence[dict[str, Any]] | None) -> bool:

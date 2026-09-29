@@ -3,7 +3,9 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Sequence
-from typing import Any
+from types import SimpleNamespace
+from typing import Any, cast
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -11,6 +13,7 @@ from adapters.payment import MockPaymentProvider, PaymentOutcome, PaymentResult
 from adapters.ticketing.kktix.adapter import (
     FAILURE_MODAL_MARK,
     FAILURE_MODAL_MISSING_MARK,
+    KKTIX_LOGIN_URL,
     REASON_NO_TICKET_UNITS,
     REASON_NOT_REGISTRATION_PAGE,
     REASON_PLUS_BUTTON_MISSING,
@@ -26,6 +29,7 @@ from adapters.ticketing.kktix.adapter import (
     CloudflareChallengeError,
     KKTIXAdapter,
     KKTIXPageKind,
+    LoginState,
     PageState,
 )
 from adapters.ticketing.kktix.dom import (
@@ -2183,3 +2187,40 @@ async def test_reset_ticket_quantities_fails_closed_when_readback_is_not_zero(
     assert await make_adapter(telemetry).reset_ticket_quantities(page) is False
     detail = marks(telemetry, RESET_MARK)[-1].detail
     assert (detail["reason"], detail["actual"]) == (RESET_REASON_NOT_ZERO, "2")
+
+
+# ------------------------------------------------------------------ 登入探測與導航
+
+
+async def test_kktix_probe_login_state_kktix_session_alone_is_unknown() -> None:
+    """`_kktix_session` 是訪客也會拿到的 cookie，不能當登入證據。"""
+    page = FakePage("<div>歡迎光臨</div>", url="https://kktix.com/events/x")
+    cast(Any, page).context = SimpleNamespace(
+        cookies=AsyncMock(return_value=[{"name": "_kktix_session", "value": "abc"}])
+    )
+    state = await make_adapter(TimelineRecorder()).probe_login_state(page)
+    assert state == LoginState.UNKNOWN
+
+
+async def test_kktix_probe_login_state_user_id_v2_is_logged_in() -> None:
+    page = FakePage("<div>歡迎光臨</div>", url="https://kktix.com/events/x")
+    cast(Any, page).context = SimpleNamespace(
+        cookies=AsyncMock(return_value=[{"name": "user_id_v2", "value": "42"}])
+    )
+    state = await make_adapter(TimelineRecorder()).probe_login_state(page)
+    assert state == LoginState.LOGGED_IN
+
+
+async def test_kktix_probe_login_state_sign_in_url_is_logged_out() -> None:
+    page = FakePage(
+        "<div>登入</div>", url="https://kktix.com/users/sign_in"
+    )
+    state = await make_adapter(TimelineRecorder()).probe_login_state(page)
+    assert state == LoginState.LOGGED_OUT
+
+
+async def test_kktix_navigate_to_login_goes_to_sign_in_url() -> None:
+    page = FakePage("<div></div>", url="https://kktix.com/events/x")
+    ok = await make_adapter(TimelineRecorder()).navigate_to_login(page)
+    assert ok is True
+    assert page.goto_urls[-1] == KKTIX_LOGIN_URL

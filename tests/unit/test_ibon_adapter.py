@@ -5,12 +5,17 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from types import SimpleNamespace
+from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from adapters.ticketing.ibon.adapter import IbonAdapter, normalize_ibon_url
+from adapters.ticketing.ibon.adapter import (
+    IBON_LOGIN_URL,
+    IbonAdapter,
+    normalize_ibon_url,
+)
 from adapters.ticketing.ibon.selectors import IbonSelectors
 from adapters.ticketing.page_state import (
     REASON_SELECTED,
@@ -563,3 +568,66 @@ async def test_ibon_probe_login_state_logged_out() -> None:
     )
     state = await adapter.probe_login_state(page)
     assert state == LoginState.LOGGED_OUT
+
+
+@pytest.mark.asyncio
+async def test_ibon_probe_login_state_asp_net_session_id_alone_is_not_logged_in() -> None:
+    """ASP.NET_SessionId 對所有訪客都發，不能當登入證據。"""
+    adapter = IbonAdapter()
+    page = MockPage(
+        url="https://ticket.ibon.com.tw/ActivityInfo/Details/123",
+        html="<html><body>歡迎光臨</body></html>",
+    )
+    cast(Any, page).context = SimpleNamespace(
+        cookies=AsyncMock(
+            return_value=[{"name": "ASP.NET_SessionId", "value": "abc"}]
+        )
+    )
+    state = await adapter.probe_login_state(page)
+    assert state != LoginState.LOGGED_IN
+
+
+@pytest.mark.asyncio
+async def test_ibon_probe_login_state_huiwan_tk_cookie_is_logged_in() -> None:
+    adapter = IbonAdapter()
+    page = MockPage(
+        url="https://ticket.ibon.com.tw/ActivityInfo/Details/123",
+        html="<html><body>歡迎光臨</body></html>",
+    )
+    cast(Any, page).context = SimpleNamespace(
+        cookies=AsyncMock(return_value=[{"name": "huiwanTK", "value": "xyz"}])
+    )
+    state = await adapter.probe_login_state(page)
+    assert state == LoginState.LOGGED_IN
+
+
+@pytest.mark.asyncio
+async def test_ibon_probe_login_state_member_center_alone_is_not_logged_in() -> None:
+    """訪客導覽列也可能有「會員中心」，不是登入證據。"""
+    adapter = IbonAdapter()
+    page = MockPage(
+        url="https://ticket.ibon.com.tw/ActivityInfo/Details/123",
+        html="<html><body>會員中心</body></html>",
+    )
+    state = await adapter.probe_login_state(page)
+    assert state != LoginState.LOGGED_IN
+
+
+@pytest.mark.asyncio
+async def test_ibon_navigate_to_login_goes_to_login_url() -> None:
+    adapter = IbonAdapter()
+    page = MockPage(url="https://ticket.ibon.com.tw/ActivityInfo/Details/123")
+    ok = await adapter.navigate_to_login(page)
+    assert ok is True
+    assert page.goto_urls[-1] == IBON_LOGIN_URL
+
+
+@pytest.mark.asyncio
+async def test_ibon_navigate_to_login_is_noop_when_already_there() -> None:
+    adapter = IbonAdapter()
+    page = MockPage(
+        url="https://huiwan.ibon.com.tw/huiwan/LoginHuiwan/UserLogin.aspx?taxid=1"
+    )
+    ok = await adapter.navigate_to_login(page)
+    assert ok is True
+    assert page.goto_urls == []

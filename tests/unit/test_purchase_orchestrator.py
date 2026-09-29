@@ -25,10 +25,10 @@ from adapters.ticketing.kktix.adapter import (
     KKTIXPageKind,
     PageState,
 )
-from adapters.ticketing.page_state import LoginState
+from adapters.ticketing.page_state import CloudflareChallengeError, LoginState
 from domain.event import PlatformEnum
 from domain.preference import SeatPreference, TicketPreference, TicketPriority
-from domain.task import PurchaseTaskSpec, UserContactProfile
+from domain.task import PurchaseTaskSpec, StartTiming, UserContactProfile
 from fsm.machine import PurchaseWorkflow
 from purchase.handlers import (
     FATAL_TICKET_REASONS,
@@ -138,6 +138,7 @@ class StubAdapter:
         dismiss_ok: bool = True,
         login_ok: bool = True,
         login_state: LoginState = LoginState.LOGGED_IN,
+        login_reachable: bool = False,
     ) -> None:
         self.page_states = (
             list(page_states)
@@ -162,6 +163,7 @@ class StubAdapter:
         self.dismiss_ok = dismiss_ok
         self.login_ok = login_ok
         self.login_state = login_state
+        self.login_reachable = login_reachable
         self.on_login: Any = None
         self.calls: list[str] = []
         self.payment = "stub-payment-provider"
@@ -242,6 +244,10 @@ class StubAdapter:
     async def navigate_to_login_from_guest_modal(self, page: Any) -> bool:
         self.calls.append("navigate_to_login_from_guest_modal")
         return True
+
+    async def navigate_to_login(self, page: Any) -> bool:
+        self.calls.append("navigate_to_login")
+        return self.login_reachable
 
     async def select_tickets(self, page: Any, preference: Any) -> tuple[bool, str]:
         self.calls.append("select_tickets")
@@ -1457,10 +1463,85 @@ async def test_pre_sale_standby_triggers_navigation_at_sale_start(
     assert "navigate" in adapter.calls
 
 
-async def test_pre_sale_standby_prompts_login_when_logged_out(
+async def test_pre_sale_logged_out_fails_closed_at_deadline(
     tmp_path: Path,
 ) -> None:
-    """開賣前即使在活動頁，若檢測到未登入，應發出 LOGIN 提醒，且順利完成待命不崩潰。"""
+    """開賣前明確偵測到未登入，收工線抵達時必須 fail-closed，不得放行。"""
+    announced: list[tuple[str, int]] = []
+
+    async def gate(kind: str, attempt: int) -> None:
+        announced.append((kind, attempt))
+
+    adapter = StubAdapter(
+        probe_kinds=[KKTIXPageKind.EVENT] * 50,
+        login_state=LoginState.LOGGED_OUT,
+    )
+    orchestrator, _, browser, _ = build(tmp_path, adapter)
+    orchestrator._rt.page = browser.page
+    orchestrator.session_gate_timeout_s = 12.0
+    orchestrator.session_gate_poll_s = 5.0
+    orchestrator.session_gate = gate
+    orchestrator.spec = orchestrator.spec.model_copy(
+        update={"sale_start_at": datetime.now(UTC) + timedelta(minutes=5)}
+    )
+    sleep, _ = _fake_clock(orchestrator)
+
+    with (
+        patch("asyncio.sleep", sleep),
+        pytest.raises(PurchaseStepError, match="not logged in before sale"),
+    ):
+        await orchestrator._check_session(_ctx())
+
+    assert announced, announced
+    assert all(kind == "LOGIN" for kind, _ in announced)
+    assert adapter.calls.count("navigate") == 0
+    assert orchestrator._rt.is_pre_sale_standby is False
+
+
+async def test_pre_sale_standby_succeeds_when_user_logs_in(
+    tmp_path: Path,
+) -> None:
+    """開賣前檢測到未登入，使用者於等待期間完成登入後，應順利就緒；未登入期間不得導航。"""
+    announced: list[tuple[str, int]] = []
+    gate_calls = 0
+    navigate_counts_while_logged_out: list[int] = []
+
+    adapter = StubAdapter(
+        probe_kinds=[KKTIXPageKind.EVENT] * 10,
+        login_state=LoginState.LOGGED_OUT,
+    )
+
+    async def gate(kind: str, attempt: int) -> None:
+        nonlocal gate_calls
+        gate_calls += 1
+        announced.append((kind, attempt))
+        navigate_counts_while_logged_out.append(adapter.calls.count("navigate"))
+        # 第一次 announce 不改登入狀態，第二次才模擬使用者完成登入
+        if gate_calls >= 2:
+            adapter.login_state = LoginState.LOGGED_IN
+
+    orchestrator, _, browser, _ = build(tmp_path, adapter)
+    orchestrator._rt.page = browser.page
+    orchestrator.session_gate_poll_s = 0.01
+    orchestrator.session_gate = gate
+    orchestrator.spec = orchestrator.spec.model_copy(
+        update={"sale_start_at": datetime.now(UTC) + timedelta(minutes=5)}
+    )
+    sleep, _ = _fake_clock(orchestrator)
+
+    with patch("asyncio.sleep", sleep):
+        await orchestrator._check_session(_ctx())
+
+    assert orchestrator._rt.is_pre_sale_standby is True
+    events = [e for e in orchestrator.telemetry.events() if e.name == "session_ready"]
+    assert len(events) == 1
+    assert events[0].detail.get("mode") == "pre_sale_standby"
+    assert [kind for kind, _ in announced[:2]] == ["LOGIN", "LOGIN"]
+    assert navigate_counts_while_logged_out == [0, 0]
+
+
+async def test_pre_sale_unknown_login_state_does_not_block(tmp_path: Path) -> None:
+    """探測不到登入狀態時不得擋下閘門：不知道不等於未登入。"""
     announced: list[tuple[str, int]] = []
 
     async def gate(kind: str, attempt: int) -> None:
@@ -1468,12 +1549,10 @@ async def test_pre_sale_standby_prompts_login_when_logged_out(
 
     adapter = StubAdapter(
         probe_kinds=[KKTIXPageKind.EVENT] * 10,
-        login_state=LoginState.LOGGED_OUT,
+        login_state=LoginState.UNKNOWN,
     )
     orchestrator, _, browser, _ = build(tmp_path, adapter)
     orchestrator._rt.page = browser.page
-    orchestrator.session_gate_poll_s = 0.01
-    orchestrator.session_gate_timeout_s = 0.05
     orchestrator.session_gate = gate
     orchestrator.spec = orchestrator.spec.model_copy(
         update={"sale_start_at": datetime.now(UTC) + timedelta(minutes=5)}
@@ -1481,24 +1560,89 @@ async def test_pre_sale_standby_prompts_login_when_logged_out(
 
     await orchestrator._check_session(_ctx())
 
-    assert any(kind == "LOGIN" for kind, _ in announced)
     assert orchestrator._rt.is_pre_sale_standby is True
+    assert announced == []
 
 
-async def test_pre_sale_standby_succeeds_when_user_logs_in(
-    tmp_path: Path,
-) -> None:
-    """開賣前檢測到未登入，使用者於等待期間完成登入後，應順利就緒。"""
+async def test_registration_logged_out_waits_for_login(tmp_path: Path) -> None:
+    """在登記頁但未登入：不得直接視為就緒，須等使用者登入。"""
     announced: list[tuple[str, int]] = []
 
     adapter = StubAdapter(
-        probe_kinds=[KKTIXPageKind.EVENT] * 10,
+        probe_kinds=[KKTIXPageKind.REGISTRATION] * 10,
         login_state=LoginState.LOGGED_OUT,
     )
 
     async def gate(kind: str, attempt: int) -> None:
         announced.append((kind, attempt))
-        # 模擬使用者在收到登入提示後完成登入
+        adapter.login_state = LoginState.LOGGED_IN
+
+    orchestrator, _, browser, _ = build(tmp_path, adapter)
+    orchestrator._rt.page = browser.page
+    orchestrator.session_gate_poll_s = 0.01
+    orchestrator.session_gate = gate
+    sleep, _ = _fake_clock(orchestrator)
+
+    with patch("asyncio.sleep", sleep):
+        await orchestrator._check_session(_ctx())
+
+    assert announced[0][0] == "LOGIN"
+    events = [e for e in orchestrator.telemetry.events() if e.name == "session_ready"]
+    assert len(events) == 1
+    assert "mode" not in events[0].detail
+
+
+async def test_pre_sale_logged_out_auto_login_navigates_to_login_first(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """有憑證時，先導到登入頁才動用自動登入配額；成功後順利推進就緒。"""
+    monkeypatch.setenv("AUTO_TICKET_KKTIX_USERNAME", "testuser@example.com")
+    monkeypatch.setenv("AUTO_TICKET_KKTIX_PASSWORD", "supersecret123")
+
+    adapter = StubAdapter(
+        probe_kinds=[KKTIXPageKind.EVENT] * 10,
+        login_state=LoginState.LOGGED_OUT,
+        login_reachable=True,
+    )
+
+    def on_login() -> None:
+        adapter.login_state = LoginState.LOGGED_IN
+
+    adapter.on_login = on_login
+
+    orchestrator, _, browser, _ = build(tmp_path, adapter)
+    orchestrator._rt.page = browser.page
+    orchestrator.spec = orchestrator.spec.model_copy(
+        update={"sale_start_at": datetime.now(UTC) + timedelta(minutes=5)}
+    )
+
+    await orchestrator._check_session(_ctx())
+
+    nav_login_idx = adapter.calls.index("navigate_to_login")
+    login_idx = adapter.calls.index("login")
+    assert nav_login_idx < login_idx
+    assert "navigate" in adapter.calls[login_idx:]
+    assert orchestrator._rt.is_pre_sale_standby is True
+
+    exported = str([dict(e.detail) for e in orchestrator.telemetry.events()])
+    assert "testuser@example.com" not in exported
+    assert "supersecret123" not in exported
+
+
+async def test_pre_sale_logged_out_unreachable_login_keeps_quota(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """導不到登入頁時不得消耗僅有的自動登入配額，改為等人處理。"""
+    monkeypatch.setenv("AUTO_TICKET_KKTIX_USERNAME", "testuser@example.com")
+    monkeypatch.setenv("AUTO_TICKET_KKTIX_PASSWORD", "supersecret123")
+
+    adapter = StubAdapter(
+        probe_kinds=[KKTIXPageKind.EVENT] * 10,
+        login_state=LoginState.LOGGED_OUT,
+        login_reachable=False,
+    )
+
+    async def gate(kind: str, attempt: int) -> None:
         adapter.login_state = LoginState.LOGGED_IN
 
     orchestrator, _, browser, _ = build(tmp_path, adapter)
@@ -1508,10 +1652,178 @@ async def test_pre_sale_standby_succeeds_when_user_logs_in(
     orchestrator.spec = orchestrator.spec.model_copy(
         update={"sale_start_at": datetime.now(UTC) + timedelta(minutes=5)}
     )
+    sleep, _ = _fake_clock(orchestrator)
 
-    await orchestrator._check_session(_ctx())
-    assert orchestrator._rt.is_pre_sale_standby is True
-    events = [e for e in orchestrator.telemetry.events() if e.name == "session_ready"]
+    with patch("asyncio.sleep", sleep):
+        await orchestrator._check_session(_ctx())
+
+    assert "login" not in adapter.calls
+    assert orchestrator._rt.auto_login_attempted is False
+    unreachable_events = [
+        e
+        for e in orchestrator.telemetry.events()
+        if e.name == "auto_login_unreachable"
+    ]
+    assert len(unreachable_events) == 1
+
+
+async def test_sale_advance_retries_until_page_leaves_event(tmp_path: Path) -> None:
+    """開賣瞬間推進失敗（仍在活動頁）時應持續重試，直到頁面真的離開活動頁或預算耗盡。"""
+    adapter = StubAdapter(
+        page_states=[PageState.UNKNOWN] * 1000,
+        probe_kinds=[KKTIXPageKind.EVENT, KKTIXPageKind.EVENT],
+    )
+    orchestrator, _, browser, _ = build(tmp_path, adapter)
+    orchestrator.fsm = PurchaseWorkflow(orchestrator.spec, orchestrator.telemetry)
+    orchestrator.fsm.send("prepare_session")
+    orchestrator.fsm.send("session_ready")
+    orchestrator.fsm.send("sale_triggered")
+    orchestrator._rt.page = browser.page
+    orchestrator._rt.is_pre_sale_standby = True
+    orchestrator.sale_advance_retry_s = 0.0
+    orchestrator.micro_wait_s = 0.001
+    orchestrator.race_loop_timeout_s = 0.3
+
+    with pytest.raises(PurchaseStepError, match="state loop budget exhausted"):
+        await orchestrator._trigger_purchase(_ctx())
+
+    assert adapter.calls.count("navigate") == 3
+    sale_advance_events = [
+        e for e in orchestrator.telemetry.events() if e.name == "sale_advance"
+    ]
+    assert len(sale_advance_events) == 3
+
+
+async def test_sale_advance_retry_is_throttled(tmp_path: Path) -> None:
+    """重試要節流：不得每輪都重新導航，對方站台不該被高頻重整。"""
+    adapter = StubAdapter(
+        page_states=[PageState.UNKNOWN] * 10000,
+        probe_kinds=[KKTIXPageKind.EVENT] * 1000,
+    )
+    orchestrator, _, browser, _ = build(tmp_path, adapter)
+    orchestrator.fsm = PurchaseWorkflow(orchestrator.spec, orchestrator.telemetry)
+    orchestrator.fsm.send("prepare_session")
+    orchestrator.fsm.send("session_ready")
+    orchestrator.fsm.send("sale_triggered")
+    orchestrator._rt.page = browser.page
+    orchestrator._rt.is_pre_sale_standby = True
+    orchestrator.micro_wait_s = 0.05
+    orchestrator.sale_advance_retry_s = 1.0
+    orchestrator.race_loop_timeout_s = 3.0
+    sleep, _ = _fake_clock(orchestrator)
+
+    with patch("asyncio.sleep", sleep), pytest.raises(PurchaseStepError):
+        await orchestrator._trigger_purchase(_ctx())
+
+    assert 2 <= adapter.calls.count("navigate") <= 4, adapter.calls.count("navigate")
+
+
+async def test_sale_advance_survives_navigation_error(tmp_path: Path) -> None:
+    """開賣瞬間的導航逗時要重試，不能讓單次逗時中止整場任務。"""
+    adapter = StubAdapter(probe_kinds=[KKTIXPageKind.EVENT])
+    orchestrator, _, browser, _ = build(tmp_path, adapter)
+    orchestrator._rt.page = browser.page
+    orchestrator._rt.is_pre_sale_standby = True
+
+    async def flaky_navigate(
+        page: Any, url: str, session_preference: str | None = None
+    ) -> bool:
+        raise TimeoutError()
+
+    adapter.navigate_to_event = flaky_navigate
+
+    await orchestrator._advance_from_standby(browser.page)
+
+    sale_advance_events = [
+        e for e in orchestrator.telemetry.events() if e.name == "sale_advance"
+    ]
+    assert len(sale_advance_events) == 1
+    assert sale_advance_events[0].detail.get("ok") is False
+    assert sale_advance_events[0].detail.get("error") == "TimeoutError"
+
+
+async def test_sale_advance_propagates_cloudflare(tmp_path: Path) -> None:
+    """Cloudflare 挑戰必須原樣往上拋，不得被吞掉或重試掩蓋。"""
+    adapter = StubAdapter()
+    orchestrator, _, browser, _ = build(tmp_path, adapter)
+    orchestrator.fsm = PurchaseWorkflow(orchestrator.spec, orchestrator.telemetry)
+    orchestrator.fsm.send("prepare_session")
+    orchestrator.fsm.send("session_ready")
+    orchestrator.fsm.send("sale_triggered")
+    orchestrator._rt.page = browser.page
+    orchestrator._rt.is_pre_sale_standby = True
+
+    async def raises_cloudflare(
+        page: Any, url: str, session_preference: str | None = None
+    ) -> bool:
+        raise CloudflareChallengeError("cf")
+
+    adapter.navigate_to_event = raises_cloudflare
+
+    with pytest.raises(CloudflareChallengeError):
+        await orchestrator._trigger_purchase(_ctx())
+
+
+async def test_race_loop_without_standby_never_advances(tmp_path: Path) -> None:
+    """非開賣前待命起跑（例如補跑情境）不得誤觸開賣推進重試。"""
+    adapter = StubAdapter(page_states=[PageState.UNKNOWN] * 1000)
+    orchestrator, _, browser, _ = build(tmp_path, adapter)
+    orchestrator._rt.page = browser.page
+    orchestrator._rt.is_pre_sale_standby = False
+    orchestrator.race_loop_timeout_s = 0.1
+    orchestrator.micro_wait_s = 0.001
+
+    with pytest.raises(PurchaseStepError, match="state loop budget exhausted"):
+        await orchestrator._run_race_loop(browser.page)
+
+    assert "navigate" not in adapter.calls
+    assert "probe" not in adapter.calls
+
+
+async def test_immediate_task_does_not_enter_standby(tmp_path: Path) -> None:
+    """IMMEDIATE 任務不屬於開賣前待命：閘門對 EVENT 頁不得放行為 standby。"""
+    adapter = StubAdapter(probe_kinds=[KKTIXPageKind.EVENT] * 50)
+    spec = make_spec().model_copy(update={"start_timing": StartTiming.IMMEDIATE})
+    orchestrator, _, browser, _ = build(tmp_path, adapter, spec=spec)
+    orchestrator._rt.page = browser.page
+    orchestrator.session_gate_timeout_s = 0.05
+    orchestrator.session_gate_poll_s = 0.01
+    sleep, _ = _fake_clock(orchestrator)
+
+    with (
+        patch("asyncio.sleep", sleep),
+        pytest.raises(PurchaseStepError, match="page not ready before sale: EVENT"),
+    ):
+        await orchestrator._check_session(_ctx())
+
+    assert orchestrator._rt.is_pre_sale_standby is False
+
+
+async def test_navigate_page_keeps_standby_when_navigation_refused(
+    tmp_path: Path,
+) -> None:
+    """就緒閘門確認過的待命頁，開賣後導航被拒也不能讓 standby 白白中止。"""
+    adapter = StubAdapter(probe_kinds=[KKTIXPageKind.EVENT])
+    orchestrator, _, browser, _ = build(tmp_path, adapter)
+    orchestrator._rt.page = browser.page
+    orchestrator._rt.is_pre_sale_standby = True
+    orchestrator._rt.session_ready_url = "https://one.example.com/events/1?stale"
+    orchestrator.spec = orchestrator.spec.model_copy(
+        update={"sale_start_at": datetime.now(UTC) + timedelta(minutes=5)}
+    )
+
+    async def refuse_navigate(
+        page: Any, url: str, session_preference: str | None = None
+    ) -> bool:
+        return False
+
+    adapter.navigate_to_event = refuse_navigate
+
+    await orchestrator._navigate_page(_ctx())
+
+    events = [
+        e
+        for e in orchestrator.telemetry.events()
+        if e.name == "navigation_standby_kept"
+    ]
     assert len(events) == 1
-    assert any(kind == "LOGIN" for kind, _ in announced)
-
