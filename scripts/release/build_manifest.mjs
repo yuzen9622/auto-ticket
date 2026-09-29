@@ -82,18 +82,18 @@ async function gh(args) {
 /**
  * 讀 Release 上的 `.sha256` 附檔與主檔大小。digest 只信這份純文字檔。
  *
- * 清單走 GraphQL 而不是 `gh release view`：REST 的 by-tag 與列表端點會長時間
+ * Release ID 走 GraphQL 而不是 `gh release view`：REST 的 by-tag 與列表端點會長時間
  * 快取上傳前的空清單（v0.5.0 卡了十幾分鐘仍回 0 個 asset），GraphQL 與 by-id
- * 端點則即時反映。下載也不用 `gh release download`，它同樣走 by-tag 端點。
+ * 端點則即時反映。清單與下載使用 by-id API，透過 gh 驗證身分，支援草稿 assets。
  */
-async function readReleaseAssets({ tag, repo, version }) {
+export async function readReleaseAssets({ tag, repo, version }, ghRequest = gh) {
   const [owner, name] = repo.split("/")
   const listed = JSON.parse(
-    await gh([
+    await ghRequest([
       "api",
       "graphql",
       "-f",
-      `query=query($owner:String!,$name:String!,$tag:String!){repository(owner:$owner,name:$name){release(tagName:$tag){releaseAssets(first:50){nodes{name size downloadUrl}}}}}`,
+      `query=query($owner:String!,$name:String!,$tag:String!){repository(owner:$owner,name:$name){release(tagName:$tag){databaseId}}}`,
       "-f",
       `owner=${owner}`,
       "-f",
@@ -104,7 +104,10 @@ async function readReleaseAssets({ tag, repo, version }) {
   )
   const release = listed.data?.repository?.release
   if (!release) throw new Error(`找不到 Release ${tag}`)
-  const byName = new Map(release.releaseAssets.nodes.map((a) => [a.name, a]))
+  const releaseAssets = JSON.parse(
+    await ghRequest(["api", `repos/${repo}/releases/${release.databaseId}/assets?per_page=100`])
+  )
+  const byName = new Map(releaseAssets.map((a) => [a.name, a]))
 
   const assets = {}
   for (const target of TARGETS) {
@@ -112,10 +115,14 @@ async function readReleaseAssets({ tag, repo, version }) {
     const shaFile = `${file}.sha256`
     if (!byName.has(file)) throw new Error(`Release ${tag} 找不到 ${file}`)
     if (!byName.has(shaFile)) throw new Error(`Release ${tag} 找不到 ${shaFile}`)
-    const res = await fetch(byName.get(shaFile).downloadUrl)
-    if (!res.ok) throw new Error(`下載 ${shaFile} 失敗：HTTP ${res.status}`)
+    const checksum = await ghRequest([
+      "api",
+      `repos/${repo}/releases/assets/${byName.get(shaFile).id}`,
+      "-H",
+      "Accept: application/octet-stream",
+    ])
     assets[target] = {
-      sha256: parseSha256(await res.text()),
+      sha256: parseSha256(checksum),
       size: byName.get(file).size,
     }
   }
