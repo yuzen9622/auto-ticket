@@ -41,6 +41,9 @@ jobs:
       - name: doctor
         run: npx --yes @yuzen9622/auto-ticket@${{ steps.v.outputs.version }} doctor
 
+      - name: Install published runtime
+        run: npx --yes @yuzen9622/auto-ticket@${{ steps.v.outputs.version }} runtime install
+
       - name: version
         run: |
           out=$(npx --yes @yuzen9622/auto-ticket@${{ steps.v.outputs.version }} version)
