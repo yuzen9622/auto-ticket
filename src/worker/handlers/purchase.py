@@ -34,6 +34,8 @@ from ..telemetry_bridge import ClockTicker, StreamingTimelineRecorder
 
 GATE_HINTS = {
     "CHALLENGE": "自動處理未通過，請接手完成驗證（本程式不會代為繞過）",
+    "SEAT_SELECTION": "此座位偏好需要人工選位，請在目前的購票分頁完成選座並繼續下一步",
+    "VERIFICATION_INPUT": "請在目前購票分頁填寫驗證答案並送出，完成後流程會自動繼續",
     "VERIFICATION": "已自動填入辨識結果，請在瀏覽器確認後自行送出",
     "LOGIN": "尚未登入，請在開賣前於瀏覽器內自行登入",
     "EVENT": "已在活動主頁就緒，開賣時將自動推進",
@@ -224,7 +226,7 @@ async def execute_purchase(
             experiment_id=experiment_id,
             type=ServerMessageType.TASK_LOG.value,
             payload={
-                "phase": "waiting_for_human",
+                "phase": "human_gate_resolved" if kind == "RESOLVED" else "waiting_for_human",
                 "page_kind": kind,
                 "attempt": attempt,
                 "hint": GATE_HINTS.get(kind, "請自行確認瀏覽器狀態"),
@@ -314,14 +316,9 @@ async def execute_purchase(
                     "final_state": report.final_state,
                 },
             )
-        elif report.aborted:
+        elif control_state.aborted:
             task_status = TaskStatus.CANCELLED
-            await broker.fail(
-                job.id,
-                worker_id=worker_id,
-                error=report.error or "task_cancelled",
-                retry=False,
-            )
+            await broker.finish_cancelled(job.id, worker_id=worker_id)
         else:
             task_status = TaskStatus.FAILED
             await broker.fail(

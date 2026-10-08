@@ -1827,3 +1827,68 @@ async def test_navigate_page_keeps_standby_when_navigation_refused(
         if e.name == "navigation_standby_kept"
     ]
     assert len(events) == 1
+
+
+def test_race_budget_uses_task_timeout(tmp_path):
+    spec = make_spec()
+    spec = spec.model_copy(update={"timeout_seconds": 600})
+    orchestrator, *_ = build(tmp_path, StubAdapter(), spec=spec)
+    assert orchestrator.race_loop_timeout_s == 600
+
+
+async def test_standalone_verification_hands_off_without_marking_order(tmp_path):
+    orchestrator, *_ = build(tmp_path, StubAdapter())
+    orchestrator.fsm = PurchaseWorkflow(orchestrator.spec, orchestrator.telemetry)
+    orchestrator.session_gate = AsyncMock()
+    orchestrator.session_gate_poll_s = 0
+    orchestrator.adapter.detect_verification = AsyncMock(return_value=False)
+    await orchestrator._handle_standalone_verification(FakePage("<div></div>"))
+    orchestrator.session_gate.assert_any_await("VERIFICATION", 1)
+    assert not orchestrator._rt.order_submitted
+    assert not orchestrator._rt.form_submitted
+
+
+@pytest.mark.parametrize("budget,passes", [(600, True), (120, False)])
+async def test_queue_can_last_beyond_120_seconds_with_longer_task_timeout(tmp_path, budget, passes):
+    adapter = StubAdapter(page_states=[PageState.QUEUE] * 130 + [PageState.COMPLETED])
+    orchestrator, *_ = build(tmp_path, adapter, spec=make_spec().model_copy(update={"timeout_seconds": budget}))
+    orchestrator.fsm = PurchaseWorkflow(orchestrator.spec, orchestrator.telemetry)
+    orchestrator.queue_poll_s = 1
+    sleep, _ = _fake_clock(orchestrator)
+    with patch("purchase.orchestrator.asyncio.sleep", sleep):
+        if passes:
+            await orchestrator._run_race_loop(FakePage(""))
+            assert orchestrator.fsm.current_state_id == "COMPLETED"
+        else:
+            with pytest.raises(PurchaseStepError, match="budget exhausted"):
+                await orchestrator._run_race_loop(FakePage(""))
+
+
+async def test_manual_seats_handoff_then_resume(tmp_path):
+    from adapters.ticketing.page_state import ManualSeatSelectionRequired
+    adapter = StubAdapter(page_states=[PageState.UNKNOWN, PageState.SEAT_SELECTION, PageState.FORM_FILLING])
+    adapter.handle_seat_selection = AsyncMock(side_effect=ManualSeatSelectionRequired())
+    orchestrator, *_ = build(tmp_path, adapter)
+    orchestrator.fsm = PurchaseWorkflow(orchestrator.spec, orchestrator.telemetry)
+    orchestrator.session_gate = AsyncMock()
+    orchestrator.session_gate_poll_s = 0
+    await orchestrator._handle_seat_selection(FakePage(""))
+    adapter.handle_seat_selection.assert_awaited_once()
+    orchestrator.session_gate.assert_any_await("SEAT_SELECTION", 1)
+    orchestrator.session_gate.assert_any_await("RESOLVED", 0)
+
+
+async def test_task_timeout_interrupts_blocked_adapter_before_payment(tmp_path):
+    import asyncio
+    adapter = StubAdapter()
+
+    async def blocked(page):
+        await asyncio.Event().wait()
+
+    adapter.detect_page_state = blocked
+    orchestrator, *_ = build(tmp_path, adapter)
+    orchestrator.race_loop_timeout_s = 0.01
+    report = await asyncio.wait_for(orchestrator.run(), 1)
+    assert report.final_state == "FAILED"
+    assert "budget exhausted" in (report.error or "")
+    assert "execute_payment" not in adapter.calls

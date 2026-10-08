@@ -53,8 +53,9 @@ class WorkerLoop:
             dict(handlers) if handlers is not None else dict(DEFAULT_HANDLERS)
         )
 
-        self._busy_profiles: set[str] = set()
         self._active_jobs: dict[str, asyncio.Task[None]] = {}
+        self._active_records: dict[str, JobRecord] = {}
+        self._preempted: set[str] = set()
         self._stop_event = asyncio.Event()
         self._schema_initialized = False
 
@@ -83,7 +84,6 @@ class WorkerLoop:
                 logger.exception("Heartbeat failed for job %s", job_id)
 
     async def _execute_job(self, job: JobRecord) -> None:
-        self._busy_profiles.add(job.profile)
         handler = self._handlers.get(job.kind)
         target_task: asyncio.Task[None] | None = None
         hb_task: asyncio.Task[None] | None = None
@@ -117,7 +117,7 @@ class WorkerLoop:
                 await self._broker.fail(
                     job.id,
                     worker_id=self._worker_id,
-                    error="cancelled",
+                    error="interrupted_for_purchase" if job.id in self._preempted else "cancelled",
                     retry=False,
                 )
             raise
@@ -144,29 +144,61 @@ class WorkerLoop:
                 hb_task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await hb_task
-            self._busy_profiles.discard(job.profile)
             self._active_jobs.pop(job.id, None)
+            self._active_records.pop(job.id, None)
+            self._preempted.discard(job.id)
 
     async def run_once(self) -> bool:
         """測試與單步執行用：嘗試領取一個 job，執行完成後回傳是否有領到。"""
         await self.initialize()
-        if len(self._active_jobs) >= self._settings.max_concurrent_jobs:
-            return False
-
-        job = await self._broker.claim(
-            worker_id=self._worker_id,
-            busy_profiles=tuple(self._busy_profiles),
-        )
+        job = await self._claim_next()
         if job is None:
             return False
-
-        task = asyncio.create_task(self._execute_job(job))
-        self._active_jobs[job.id] = task
+        task = self._start_job(job)
         try:
             await task
         finally:
             await self._outbox.flush()
         return True
+
+    def _start_job(self, job: JobRecord) -> asyncio.Task[None]:
+        # Reserve before yielding: a second claim must see this profile as busy.
+        self._active_records[job.id] = job
+        task = asyncio.create_task(self._execute_job(job))
+        self._active_jobs[job.id] = task
+        return task
+
+    async def _claim_next(self) -> JobRecord | None:
+        purchases = [
+            j for j in self._active_records.values() if j.kind == JobKind.PURCHASE
+        ]
+        if len(purchases) < self._settings.max_concurrent_jobs:
+            job = await self._broker.claim(
+                worker_id=self._worker_id,
+                kinds=[JobKind.PURCHASE],
+                busy_profiles=tuple(j.profile for j in purchases),
+            )
+            if job is not None:
+                # Session jobs may borrow the same Chrome. Drain their cancellation
+                # before purchase starts so late navigation cannot steal its page.
+                background = [
+                    self._active_jobs[j.id]
+                    for j in self._active_records.values()
+                    if j.kind != JobKind.PURCHASE
+                ]
+                for record in tuple(self._active_records.values()):
+                    if record.kind != JobKind.PURCHASE:
+                        self._preempted.add(record.id)
+                        self._active_jobs[record.id].cancel()
+                if background:
+                    await asyncio.gather(*background, return_exceptions=True)
+                return job
+        if self._active_jobs:
+            return None
+        return await self._broker.claim(
+            worker_id=self._worker_id,
+            kinds=[kind for kind in JobKind if kind != JobKind.PURCHASE],
+        )
 
     def stop(self) -> None:
         self._stop_event.set()
@@ -193,16 +225,10 @@ class WorkerLoop:
                         await self._broker.reap_expired()
                     last_reap = now
 
-                # 檢查目前併發上限
-                if len(self._active_jobs) < self._settings.max_concurrent_jobs:
-                    job = await self._broker.claim(
-                        worker_id=self._worker_id,
-                        busy_profiles=tuple(self._busy_profiles),
-                    )
-                    if job is not None:
-                        t = asyncio.create_task(self._execute_job(job))
-                        self._active_jobs[job.id] = t
-                        continue
+                job = await self._claim_next()
+                if job is not None:
+                    self._start_job(job)
+                    continue
 
                 with contextlib.suppress(asyncio.TimeoutError):
                     await asyncio.wait_for(

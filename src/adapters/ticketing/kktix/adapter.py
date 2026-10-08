@@ -57,6 +57,7 @@ from adapters.ticketing.page_state import (
     CloudflareChallengeError,
     KKTIXPageKind,
     LoginState,
+    ManualSeatSelectionRequired,
     PageKind,
     PageState,
 )
@@ -1250,6 +1251,15 @@ class KKTIXAdapter(TicketingAdapter):
             field="seat_best_available",
         )
         if auto_assign is None:
+            # 自行選位專用頁也可能沒有電腦配位；不可當作一般下一步。
+            manual = await first_visible(
+                page,
+                KKTIXSelectors.BTN_PICK_SEAT,
+                timeout_ms=self.probe_timeout_ms,
+            )
+            if manual is not None and "自行選位" in await manual.inner_text():
+                await ng_click(page, manual, telemetry=self.telemetry)
+                raise ManualSeatSelectionRequired("請在瀏覽器完成自行選位並繼續下一步")
             button = await self._locate(page, KKTIXSelectors.BTN_NEXT_STEP, "next_step")
             effective, page_shape = "NEXT_STEP", "single_next_step"
         elif seat.action is SeatAction.PICK_SEAT:
@@ -1258,8 +1268,7 @@ class KKTIXAdapter(TicketingAdapter):
             )
             effective, page_shape = SeatAction.PICK_SEAT.value, "reserved_seating"
             if button is None:
-                button = auto_assign
-                effective = SeatAction.BEST_AVAILABLE.value
+                raise ManualSeatSelectionRequired("請在瀏覽器完成指定區域選位")
         else:
             button = auto_assign
             effective, page_shape = SeatAction.BEST_AVAILABLE.value, "reserved_seating"
@@ -1267,6 +1276,8 @@ class KKTIXAdapter(TicketingAdapter):
         if button is None:
             return False
         await ng_click(page, button, telemetry=self.telemetry)
+        if effective == SeatAction.PICK_SEAT.value:
+            raise ManualSeatSelectionRequired("請在瀏覽器完成自行選位並繼續下一步")
         self.telemetry.record(
             TimelineEventType.MARK,
             "seat_action",
@@ -1644,7 +1655,8 @@ class KKTIXAdapter(TicketingAdapter):
             return False
 
         existing = (await read_input_value(answer_input)).strip()
-        if existing:
+        rejected = bool(existing) and await self.detect_verification_error(page)
+        if existing and not rejected:
             self.telemetry.record(
                 TimelineEventType.MARK,
                 "verification_manual_input_preserved",
@@ -1652,6 +1664,9 @@ class KKTIXAdapter(TicketingAdapter):
                 source="page",
             )
             return True
+
+        if rejected:
+            await ng_fill(page, answer_input, "")
 
         question = await self._text_of(page, KKTIXSelectors.CAPTCHA_QUESTION_TEXT)
         image_bytes = await self._read_captcha_image(page)

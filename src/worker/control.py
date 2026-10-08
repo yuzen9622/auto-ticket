@@ -24,6 +24,12 @@ class ControlState:
         self._aborted = asyncio.Event()
         self._spin_started = False
         self._fsm: Any = None
+        self._running_stages: set[asyncio.Task[Any]] = set()
+        self._on_abort: Callable[[], None] | None = None
+
+    @property
+    def aborted(self) -> bool:
+        return self._aborted.is_set()
 
     def bind_fsm(self, fsm: Any) -> None:
         self._fsm = fsm
@@ -66,7 +72,11 @@ class ControlState:
 
     def emergency_stop(self) -> None:
         self._aborted.set()
+        for task in tuple(self._running_stages):
+            task.cancel("Task aborted by EMERGENCY_STOP")
         self._paused.set()  # 喚醒任何卡在 gate() 的協程
+        if self._on_abort is not None:
+            self._on_abort()
 
     def mark_spin_started(self) -> None:
         self._spin_started = True
@@ -95,6 +105,12 @@ class ControllableScheduler(WarmupScheduler):
     ) -> None:
         super().__init__(telemetry, **kwargs)
         self._control = control
+        control._on_abort = self._abort_active
+
+    def _abort_active(self) -> None:
+        for schedule in tuple(self._active_tasks.values()):
+            if not schedule.plan.finished.is_set():
+                self._abort_schedule(schedule, reason="emergency_stop")
 
     def register(
         self,
@@ -107,7 +123,13 @@ class ControllableScheduler(WarmupScheduler):
             await ctrl.gate(stage)
             if stage in (WarmupStage.SPIN_WAIT, WarmupStage.TRIGGER_PURCHASE):
                 ctrl.mark_spin_started()
-            await handler(ctx)
+            task = asyncio.current_task()
+            assert task is not None
+            ctrl._running_stages.add(task)
+            try:
+                await handler(ctx)
+            finally:
+                ctrl._running_stages.discard(task)
 
         super().register(stage, wrapped_handler)
 
@@ -124,12 +146,20 @@ class ControllableScheduler(WarmupScheduler):
     ) -> WarmupPlan:
         if fsm is not None:
             self._control.bind_fsm(fsm)
-        return await super().schedule(
-            task_or_spec,
-            sale_start_at=sale_start_at,
-            fsm=fsm,
-            server_url=server_url,
-        )
+        try:
+            return await super().schedule(
+                task_or_spec,
+                sale_start_at=sale_start_at,
+                fsm=fsm,
+                server_url=server_url,
+            )
+        except asyncio.CancelledError:
+            if not self._control.aborted:
+                raise
+            # Overdue stages execute inline in schedule(); still return their
+            # aborted plan so purchase persistence records CANCELLED, not FAILED.
+            task_id = getattr(task_or_spec, "task_id", task_or_spec)
+            return self.plan_of(task_id)
 
 
 class ControlPoller:

@@ -116,6 +116,7 @@ export type TaskLogPayload =
   | SnapshotLogPayload
   | AckLogPayload
   | HumanGateLogPayload
+  | { phase: "human_gate_resolved" }
   | CloudflareGraceLogPayload
   | OcrProgressLogPayload
   | VerificationDoneLogPayload
@@ -136,7 +137,9 @@ export function isHumanGate(p: TaskLogPayload): p is HumanGateLogPayload {
   return (p as HumanGateLogPayload).phase === "waiting_for_human"
 }
 
-export function isCloudflareGrace(p: TaskLogPayload): p is CloudflareGraceLogPayload {
+export function isCloudflareGrace(
+  p: TaskLogPayload
+): p is CloudflareGraceLogPayload {
   return (p as CloudflareGraceLogPayload).phase === "cloudflare_grace"
 }
 
@@ -144,7 +147,9 @@ export function isOcrProgress(p: TaskLogPayload): p is OcrProgressLogPayload {
   return (p as OcrProgressLogPayload).phase === "ocr_processing"
 }
 
-export function isVerificationDone(p: TaskLogPayload): p is VerificationDoneLogPayload {
+export function isVerificationDone(
+  p: TaskLogPayload
+): p is VerificationDoneLogPayload {
   return (p as VerificationDoneLogPayload).phase === "verification_completed"
 }
 

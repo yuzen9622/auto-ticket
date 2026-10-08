@@ -14,6 +14,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from sqlalchemy import select, update
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from broker.jobs import JobKind, JobRecord, JobState
 from broker.models import BrokerJobModel, ControlSignalModel
@@ -62,6 +63,7 @@ class SqliteTaskBroker:
         task_id: str | None = None,
         available_at: datetime | None = None,
         max_attempts: int = 1,
+        session: AsyncSession | None = None,
     ) -> str:
         now = self._clock()
         job_id = new_job_id()
@@ -82,9 +84,13 @@ class SqliteTaskBroker:
             created_at=now,
             updated_at=now,
         )
-        async with self._db.session() as session:
+        if session is not None:
             session.add(orm)
             await session.flush()
+        else:
+            async with self._db.session() as own_session:
+                own_session.add(orm)
+                await own_session.flush()
         return job_id
 
     async def claim(
@@ -218,6 +224,29 @@ class SqliteTaskBroker:
                 await self._mark_task_failed(session, orm.task_id, error)
             orm.error = error
             orm.updated_at = now
+            await session.flush()
+            return True
+
+    async def finish_cancelled(self, job_id: str, *, worker_id: str) -> bool:
+        """Worker 已排空執行工作後，原子收斂 job 與任務的取消狀態。"""
+        now = self._clock()
+        async with self._db.session() as session:
+            orm = await session.get(BrokerJobModel, job_id)
+            if (
+                orm is None
+                or orm.worker_id != worker_id
+                or orm.state not in _ACTIVE_STATES
+            ):
+                return False
+            orm.state = JobState.CANCELLED.value
+            orm.error = "task_cancelled"
+            orm.lease_expires_at = None
+            orm.updated_at = now
+            if orm.task_id:
+                task = await session.get(PurchaseTaskModel, orm.task_id)
+                if task is not None:
+                    task.status = "CANCELLED"
+                    task.finished_at = now
             await session.flush()
             return True
 

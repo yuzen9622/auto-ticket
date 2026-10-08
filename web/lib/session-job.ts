@@ -79,7 +79,7 @@ export function explainJobError(
     }
   }
   const platformName = platform
-    ? PLATFORM_NAMES[platform as Platform] ?? platform
+    ? (PLATFORM_NAMES[platform as Platform] ?? platform)
     : ""
 
   switch (raw) {
@@ -112,6 +112,11 @@ export function explainJobError(
         title: "人工登入逾時",
         hint: "Worker 等待期間未偵測到登入 session；請重新送出並在瀏覽器視窗內完成登入。",
       }
+    case "interrupted_for_purchase":
+      return {
+        title: "已讓出瀏覽器給購票任務",
+        hint: "購票任務已到執行時間，背景工作先行停止；請在購票結束後重新執行。",
+      }
     case "cancelled":
       return { title: "工作已被取消", hint: null }
     default:
@@ -138,8 +143,7 @@ export function summarizeJobResult(
   const rows: JobResultRow[] = []
 
   const isLoggedIn =
-    result.login_state === "LOGGED_IN" ||
-    result.page_kind === "LOGGED_IN"
+    result.login_state === "LOGGED_IN" || result.page_kind === "LOGGED_IN"
 
   rows.push({
     label: "登入狀態",

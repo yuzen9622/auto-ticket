@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, or_, select
 
 from .models import OutboxEventModel
 
@@ -163,18 +163,36 @@ class OutboxReader:
         return records
 
     async def replay(self, task_id: str, *, limit: int = 50) -> list[OutboxRecord]:
-        """取該 task 最近 `limit` 筆歷史，依 id 遞增回傳。"""
-        stmt = (
-            select(OutboxEventModel)
-            .where(OutboxEventModel.task_id == task_id)
+        """回放耐久事件，另保留最新控制狀態與時鐘；高頻 tick 不得擠掉操作提示。"""
+        base = select(OutboxEventModel).where(OutboxEventModel.task_id == task_id)
+        durable = (
+            base.where(OutboxEventModel.ephemeral.is_(False))
             .order_by(OutboxEventModel.id.desc())
             .limit(limit)
         )
+        control = (
+            base.where(
+                or_(
+                    OutboxEventModel.type == "STATE_CHANGED",
+                    OutboxEventModel.payload["phase"]
+                    .as_string()
+                    .in_(["waiting_for_human", "human_gate_resolved"]),
+                )
+            )
+            .order_by(OutboxEventModel.id.desc())
+            .limit(1)
+        )
+        clock = (
+            base.where(OutboxEventModel.type == "CLOCK_TICK")
+            .order_by(OutboxEventModel.id.desc())
+            .limit(1)
+        )
         async with self._db.session() as session:
-            rows = (await session.execute(stmt)).scalars().all()
-            records = [_to_record(orm) for orm in rows]
-        records.reverse()
-        return records
+            rows = []
+            for stmt in (durable, control, clock):
+                rows.extend((await session.execute(stmt)).scalars().all())
+            records = {row.id: _to_record(row) for row in rows}
+        return [records[key] for key in sorted(records)]
 
     async def prune_ephemeral(self, older_than_s: float = 60.0) -> int:
         cutoff = _utcnow() - timedelta(seconds=older_than_s)

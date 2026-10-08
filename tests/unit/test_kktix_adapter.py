@@ -713,16 +713,17 @@ async def test_seat_best_available_clicks_auto_assignment(
     assert marks(telemetry, "seat_action")[0].detail["action"] == "BEST_AVAILABLE"
 
 
-async def test_seat_specific_zone_downgrades_and_marks(
+async def test_seat_specific_zone_requires_human_handoff(
     telemetry: TimelineRecorder,
 ) -> None:
     page = FakePage.from_fixture("kktix_registration_new.html")
     preference_ = SeatPreference(strategy="specific_zone", preferred_zones=["A1"])
-    assert (
-        await make_adapter(telemetry).handle_seat_selection(page, preference_) is True
-    )
+    from adapters.ticketing.page_state import ManualSeatSelectionRequired
+    with pytest.raises(ManualSeatSelectionRequired):
+        await make_adapter(telemetry).handle_seat_selection(page, preference_)
     assert marks(telemetry, DOWNGRADE_MARK)
-    assert marks(telemetry, "seat_action")[0].detail["action"] == "PICK_SEAT"
+    assert "button[ng-click='challenge()']" in page.clicks
+    assert not marks(telemetry, "seat_action")
 
 
 async def test_seat_falls_back_to_next_step_button(telemetry: TimelineRecorder) -> None:
@@ -784,12 +785,11 @@ async def test_seat_reserved_page_honours_explicit_pick_seat(
 ) -> None:
     page = FakePage(RESERVED_SEATING_HTML)
     preference_ = SeatPreference(strategy="same_zone")
-    assert (
-        await make_adapter(telemetry).handle_seat_selection(page, preference_) is True
-    )
+    from adapters.ticketing.page_state import ManualSeatSelectionRequired
+    with pytest.raises(ManualSeatSelectionRequired):
+        await make_adapter(telemetry).handle_seat_selection(page, preference_)
     assert page.clicks == ["button[ng-click='challenge()']"]
-    detail = marks(telemetry, "seat_action")[0].detail
-    assert (detail["action"], detail["requested"]) == ("PICK_SEAT", "PICK_SEAT")
+    assert not marks(telemetry, "seat_action")
 
 
 async def test_seat_returns_false_when_no_button_exists(
@@ -2224,3 +2224,22 @@ async def test_kktix_navigate_to_login_goes_to_sign_in_url() -> None:
     ok = await make_adapter(TimelineRecorder()).navigate_to_login(page)
     assert ok is True
     assert page.goto_urls[-1] == KKTIX_LOGIN_URL
+
+
+async def test_rejected_answer_is_solved_again(telemetry):
+    from unittest.mock import AsyncMock
+    provider = StubVerification(VerificationResult(True, "NEW", "stub"))
+    adapter = make_adapter(telemetry, verification=provider)
+    adapter.detect_verification_error = AsyncMock(return_value=True)
+    page = FakePage("<div class='custom-captcha-inner'><input name='captcha_answer' value='WRONG'></div>")
+    assert await adapter.handle_verification(page)
+    assert len(provider.calls) == 1
+    assert dict(page.fills)["input[name='captcha_answer']"] == "NEW"
+
+
+async def test_self_seat_only_page_requires_handoff(telemetry):
+    from adapters.ticketing.page_state import ManualSeatSelectionRequired
+    page = FakePage("<div id='registrationsNewApp'><div class='register-new-next-button-area'><button ng-click='challenge()'>自行選位</button></div></div>")
+    with pytest.raises(ManualSeatSelectionRequired):
+        await make_adapter(telemetry).handle_seat_selection(page, SeatPreference(strategy="same_zone"))
+    assert not marks(telemetry, "seat_action")

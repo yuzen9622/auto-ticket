@@ -10,7 +10,7 @@ import {
   purchasePhaseIndex,
   purchaseStateTone,
 } from "@/lib/fsm"
-import { usePurchaseStateLabel } from "@/lib/i18n/labels"
+import { usePurchaseStateLabel, useTaskStatusLabel } from "@/lib/i18n/labels"
 import { cn } from "@/lib/utils"
 
 /**
@@ -22,15 +22,20 @@ import { cn } from "@/lib/utils"
 export function StateRail({
   currentState,
   visitedStates,
+  cancelled = false,
 }: {
   currentState: string | null
   visitedStates: string[]
+  cancelled?: boolean
 }) {
   const t = useTranslations("taskConsole")
   const phaseLabel = useTranslations("taskConsole.phase")
   const purchaseStateLabel = usePurchaseStateLabel()
+  const taskStatusLabel = useTaskStatusLabel()
 
-  const currentIndex = purchasePhaseIndex(currentState)
+  const currentIndex = cancelled
+    ? PURCHASE_PHASES.length - 1
+    : purchasePhaseIndex(currentState)
   const visitedIndex = visitedStates.reduce(
     (max, state) => Math.max(max, purchasePhaseIndex(state)),
     currentIndex
@@ -46,11 +51,15 @@ export function StateRail({
           const reached = i <= visitedIndex
           const tone =
             finished && i === lastPhase
-              ? purchaseStateTone(currentState as string)
+              ? cancelled
+                ? "muted"
+                : purchaseStateTone(currentState as string)
               : "accent"
           const label =
             finished && i === lastPhase
-              ? purchaseStateLabel(currentState)
+              ? cancelled
+                ? taskStatusLabel("CANCELLED")
+                : purchaseStateLabel(currentState)
               : phaseLabel(phase.key)
 
           return (

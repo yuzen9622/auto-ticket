@@ -397,3 +397,35 @@ async def test_create_task_passes_through_the_automation_fields(app_instance) ->
         assert spec["ocr_max_retries"] == 8
         assert spec["cloudflare_max_retries"] == 1
         assert spec["debug_screenshots_and_logs"] is True
+
+
+async def test_enqueue_failure_rolls_back_task(app_instance, monkeypatch):
+    app, broker = app_instance
+
+    async def fail_enqueue(**kwargs):
+        raise RuntimeError("injected enqueue failure")
+
+    monkeypatch.setattr(broker, "enqueue", fail_enqueue)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app, raise_app_exceptions=False),
+        base_url="http://test",
+    ) as client:
+        assert (await client.post("/api/v1/tasks", json=VALID_TASK_PAYLOAD)).status_code == 500
+        assert (await client.get("/api/v1/tasks")).json()["total"] == 0
+
+
+async def test_failure_after_job_insert_rolls_back_both_rows(app_instance, monkeypatch):
+    app, broker = app_instance
+    original_enqueue = broker.enqueue
+
+    async def fail_after_insert(**kwargs):
+        await original_enqueue(**kwargs)
+        raise RuntimeError("injected after job flush")
+
+    monkeypatch.setattr(broker, "enqueue", fail_after_insert)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app, raise_app_exceptions=False), base_url="http://test",
+    ) as client:
+        assert (await client.post("/api/v1/tasks", json=VALID_TASK_PAYLOAD)).status_code == 500
+        assert (await client.get("/api/v1/tasks")).json()["total"] == 0
+        assert await broker.list_jobs() == []

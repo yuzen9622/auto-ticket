@@ -97,3 +97,36 @@ async def test_worker_loop_handles_exception_and_marks_failed(worker_env) -> Non
     assert job is not None
     assert job.state == JobState.FAILED
     assert "simulated worker crash" in (job.error or "")
+
+
+@pytest.mark.parametrize("background_kind", [JobKind.EVENT_HYDRATE, JobKind.MANUAL_LOGIN])
+async def test_due_purchase_preempts_background(worker_env, background_kind):
+    import asyncio
+    db, broker, outbox, settings = worker_env
+    background_started = asyncio.Event()
+    purchase_started = asyncio.Event()
+    background_stopped = asyncio.Event()
+
+    async def background(job, **kwargs):
+        background_started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            background_stopped.set()
+
+    async def purchase(job, **kwargs):
+        assert background_stopped.is_set()
+        purchase_started.set()
+        await broker.complete(job.id, worker_id="priority", result={})
+
+    loop = WorkerLoop(db, broker, outbox, worker_id="priority", settings=settings,
+                      handlers={background_kind: background, JobKind.PURCHASE: purchase})
+    await broker.enqueue(kind=background_kind, profile="live", payload={})
+    runner = asyncio.create_task(loop.run_forever())
+    try:
+        await asyncio.wait_for(background_started.wait(), 1)
+        await broker.enqueue(kind=JobKind.PURCHASE, profile="live", payload={})
+        await asyncio.wait_for(purchase_started.wait(), 1)
+    finally:
+        loop.stop()
+        await runner

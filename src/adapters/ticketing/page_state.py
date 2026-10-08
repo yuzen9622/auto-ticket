@@ -105,3 +105,7 @@ class LoginState(str, Enum):
     LOGGED_IN = "LOGGED_IN"
     LOGGED_OUT = "LOGGED_OUT"
     UNKNOWN = "UNKNOWN"
+
+
+class ManualSeatSelectionRequired(Exception):
+    """自行選位必須由真人完成；點入口不代表座位已選好。"""

@@ -23,9 +23,7 @@ import {
 } from "@/lib/ws/types"
 
 export type AutomationStatus =
-  | CloudflareGraceLogPayload
-  | OcrProgressLogPayload
-  | VerificationDoneLogPayload
+  CloudflareGraceLogPayload | OcrProgressLogPayload | VerificationDoneLogPayload
 
 /** 指數退避：500ms → 1s → 2s → 4s → 8s（上限）。 */
 const BACKOFF_MS = [500, 1000, 2000, 4000, 8000]
@@ -55,10 +53,12 @@ export function useTaskSocket(
   const [clockReceivedAt, setClockReceivedAt] = React.useState(0)
   const [currentState, setCurrentState] = React.useState<string | null>(null)
   const [visitedStates, setVisitedStates] = React.useState<string[]>([])
-  const [humanGate, setHumanGate] =
-    React.useState<HumanGateLogPayload | null>(null)
-  const [automation, setAutomation] =
-    React.useState<AutomationStatus | null>(null)
+  const [humanGate, setHumanGate] = React.useState<HumanGateLogPayload | null>(
+    null
+  )
+  const [automation, setAutomation] = React.useState<AutomationStatus | null>(
+    null
+  )
 
   const socketRef = React.useRef<WebSocket | null>(null)
   const attemptRef = React.useRef(0)
@@ -88,6 +88,15 @@ export function useTaskSocket(
       )
     }
 
+    if (
+      msg.type === "TASK_LOG" &&
+      "phase" in msg.payload &&
+      msg.payload.phase === "human_gate_resolved"
+    ) {
+      setHumanGate(null)
+      setAutomation(null)
+    }
+
     if (msg.type === "TASK_LOG" && isHumanGate(msg.payload)) {
       setHumanGate(msg.payload)
       setAutomation(null)
@@ -104,6 +113,7 @@ export function useTaskSocket(
 
     // 重連後的初始快照代表流程重新對齊，先前的自動化提示不再成立。
     if (msg.type === "TASK_LOG" && isSnapshot(msg.payload)) {
+      setHumanGate(null)
       setAutomation(null)
     }
   }, [])

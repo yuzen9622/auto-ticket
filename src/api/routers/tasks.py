@@ -133,14 +133,6 @@ async def create_task(
         if ev is not None:
             event_id = ev.id
 
-    async with db.session() as session:
-        task_repo = TaskRepository(session)
-        await task_repo.create(
-            spec,
-            event_id=event_id,
-            scheduled_at=spec.sale_start_at,
-        )
-
     # 預約搶票要留預熱的時間；立即執行沒有開賣可等，晚一秒領取就是晚一秒進登記頁。
     if start_timing is StartTiming.IMMEDIATE:
         available_at = now
@@ -148,14 +140,22 @@ async def create_task(
         warmup_lead = timedelta(minutes=11)
         available_at = max(spec.sale_start_at - warmup_lead, now)
 
-    await broker.enqueue(
-        kind=JobKind.PURCHASE,
-        profile=req.profile,
-        task_id=task_id,
-        payload={"spec": spec.to_persistable_dict()},
-        available_at=available_at,
-        max_attempts=1,
-    )
+    async with db.session() as session:
+        task_repo = TaskRepository(session)
+        await task_repo.create(
+            spec,
+            event_id=event_id,
+            scheduled_at=spec.sale_start_at,
+        )
+        await broker.enqueue(
+            kind=JobKind.PURCHASE,
+            profile=req.profile,
+            task_id=task_id,
+            payload={"spec": spec.to_persistable_dict()},
+            available_at=available_at,
+            max_attempts=1,
+            session=session,
+        )
 
     created = await queries.get_task(db, task_id)
     if created is None:

@@ -23,7 +23,10 @@ function tick(patch: Partial<ClockTickPayload>): ClockTickPayload {
   }
 }
 
-function renderPanel(clock: ClockTickPayload | null, resultLabel = "任務已結束") {
+function renderPanel(
+  clock: ClockTickPayload | null,
+  resultLabel = "任務已結束"
+) {
   return renderWithProviders(
     <ClockPanel
       clock={clock}
@@ -42,7 +45,11 @@ describe("倒數面板", () => {
 
   it("開賣後顯示「搶票倒數」，數的是剩餘搶票時間", () => {
     renderPanel(
-      tick({ phase: "ticketing", time_to_sale_ms: 0, time_to_timeout_ms: 90_000 })
+      tick({
+        phase: "ticketing",
+        time_to_sale_ms: 0,
+        time_to_timeout_ms: 90_000,
+      })
     )
     expect(screen.getByText("搶票倒數")).toBeInTheDocument()
     expect(screen.queryByText("開賣倒數")).toBeNull()
@@ -50,7 +57,11 @@ describe("倒數面板", () => {
 
   it("終態停止倒數並改說自然語言結果", () => {
     renderPanel(
-      tick({ phase: "finished", time_to_sale_ms: null, time_to_timeout_ms: null }),
+      tick({
+        phase: "finished",
+        time_to_sale_ms: null,
+        time_to_timeout_ms: null,
+      }),
       "搶票完成"
     )
     expect(screen.getByText("倒數已結束")).toBeInTheDocument()
@@ -86,9 +97,7 @@ describe("倒數面板", () => {
 
   it("還沒收到時鐘訊息時給中文說明而不是空白", () => {
     renderPanel(null)
-    expect(
-      screen.getByText("任務開始執行後才會顯示倒數。")
-    ).toBeInTheDocument()
+    expect(screen.getByText("任務開始執行後才會顯示倒數。")).toBeInTheDocument()
   })
 
   it("重連後由伺服器的階段決定顯示，不靠前端猜", () => {
@@ -98,7 +107,11 @@ describe("倒數面板", () => {
     unmount()
 
     renderPanel(
-      tick({ phase: "ticketing", time_to_sale_ms: 0, time_to_timeout_ms: 45_000 })
+      tick({
+        phase: "ticketing",
+        time_to_sale_ms: 0,
+        time_to_timeout_ms: 45_000,
+      })
     )
     expect(screen.getByText("搶票倒數")).toBeInTheDocument()
   })
@@ -181,7 +194,9 @@ describe("自動化執行狀態橫幅與互斥", () => {
     )
     expect(screen.queryByText("正在自動完成安全驗證")).toBeNull()
     expect(
-      screen.getByText("自動處理失敗，請在 Chrome 完成驗證（本程式不會代為繞過）")
+      screen.getByText(
+        "自動處理失敗，請在 Chrome 完成驗證（本程式不會代為繞過）"
+      )
     ).toBeInTheDocument()
   })
 
@@ -204,7 +219,10 @@ describe("購票進度", () => {
 
   it("只列出五個階段，不把 14 個內部狀態攤開", () => {
     renderWithProviders(
-      <StateRail currentState="TICKET_SELECTION" visitedStates={["PREPARING"]} />
+      <StateRail
+        currentState="TICKET_SELECTION"
+        visitedStates={["PREPARING"]}
+      />
     )
     expect(screen.getAllByRole("listitem")).toHaveLength(5)
     for (const phase of [...PHASES, "結束"]) {
@@ -235,4 +253,16 @@ describe("購票進度", () => {
     expect(screen.getByText("已售罄")).toBeInTheDocument()
     expect(screen.queryByText("結束")).toBeNull()
   })
+})
+
+it("使用者取消後以取消結果呈現，不顯示底層中止用的失敗狀態", () => {
+  renderWithProviders(
+    <StateRail
+      currentState="FAILED"
+      visitedStates={["VERIFICATION_REQUIRED", "FAILED"]}
+      cancelled
+    />
+  )
+  expect(screen.getByText("已取消")).toBeInTheDocument()
+  expect(screen.queryByText("失敗")).toBeNull()
 })

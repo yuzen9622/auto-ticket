@@ -21,6 +21,7 @@ from adapters.payment.base import PaymentOutcome, PaymentProvider, PaymentResult
 from adapters.ticketing.page_state import (
     CloudflareChallengeError,
     LoginState,
+    ManualSeatSelectionRequired,
     PageKind,
     PageState,
 )
@@ -169,7 +170,7 @@ class PurchaseOrchestrator:
         auto_submit_verification: bool = True,
         challenge_gate: Callable[[str, float, float, int], Awaitable[None]] | None = None,
         gate_must_finish_before_sale_s: float = 60.0,
-        race_loop_timeout_s: float = 120.0,
+        race_loop_timeout_s: float | None = None,
         sale_advance_retry_s: float = 1.0,
         queue_poll_s: float = 0.5,
         micro_wait_s: float = 0.05,
@@ -220,7 +221,9 @@ class PurchaseOrchestrator:
         self.gate_must_finish_before_sale_s = gate_must_finish_before_sale_s
         # 反應式迴圈的全局預算與各種微等待。預算是唯一的止損點：
         # 沒它的話，一個永遠判不出來的頁面會讓迴圈轉到天荒地老。
-        self.race_loop_timeout_s = race_loop_timeout_s
+        self.race_loop_timeout_s = (
+            float(spec.timeout_seconds) if race_loop_timeout_s is None else race_loop_timeout_s
+        )
         # 開賣瞬間 API／按鈕可能晚幾百毫秒才開（時鐘偏差、站台快取）；重試要節流，避免對方站台被高頻重整，也不增加被人機驗證盯上的機率。
         self.sale_advance_retry_s = sale_advance_retry_s
         self.queue_poll_s = queue_poll_s
@@ -828,9 +831,13 @@ class PurchaseOrchestrator:
         page = self._require_page()
         self._send(EVENT_PAGE_LOADED)
         # 開賣瞬間：若開賣前是在活動主頁待命，開賣瞬間自動推進進入登記頁
-        if self._rt.is_pre_sale_standby:
-            await self._advance_from_standby(page)
-        await self._run_race_loop(page)
+        try:
+            async with asyncio.timeout(self.race_loop_timeout_s):
+                if self._rt.is_pre_sale_standby:
+                    await self._advance_from_standby(page)
+                await self._run_race_loop(page)
+        except TimeoutError as exc:
+            raise PurchaseStepError("race_loop", "state loop budget exhausted") from exc
 
     # -------------------------------------------------------- 反應式驅動迴圈
 
@@ -993,15 +1000,46 @@ class PurchaseOrchestrator:
             # 按鈕已經按下去了，頁面只是還沒跳轉；再按一次會送出第二次配位請求。
             await asyncio.sleep(self.micro_wait_s)
             return
-        ok = bool(
-            await self.adapter.handle_seat_selection(
-                page, self.spec.ticket_preference.seat_preference
+        try:
+            ok = bool(
+                await self.adapter.handle_seat_selection(
+                    page, self.spec.ticket_preference.seat_preference
+                )
             )
-        )
+        except ManualSeatSelectionRequired:
+            self._rt.seat_action_taken = True
+            await self._await_manual_seats(page)
+            return
         self._rt.seat_action_taken = True
         if not ok:
             self._send(seat_event_for(False))
             raise PurchaseStepError("handle_seat_selection", "seat action failed")
+
+    async def _await_manual_seats(self, page: Any) -> None:
+        if not self.attended:
+            raise PurchaseStepError(
+                "handle_seat_selection",
+                "manual seat selection requires a visible browser",
+            )
+        if self.session_gate is not None:
+            await self.session_gate("SEAT_SELECTION", 1)
+        deadline = self._loop_time() + self.session_gate_timeout_s
+        while self._loop_time() < deadline:
+            await asyncio.sleep(self.session_gate_poll_s)
+            state = await self.adapter.detect_page_state(page)
+            if state in (
+                PageState.FORM_FILLING,
+                PageState.PAYMENT_REQUIRED,
+                PageState.COMPLETED,
+                PageState.FAILURE_MODAL,
+                PageState.VERIFICATION_CHALLENGE,
+            ):
+                if self.session_gate is not None:
+                    await self.session_gate("RESOLVED", 0)
+                return
+        raise PurchaseStepError(
+            "handle_seat_selection", "manual seat selection timed out"
+        )
 
     async def _handle_form_filling(self, page: Any) -> None:
         fsm = self.fsm
@@ -1069,7 +1107,10 @@ class PurchaseOrchestrator:
         fsm.set_requires_verification(True)
         if not self._sync_page_state(PageState.VERIFICATION_CHALLENGE):
             raise PurchaseStepError("handle_verification", "FSM in terminal state")
-        await self._resolve_verification(page)
+        # 獨立驗證頁沒有跨平台可靠的提交契約；填答後交由真人送出。
+        # 答案尚未被網站接受，不得提前把 FSM 推成 PAYMENT_REQUIRED。
+        solved = bool(await self.adapter.handle_verification(page))
+        await self._await_manual_submit(page, standalone=True, solved=solved)
 
     async def _handle_qualification_code(self, page: Any) -> None:
         if self._rt.qualification_handled:
@@ -1146,16 +1187,23 @@ class PurchaseOrchestrator:
             if fsm.current_state_id != "VERIFICATION_REQUIRED":
                 raise PurchaseStepError("handle_verification", "verification exhausted")
 
-    async def _await_manual_submit(self, page: Any) -> None:
+    async def _await_manual_submit(
+        self, page: Any, *, standalone: bool = False, solved: bool = True
+    ) -> None:
+        if not self.attended:
+            raise PurchaseStepError("verification", "manual verification requires a visible browser")
         if self.session_gate is not None:
-            await self.session_gate("VERIFICATION", 1)
+            await self.session_gate("VERIFICATION" if solved else "VERIFICATION_INPUT", 1)
         deadline = self._loop_time() + self.session_gate_timeout_s
         while self._loop_time() < deadline:
             await asyncio.sleep(self.session_gate_poll_s)
             requires = bool(await self.adapter.detect_verification(page))
             if not requires:
-                self._rt.order_submitted = True
-                self._rt.form_submitted = True
+                if self.session_gate is not None:
+                    await self.session_gate("RESOLVED", 0)
+                if not standalone:
+                    self._rt.order_submitted = True
+                    self._rt.form_submitted = True
                 return
         raise PurchaseStepError("submit_order", "manual submit timed out")
 

@@ -25,9 +25,9 @@ class SeatDecision:
 
 
 def decide_seat_action(preference: SeatPreference) -> SeatDecision:
-    """把座位偏好對應到兩個可自動化的分支。
+    """把座位偏好對應到電腦配位或人工選位。
 
-    `specific_zone` 的座位圖點選互動尚未實作，一律降級為 `PICK_SEAT` 並標記
+    `specific_zone` 的座位圖點選互動尚未實作，轉人工 `PICK_SEAT` 並標記
     `downgraded=True`，由呼叫端記一筆 `seat_strategy_downgraded` mark——
     誠實回報未支援，不假裝支援。
     """
@@ -37,6 +37,6 @@ def decide_seat_action(preference: SeatPreference) -> SeatDecision:
         return SeatDecision(
             SeatAction.PICK_SEAT,
             True,
-            f"specific_zone downgraded to pick_seat (zones={list(preference.preferred_zones)})",
+            f"specific_zone requires manual pick_seat (zones={list(preference.preferred_zones)})",
         )
     return SeatDecision(SeatAction.PICK_SEAT, False, preference.strategy)

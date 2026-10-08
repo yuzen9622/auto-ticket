@@ -20,6 +20,7 @@ import { useApiErrorMessage } from "@/lib/i18n/errors"
 import {
   useExecutionModeLabel,
   usePurchaseStateLabel,
+  useTaskStatusLabel,
 } from "@/lib/i18n/labels"
 import { useTaskSocket } from "@/lib/ws/use-task-socket"
 
@@ -50,6 +51,7 @@ export function LiveConsole({ taskId }: { taskId: string }) {
   const common = useTranslations("common")
   const apiErrorMessage = useApiErrorMessage()
   const purchaseStateLabel = usePurchaseStateLabel()
+  const taskStatusLabel = useTaskStatusLabel()
   const executionModeLabel = useExecutionModeLabel()
   const resultLabel = useResultLabel()
 
@@ -87,6 +89,7 @@ export function LiveConsole({ taskId }: { taskId: string }) {
       <div className="grid min-w-0 grid-cols-1 gap-3 lg:grid-cols-[220px_minmax(0,1fr)]">
         <StateRail
           currentState={currentState}
+          cancelled={taskStatus === "CANCELLED"}
           visitedStates={socket.visitedStates}
         />
 
@@ -101,7 +104,11 @@ export function LiveConsole({ taskId }: { taskId: string }) {
             <KvRow
               label={t("currentState")}
               value={
-                currentState ? purchaseStateLabel(currentState) : common("none")
+                taskStatus === "CANCELLED"
+                  ? taskStatusLabel(taskStatus)
+                  : currentState
+                    ? purchaseStateLabel(currentState)
+                    : common("none")
               }
             />
             <KvRow
@@ -130,7 +137,9 @@ export function LiveConsole({ taskId }: { taskId: string }) {
         </div>
       </div>
 
-      <ControlBar connected={socket.status === "open"} onSend={socket.send} />
+      {!isTaskFinished(data.task.status) && (
+        <ControlBar connected={socket.status === "open"} onSend={socket.send} />
+      )}
     </div>
   )
 }

@@ -113,3 +113,31 @@ async def test_outbox_reader_replay_and_prune_ephemeral(outbox_db: Database) -> 
         assert replayed_after[0].type == "STATE_CHANGED"
 
         await writer.aclose()
+
+
+async def test_replay_retains_human_gate_after_clock_flood(outbox_db):
+    writer = OutboxWriter(outbox_db)
+    writer.publish(task_id="gate", type="TASK_LOG", payload={"phase": "waiting_for_human"})
+    for i in range(80):
+        writer.publish(task_id="gate", type="CLOCK_SYNC", payload={"i": i}, ephemeral=True)
+    await writer.flush()
+    rows = await OutboxReader(outbox_db).replay("gate", limit=50)
+    assert any(r.payload.get("phase") == "waiting_for_human" for r in rows)
+
+
+async def test_replay_pins_gate_even_after_durable_logs_and_keeps_resolution(outbox_db):
+    writer = OutboxWriter(outbox_db)
+    writer.publish(task_id="gate", type="TASK_LOG", payload={"phase": "waiting_for_human"})
+    for i in range(80):
+        writer.publish(task_id="gate", type="TASK_LOG", payload={"name": "debug", "i": i})
+    await writer.flush()
+    reader = OutboxReader(outbox_db)
+    rows = await reader.replay("gate", limit=50)
+    assert any(r.payload.get("phase") == "waiting_for_human" for r in rows)
+    writer.publish(task_id="gate", type="TASK_LOG", payload={"phase": "human_gate_resolved"})
+    for i in range(80):
+        writer.publish(task_id="gate", type="TASK_LOG", payload={"name": "debug", "i": i})
+    await writer.flush()
+    rows = await reader.replay("gate", limit=50)
+    assert rows[0].payload.get("phase") == "human_gate_resolved"
+    assert not any(r.payload.get("phase") == "waiting_for_human" for r in rows)

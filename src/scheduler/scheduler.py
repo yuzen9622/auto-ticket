@@ -741,6 +741,7 @@ class WarmupScheduler:
                 schedule.plan.outcomes.append(
                     StageOutcome(stage, "CANCELLED", drift_us, executed_at=now_wall)
                 )
+                self._abort_schedule(schedule, reason="task_cancelled")
                 raise
             except Exception as exc:
                 self._telemetry.record_error(f"handler_error:{stage.value}", exc)
