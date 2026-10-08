@@ -37,6 +37,7 @@ class ClockSample:
     rtt_ms: float
     stratum: int | None = None
     polled_at: datetime | None = None
+    uncertainty_ms: float = 0.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -213,6 +214,7 @@ class ServerHeaderClockSync:
 
             return ClockSample(
                 source=ClockSource.SERVER_HEADER,
+                uncertainty_ms=1000.0 + rtt_ms,
                 offset_ms=offset_ms,
                 rtt_ms=rtt_ms,
                 stratum=None,
@@ -280,14 +282,12 @@ class ClockSynchronizer:
         selected_offset = 0.0
 
         ntp_sample = next((s for s in samples if s.source == ClockSource.NTP), None)
-        server_sample = next((s for s in samples if s.source == ClockSource.SERVER_HEADER), None)
 
         if ntp_sample is not None:
             primary_source = ClockSource.NTP
             selected_offset = ntp_sample.offset_ms
-        elif server_sample is not None:
-            primary_source = ClockSource.SERVER_HEADER
-            selected_offset = server_sample.offset_ms
+        # HTTP Date is quantized to whole seconds (and may be cached). Keep
+        # it as diagnostic evidence, never use it to move a purchase deadline.
 
         return TimeReference(
             offset_ms=selected_offset,

@@ -253,7 +253,7 @@ async def test_synchronizer_tolerates_server_failure_and_keeps_ntp() -> None:
     assert ref.offset_ms == pytest.approx(-500.0)
 
 
-async def test_synchronizer_falls_back_to_server_when_ntp_fails() -> None:
+async def test_synchronizer_keeps_local_clock_when_only_quantized_header_available() -> None:
     perf = FakePerf([100.0, 100.2])
     sync = ClockSynchronizer(
         ntp_sync=NtpClockSync(ntp_client=FakeNtpClient(error=OSError("down"))),
@@ -266,7 +266,9 @@ async def test_synchronizer_falls_back_to_server_when_ntp_fails() -> None:
     )
     ref = await sync.refresh()
     assert [s.source for s in ref.samples] == [ClockSource.SERVER_HEADER]
-    assert ref.primary_source is ClockSource.SERVER_HEADER
+    assert ref.primary_source is None
+    assert ref.offset_ms == 0
+    assert ref.samples[0].uncertainty_ms >= 1000
 
 
 async def test_synchronizer_without_sources_returns_empty_reference() -> None:
@@ -344,3 +346,20 @@ async def test_ntp_success_resets_failure_counter() -> None:
     sample = await ntp.sample("ntp.example.com")
     assert sample.source is ClockSource.NTP
     assert ntp.disabled is False
+
+
+async def test_http_date_quantization_does_not_delay_deadline_900ms():
+    wall = HEADER_DATE_UTC + timedelta(milliseconds=900)
+    sync = ClockSynchronizer(
+        ntp_sync=NtpClockSync(ntp_client=FakeNtpClient(error=OSError("offline"))),
+        server_sync=ServerHeaderClockSync(
+            http_client=FakeHttpClient(head_response()),
+            perf_counter=FakePerf([100.0, 100.0]), wall_clock=lambda: wall,
+        ),
+        server_url=PROBE_URL,
+    )
+    ref = await sync.refresh()
+    assert ref.samples[0].offset_ms == pytest.approx(-900)
+    assert ref.primary_source is None
+    target = wall + timedelta(seconds=10)
+    assert ref.to_local(target) == target

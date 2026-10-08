@@ -664,11 +664,10 @@ class WarmupScheduler:
                             stage=stage.value,
                             rtt_ms=s.rtt_ms,
                         )
-                    self.update_clock_offset(
-                        ref.offset_ms,
-                        ref.primary_source or ClockSource.MANUAL,
-                        samples=ref.samples,
-                    )
+                    if ref.primary_source is not None:
+                        self.update_clock_offset(
+                            ref.offset_ms, ref.primary_source, samples=ref.samples,
+                        )
                 else:
                     self._telemetry.record_clock_sync(
                         source="NONE",
