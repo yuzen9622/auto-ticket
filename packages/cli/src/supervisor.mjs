@@ -219,6 +219,13 @@ export async function supervise({
   // 旁路（AUTO_TICKET_RUNTIME_DIR）給的目錄不在預設版本佈局下，所以由呼叫端傳入。
   const runtimeDir = runtimeDirOverride ?? paths.runtimeDir(version);
   const started = [];
+  let startupComplete = false;
+  let startupError = null;
+  let rejectStartup;
+  const startupFailed = new Promise((_, reject) => { rejectStartup = reject; });
+  // Observe immediately, including gaps between awaiting individual services.
+  startupFailed.catch(() => {});
+
 
   async function startOne({ name, cmd, args, timeoutMs, makeCheck, extraEnv }) {
     const sink = await openLogSink({
@@ -234,28 +241,35 @@ export async function supervise({
       detached: platform !== "win32",
     });
     const lastLines = attachLogging(child, sink);
-    // spawn 失敗（例如執行檔不存在）走的是 'error' 事件，不是 'exit'。沒有人接的話
-    // 它會變成 unhandled error 直接炸掉 supervisor，繞過下面的關閉流程——已經起來的
-    // api/worker 就變成孤兒，繼續佔著 8000，下次啟動被自己擋在門外。
-    const spawnFailed = new Promise((_, reject) => {
-      child.once("error", (err) =>
-        reject(cliError("START_TIMEOUT", `${name} 啟動失敗：${err.message}`)),
-      );
-    });
     const startedAt = now();
-    const checkImpl = makeCheck({ lastLines, startedAt });
+    const entry = { name, child, spec: { cmd, args, timeoutMs, makeCheck, extraEnv }, restarts: 0, startedAt };
+    started.push(entry);
+    const failStartup = (detail) => {
+      if (startupComplete) return;
+      startupError ??= cliError("START_TIMEOUT", `${name} 啟動期間退出：${detail}`);
+      rejectStartup(startupError);
+    };
+    child.once("error", (err) => failStartup(err.message));
+    child.once("exit", (code, signal) => failStartup(signal ?? code));
+    const ready = makeCheck({ lastLines, startedAt });
+    const checkImpl = async () => {
+      if (startupError) throw startupError;
+      if (child.exitCode !== null || child.signalCode != null) {
+        failStartup(child.signalCode ?? child.exitCode);
+        throw startupError;
+      }
+      return await ready();
+    };
     try {
       await Promise.race([
         waitReady({ checkImpl, timeoutMs, sleepImpl, now }),
-        spawnFailed,
+        startupFailed,
       ]);
     } catch (err) {
       errorLog(lastLines.slice(-40).join("\n"));
-      await shutdown({ children: [...started, { name, child }].reverse(), platform, killImpl, spawnImpl, sleepImpl, now });
       throw err;
     }
-    const entry = { name, child, spec: { cmd, args, timeoutMs, makeCheck, extraEnv }, restarts: 0, startedAt };
-    started.push(entry);
+
     return entry;
   }
 
@@ -284,49 +298,57 @@ export async function supervise({
     }
   };
 
-  await startOne({
-    name: "api",
-    cmd: pythonPath,
-    args: [
-      "-s",
-      path.join(runtimeDir, "app", "scripts", "serve_api.py"),
-      "--host",
-      "127.0.0.1",
-      "--port",
-      String(ports.api),
-    ],
-    timeoutMs: 90_000,
-    makeCheck: apiHealthy(`http://127.0.0.1:${ports.api}/healthz`),
-  });
+  try {
+    await startOne({
+      name: "api",
+      cmd: pythonPath,
+      args: [
+        "-s",
+        path.join(runtimeDir, "app", "scripts", "serve_api.py"),
+        "--host",
+        "127.0.0.1",
+        "--port",
+        String(ports.api),
+      ],
+      timeoutMs: 90_000,
+      makeCheck: apiHealthy(`http://127.0.0.1:${ports.api}/healthz`),
+    });
 
-  await startOne({
-    name: "worker",
-    cmd: pythonPath,
-    args: ["-s", "-m", "worker"],
-    timeoutMs: 90_000,
-    // 有 banner 就用 banner；沒有 banner 的話，存活到 grace 期滿也算就緒（見計畫 §8）。
-    makeCheck: ({ lastLines, startedAt }) => () =>
-      lastLines.some((line) => line.includes(WORKER_READY_BANNER)) ||
-      now() - startedAt >= workerGraceMs,
-  });
+    await startOne({
+      name: "worker",
+      cmd: pythonPath,
+      args: ["-s", "-m", "worker"],
+      timeoutMs: 90_000,
+      // 有 banner 就用 banner；沒有 banner 的話，存活到 grace 期滿也算就緒（見計畫 §8）。
+      makeCheck: ({ lastLines, startedAt }) => () =>
+        lastLines.some((line) => line.includes(WORKER_READY_BANNER)) ||
+        now() - startedAt >= workerGraceMs,
+    });
 
-  await startOne({
-    name: "web",
-    cmd: nodePath,
-    args: [path.join(runtimeDir, "web", "server.js")],
-    // Next standalone 的 server.js 預設綁 0.0.0.0，那會把儀表板開到整個區網。
-    // 這是 local-first 的硬要求，不是預設值的偏好問題。
-    extraEnv: { PORT: String(ports.web), HOSTNAME: "127.0.0.1" },
-    timeoutMs: 60_000,
-    makeCheck: httpOk(`http://127.0.0.1:${ports.web}/`),
-  });
+    await startOne({
+      name: "web",
+      cmd: nodePath,
+      args: [path.join(runtimeDir, "web", "server.js")],
+      // Next standalone 的 server.js 預設綁 0.0.0.0，那會把儀表板開到整個區網。
+      // 這是 local-first 的硬要求，不是預設值的偏好問題。
+      extraEnv: { PORT: String(ports.web), HOSTNAME: "127.0.0.1" },
+      timeoutMs: 60_000,
+      makeCheck: httpOk(`http://127.0.0.1:${ports.web}/`),
+    });
 
-  await fsImpl.mkdir(paths.state, { recursive: true });
-  await fsImpl.writeFile(
-    paths.supervisorState,
-    JSON.stringify({ pid: process.pid, version, startedAt: now() }, null, 2),
-    "utf8",
-  );
+    await fsImpl.mkdir(paths.state, { recursive: true });
+    await fsImpl.writeFile(
+      paths.supervisorState,
+      JSON.stringify({ pid: process.pid, version, startedAt: now() }, null, 2),
+      "utf8",
+    );
+    if (startupError) throw startupError;
+    startupComplete = true;
+  } catch (err) {
+    await shutdown({ children: [...started].reverse(), platform, killImpl, spawnImpl, sleepImpl, now });
+    await fsImpl.rm(paths.supervisorState, { force: true }).catch(() => {});
+    throw err;
+  }
 
   let shuttingDown = false;
   const finalExitCode = await new Promise((resolve) => {
@@ -339,8 +361,6 @@ export async function supervise({
     };
     signalSource.once?.("SIGINT", onSignal);
     signalSource.once?.("SIGTERM", onSignal);
-
-    onListenersAttached();
 
     for (const entry of started) {
       entry.child.once("exit", async function onExit(code) {
@@ -360,7 +380,7 @@ export async function supervise({
         entry.restarts += 1;
         await sleepImpl(RESTART_BACKOFF_MS[entry.restarts - 1] ?? RESTART_BACKOFF_MS.at(-1));
         const restarted = spawnImpl(entry.spec.cmd, entry.spec.args, {
-          env,
+          env: entry.spec.extraEnv ? { ...env, ...entry.spec.extraEnv } : env,
           shell: false,
           windowsHide: true,
           detached: platform !== "win32",
@@ -369,6 +389,7 @@ export async function supervise({
         restarted.once("exit", onExit);
       });
     }
+    onListenersAttached();
   });
 
   return finalExitCode;

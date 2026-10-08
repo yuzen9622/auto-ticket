@@ -185,6 +185,27 @@ describe("supervise", () => {
     return { spawnImpl, fetchImpl, killImpl, killCalls, spawnCalls, children, clock, paths };
   }
 
+  it.each(["before_ready", "during_web"])("fails closed when worker exits %s", async (when) => {
+    const h = makeHarness();
+    const spawnImpl = (cmd, args, opts) => {
+      const child = h.spawnImpl(cmd, args, opts);
+      if (when === "before_ready" && args.includes("worker")) {
+        queueMicrotask(() => { child.exitCode = 1; child.emit("exit", 1); });
+      }
+      if (when === "during_web" && args.some((a) => String(a).includes("server.js"))) {
+        queueMicrotask(() => { h.children.worker[0].exitCode = 1; h.children.worker[0].emit("exit", 1); });
+      }
+      return child;
+    };
+    await expect(supervise({
+      env: {}, paths: h.paths, version: "1.0.0", spawnImpl,
+      fetchImpl: h.fetchImpl, killImpl: h.killImpl, platform: "darwin",
+      now: h.clock.now, sleepImpl: h.clock.sleepImpl,
+      signalSource: new EventEmitter(), workerGraceMs: 0,
+    })).rejects.toMatchObject({ code: "START_TIMEOUT" });
+    expect(h.killCalls.some(([pid, signal]) => pid === -h.children.api.pid && signal === "SIGTERM")).toBe(true);
+  });
+
   it("① 就緒順序 api → worker → web", async () => {
     const h = makeHarness();
     const signalSource = new EventEmitter();
