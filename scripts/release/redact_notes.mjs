@@ -1,13 +1,7 @@
 #!/usr/bin/env node
 /**
- * 公開 Release notes 的遮蔽器。
- *
- * Release notes 是這個專案公開面上最多人會看的一頁。它直接由 commit subject 組成，
- * 而 commit subject 裡最容易夾帶的就是「我們在盯哪裡」——選擇器、風控機制、重試與
- * 預熱時序。那些東西對使用者沒有意義，對票務平台卻很有意義。
- *
- * 遮蔽器只保護這一頁。commit 歷史本身追不回來，真正的長期控制是
- * `commit-hygiene` 在 PR 階段就擋下敏感 subject（見 CONTRIBUTING.md）。
+ * 公開 Release notes 保留經敏感詞遮蔽的 changelog，附上安裝與更新方法。
+ * 先移除既有頁尾再重新產生，避免重跑發布流程時累積重複區塊。
  *
  * 用法：
  *     node scripts/release/redact_notes.mjs --in notes.md --out public-notes.md
@@ -15,83 +9,56 @@
  */
 
 import { readFileSync, writeFileSync } from "node:fs"
-
 import { sensitiveTermRe } from "./sensitive-terms.mjs"
 
-/** conventional-changelog 的 section 標題；只有這三個對使用者有意義。 */
-export const KEPT_SECTIONS = [
-  "Features",
-  "Bug Fixes",
-  "Performance Improvements",
-]
+const KEPT_SECTIONS = ["Features", "Bug Fixes", "Performance Improvements"]
+const REDACTED_LINE = "* 內部穩定性與相容性改善"
 
-export const REDACTED_LINE = "* 內部穩定性與相容性改善"
-
-export const FOOTER = [
+const PUBLIC_NOTES = [
+  "## 安裝",
   "",
-  "---",
-  "",
-  "本工具的付款一律為 mock：不會選票、不會建立訂單、不會送出訂單、不會付款。",
-  "",
-  "安裝：",
+  "使用 npx：",
   "",
   "```bash",
   "npx @yuzen9622/auto-ticket",
   "```",
   "",
-]
-
-const HEADING_RE = /^#{2,4}\s+(.*?)\s*$/
-const BULLET_RE = /^\s*[*-]\s+/
-
-function isKeptSection(heading) {
-  return KEPT_SECTIONS.some((s) => heading.toLowerCase().includes(s.toLowerCase()))
-}
-
-/** 版本標題（`## [1.2.3](...)`）長得像 section 標題，但不是——它永遠要留下。 */
-function isVersionHeading(heading) {
-  return /^\[?\d+\.\d+\.\d+/.test(heading) || /^v?\d+\.\d+\.\d+/.test(heading)
-}
+  "或使用 pnpm：",
+  "",
+  "```bash",
+  "pnpm dlx @yuzen9622/auto-ticket",
+  "```",
+  "",
+  "## 更新",
+  "",
+  "```bash",
+  "autix update",
+  "```",
+  "",
+].join("\n")
 
 export function redactNotes(input) {
-  const lines = String(input).split("\n")
   const out = []
   let keeping = true
-
-  for (const line of lines) {
-    const heading = line.match(HEADING_RE)?.[1]
+  for (const line of String(input).split("\n")) {
+    // 舊頁尾沒有 Markdown 標題；新頁尾從「安裝」標題開始。
+    // 兩者都只屬於產生器的頁尾，不是 changelog。
+    if (/^(?:本工具的付款一律為 mock：|安裝：\s*$|#{1,4}\s+(?:安裝|更新)\s*$)/.test(line)) break
+    const heading = line.match(/^#{2,4}\s+(.*?)\s*$/)?.[1]
     if (heading !== undefined) {
-      if (isVersionHeading(heading)) {
-        keeping = true
-        out.push(line)
-        continue
-      }
-      keeping = isKeptSection(heading)
-      if (keeping) out.push(line)
-      continue
+      keeping = /^\[?v?\d+\.\d+\.\d+/.test(heading)
+        || KEPT_SECTIONS.some((section) => heading.toLowerCase().includes(section.toLowerCase()))
     }
-
     if (!keeping) continue
-
-    if (BULLET_RE.test(line) && sensitiveTermRe().test(line)) {
-      // 整行換掉而不是遮字：把 "fix: update X selector" 打成 "fix: update X ****"
-      // 一樣洩漏了「X 有選擇器要修」這件事。
+    if (/^\s*[*-]\s+/.test(line) && sensitiveTermRe().test(line)) {
       if (out.at(-1) !== REDACTED_LINE) out.push(REDACTED_LINE)
-      continue
+    } else if (line.trim() !== "" || out.at(-1)?.trim()) {
+      out.push(line)
     }
-
-    out.push(line)
   }
-
-  // 丟掉 section 之間留下的連續空行，讀起來才不會一堆破洞。
-  const compacted = []
-  for (const line of out) {
-    if (line.trim() === "" && compacted.at(-1)?.trim() === "") continue
-    compacted.push(line)
-  }
-  while (compacted.at(-1)?.trim() === "") compacted.pop()
-
-  return [...compacted, ...FOOTER].join("\n")
+  while (out.length && (out.at(-1).trim() === "" || out.at(-1).trim() === "---")) out.pop()
+  const changelog = out.join("\n")
+  return changelog ? `${changelog}\n\n${PUBLIC_NOTES}` : PUBLIC_NOTES
 }
 
 function parseArgs(argv) {

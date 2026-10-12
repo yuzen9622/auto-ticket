@@ -1,129 +1,117 @@
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
-import {
-  FOOTER,
-  KEPT_SECTIONS,
-  REDACTED_LINE,
-  redactNotes,
-} from "../../../scripts/release/redact_notes.mjs";
+import { redactNotes } from "../../../scripts/release/redact_notes.mjs";
 
-const SAMPLE = `## [1.2.0](https://github.com/o/r/compare/v1.1.0...v1.2.0) (2026-09-22)
+const SCRIPT = fileURLToPath(
+  new URL("../../../scripts/release/redact_notes.mjs", import.meta.url)
+);
+const INSTALL_NOTES = `## 安裝
 
-### Features
+使用 npx：
 
-* 支援三個平台的一鍵啟動 ([aaa](u))
-* add captcha OCR retry for the registration flow ([bbb](u))
+\`\`\`bash
+npx @yuzen9622/auto-ticket
+\`\`\`
+
+或使用 pnpm：
+
+\`\`\`bash
+pnpm dlx @yuzen9622/auto-ticket
+\`\`\`
+
+## 更新
+
+\`\`\`bash
+autix update
+\`\`\`
+`;
+const EXPECTED = `## [0.6.3](https://example.com)
 
 ### Bug Fixes
 
-* update the sold-out selector ([ccc](u))
-* 修正時間軸目錄無法覆寫的問題 ([ddd](u))
-* shorten warmup to T-3min ([eee](u))
+* 修正啟動問題
+* 內部穩定性與相容性改善
+
+${INSTALL_NOTES}`;
+const OLD_NOTES = `## [0.6.3](https://example.com)
+
+### Bug Fixes
+
+* 修正啟動問題
+* update captcha selector
+${`
+---
+
+本工具的付款一律為 mock：不會選票、不會建立訂單、不會送出訂單、不會付款。
+
+安裝：
+
+\`\`\`bash
+npx @yuzen9622/auto-ticket
+\`\`\`
+`.repeat(3)}`;
+
+describe("redactNotes", () => {
+  it("保留 changelog，移除重複聲明並更新安裝方法", () => {
+    expect(redactNotes(OLD_NOTES)).toBe(EXPECTED);
+  });
+
+  it("空白輸入也產生完整說明", () => {
+    expect(redactNotes("")).toBe(INSTALL_NOTES);
+    expect(redactNotes(INSTALL_NOTES)).toBe(INSTALL_NOTES);
+  });
+
+  it("重跑不會累積區塊", () => {
+    const once = redactNotes(OLD_NOTES);
+    expect(redactNotes(redactNotes(once))).toBe(EXPECTED);
+  });
+
+  it("保留公開變更 section 與連結，排除內部 section", () => {
+    const output = redactNotes(`## [0.6.3](https://example.com)
+
+### Features
+
+* 新功能 ([abc](https://example.com/abc))
 
 ### Performance Improvements
 
-* 縮短啟動時間 ([fff](u))
+* 改善啟動速度
 
 ### Code Refactoring
 
-* drop the legacy log buffer ([ggg](u))
+* internal refactor
+`);
+    expect(output).toContain("### Features\n\n* 新功能 ([abc](https://example.com/abc))");
+    expect(output).toContain("### Performance Improvements\n\n* 改善啟動速度");
+    expect(output).not.toContain("internal refactor");
+    expect(output).not.toContain("Code Refactoring");
+    expect(redactNotes(output)).toBe(output);
+  });
 
-### Miscellaneous Chores
+  it("CLI 支援 stdin / stdout", () => {
+    expect(execFileSync(process.execPath, [SCRIPT], {
+      input: OLD_NOTES,
+      encoding: "utf8",
+    })).toBe(EXPECTED);
+  });
 
-* bump deps ([hhh](u))
-
-### Documentation
-
-* rewrite the install guide ([iii](u))
-`;
-
-describe("redactNotes", () => {
-  const output = redactNotes(SAMPLE);
-
-  it("只保留 feat / fix / perf 三個 section", () => {
-    expect(KEPT_SECTIONS).toEqual([
-      "Features",
-      "Bug Fixes",
-      "Performance Improvements",
-    ]);
-    for (const kept of KEPT_SECTIONS) {
-      expect(output).toContain(`### ${kept}`);
+  it("發布流程的 --in / --out 可安全重跑", () => {
+    const dir = mkdtempSync(join(tmpdir(), "release-notes-"));
+    try {
+      const input = join(dir, "raw.md");
+      const output = join(dir, "public.md");
+      writeFileSync(input, OLD_NOTES);
+      execFileSync(process.execPath, [SCRIPT, "--in", input, "--out", output]);
+      expect(readFileSync(output, "utf8")).toBe(EXPECTED);
+      execFileSync(process.execPath, [SCRIPT, "--in", output, "--out", output]);
+      expect(readFileSync(output, "utf8")).toBe(EXPECTED);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
     }
-    for (const dropped of [
-      "Code Refactoring",
-      "Miscellaneous Chores",
-      "Documentation",
-    ]) {
-      expect(output).not.toContain(dropped);
-    }
-  });
-
-  it("被移除的 section 連同它的條目一起消失", () => {
-    expect(output).not.toContain("legacy log buffer");
-    expect(output).not.toContain("bump deps");
-    expect(output).not.toContain("rewrite the install guide");
-  });
-
-  it("命中敏感詞的整行被換成通用字樣，不是遮掉幾個字", () => {
-    for (const leak of ["captcha", "selector", "warmup", "T-3min", "OCR retry"]) {
-      expect(output).not.toContain(leak);
-    }
-    expect(output).toContain(REDACTED_LINE);
-  });
-
-  it("沒命中的條目原樣保留，包含連結", () => {
-    expect(output).toContain("* 支援三個平台的一鍵啟動 ([aaa](u))");
-    expect(output).toContain("* 修正時間軸目錄無法覆寫的問題 ([ddd](u))");
-    expect(output).toContain("* 縮短啟動時間 ([fff](u))");
-  });
-
-  it("版本標題不會被當成 section 標題丟掉", () => {
-    expect(output.split("\n")[0]).toBe(
-      "## [1.2.0](https://github.com/o/r/compare/v1.1.0...v1.2.0) (2026-09-22)"
-    );
-  });
-
-  it("同一段連續多行命中只留一行通用字樣", () => {
-    const hits = output.split("\n").filter((l) => l === REDACTED_LINE);
-    // Bug Fixes 有兩行命中但中間隔了一行沒命中的，所以是兩段，不是一段。
-    expect(hits.length).toBe(3);
-  });
-
-  it("固定附上 mock 付款聲明與安裝指令", () => {
-    expect(output.endsWith(FOOTER.join("\n"))).toBe(true);
-    expect(output).toContain("付款一律為 mock");
-    expect(output).toContain("npx @yuzen9622/auto-ticket");
-  });
-
-  it("輸出穩定（snapshot）", () => {
-    expect(output).toMatchInlineSnapshot(`
-      "## [1.2.0](https://github.com/o/r/compare/v1.1.0...v1.2.0) (2026-09-22)
-
-      ### Features
-
-      * 支援三個平台的一鍵啟動 ([aaa](u))
-      * 內部穩定性與相容性改善
-
-      ### Bug Fixes
-
-      * 內部穩定性與相容性改善
-      * 修正時間軸目錄無法覆寫的問題 ([ddd](u))
-      * 內部穩定性與相容性改善
-
-      ### Performance Improvements
-
-      * 縮短啟動時間 ([fff](u))
-
-      ---
-
-      本工具的付款一律為 mock：不會選票、不會建立訂單、不會送出訂單、不會付款。
-
-      安裝：
-
-      \`\`\`bash
-      npx @yuzen9622/auto-ticket
-      \`\`\`
-      "
-    `);
   });
 });
