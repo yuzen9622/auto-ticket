@@ -18,6 +18,7 @@ from zoneinfo import ZoneInfo
 
 from bs4 import BeautifulSoup, Tag
 
+from adapters.ticketing.page_state import LoginState
 from adapters.ticketing.tixcraft.selectors import TixcraftSelectors
 
 TAIPEI_TZ = ZoneInfo("Asia/Taipei")
@@ -83,6 +84,41 @@ _TICKET_LABEL_RE = re.compile(r"^(?P<name>.*?)[\s　]*(?P<price>\d[\d,]*)\s*元?
 
 #: 票區列的可售狀態寫成「剩餘 14」，是拓元少數會把庫存印在頁面上的地方。
 _REMAINING_RE = re.compile(r"剩餘\s*(\d+)")
+
+
+def parse_login_state(html: str) -> LoginState:
+    """只採登入／登出控制項，不把 cookie、script 或說明文字當登入證據。"""
+    soup = BeautifulSoup(html, "html.parser")
+    logged_in = False
+    for control in soup.select("a[href], form[action], button, input[type='submit']"):
+        # 靜態隱藏的範本不是使用者當前的登入狀態。
+        ancestors = [control, *control.parents]
+        if any(
+            node.name in {"template", "script", "noscript"}
+            or node.has_attr("hidden")
+            or str(node.get("aria-hidden", "")).lower() == "true"
+            or re.search(
+                r"(?:display\s*:\s*none|visibility\s*:\s*hidden)",
+                str(node.get("style", "")),
+                re.IGNORECASE,
+            )
+            for node in ancestors
+            if isinstance(node, Tag)
+        ):
+            continue
+        target = str(control.get("href") or control.get("action") or "")
+        parsed = urlsplit(urljoin(BASE_URL, target))
+        if parsed.hostname not in {"tixcraft.com", "www.tixcraft.com"}:
+            continue
+        path = parsed.path.lower().rstrip("/")
+        label = control.get_text(" ", strip=True).lower()
+        if control.name == "input":
+            label = str(control.get("value", "")).strip().lower()
+        if path in {"/login", "/user/login"} or label in {"會員登入", "登入"}:
+            return LoginState.LOGGED_OUT
+        if path in {"/logout", "/user/logout"} or label in {"登出", "logout"}:
+            logged_in = True
+    return LoginState.LOGGED_IN if logged_in else LoginState.UNKNOWN
 
 
 @dataclass(frozen=True, slots=True)

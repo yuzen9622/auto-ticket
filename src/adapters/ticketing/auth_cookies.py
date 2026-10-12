@@ -1,7 +1,8 @@
 """共用登入 cookie 契約。
 
-三平台 adapter 與 worker 層共用同一份「哪些 cookie 代表已登入」的定義；
-唯一真相在此，不得在 adapter 層各自定義。
+三平台 adapter 與 worker 層共用同一份「哪些 cookie 與登入相關」的定義；
+唯一真相在此，不得在 adapter 層各自定義。存在不代表伺服器仍接受：
+尤其 TIXUISID 必須搭配頁面登入證據，不能單憑殘留 cookie 判定登入。
 """
 
 from __future__ import annotations
@@ -27,7 +28,7 @@ PLATFORM_AUTH_COOKIE_NAMES: dict[str, set[str]] = {
 def has_platform_auth_cookies(
     cookies: Sequence[dict[str, Any]] | None, platform: str = "kktix"
 ) -> bool:
-    """檢查是否有對應平台的登入認證 Cookie。"""
+    """檢查對應平台的認證 Cookie 是否存在；不驗證伺服器端 session 效力。"""
     if not cookies:
         return False
     plat = platform.lower()

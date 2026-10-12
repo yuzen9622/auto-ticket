@@ -582,7 +582,7 @@ async def test_tixcraft_probe_login_state_logged_out() -> None:
 
 
 @pytest.mark.asyncio
-async def test_tixcraft_probe_login_state_tixuisid_cookie_is_logged_in() -> None:
+async def test_tixcraft_probe_login_state_tixuisid_cookie_alone_is_unknown() -> None:
     adapter = TixcraftAdapter()
     page = MockPage(
         url="https://tixcraft.com/activity/game/123",
@@ -592,12 +592,12 @@ async def test_tixcraft_probe_login_state_tixuisid_cookie_is_logged_in() -> None
         cookies=AsyncMock(return_value=[{"name": "TIXUISID", "value": "abc"}])
     )
     state = await adapter.probe_login_state(page)
-    assert state == LoginState.LOGGED_IN
+    assert state == LoginState.UNKNOWN
 
 
 @pytest.mark.asyncio
 async def test_tixcraft_probe_login_state_sid_alone_is_unknown() -> None:
-    """SID 不在契約的 cookie 集合裡，需改採 TIXUISID。"""
+    """僅有 session cookie、缺少頁面登入證據時不得判定已登入。"""
     adapter = TixcraftAdapter()
     page = MockPage(
         url="https://tixcraft.com/activity/game/123",

@@ -7,16 +7,15 @@ import contextlib
 import hashlib
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any, ClassVar
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlsplit
 
 from adapters.payment.base import PaymentOutcome, PaymentProvider, PaymentResult
-from adapters.ticketing.auth_cookies import has_platform_auth_cookies
 from adapters.ticketing.base import TicketingAdapter
 from adapters.ticketing.dom import (
-    is_queue_page,
     contains_cloudflare_challenge,
     first_present_visible,
     first_visible,
+    is_queue_page,
     page_text,
     present_count,
     try_solve_cloudflare_turnstile,
@@ -34,6 +33,7 @@ from adapters.ticketing.tixcraft.pages import BASE_URL as TIXCRAFT_BASE_URL
 from adapters.ticketing.tixcraft.pages import (
     TicketRow,
     ZoneRow,
+    parse_login_state,
     parse_ticket_rows,
     parse_zone_rows,
 )
@@ -542,26 +542,14 @@ class TixcraftAdapter(TicketingAdapter):
         ):
             return LoginState.UNKNOWN
 
-        curr_url = getattr(page, "url", "").lower()
-        if "/login" in curr_url:
+        current = urlsplit(getattr(page, "url", "").lower())
+        if current.hostname not in {"tixcraft.com", "www.tixcraft.com"}:
+            return LoginState.UNKNOWN
+        if current.path.rstrip("/") in {"/login", "/user/login"}:
             return LoginState.LOGGED_OUT
 
-        cookies: list[Any] = []
-        with contextlib.suppress(Exception):
-            cookies = await page.context.cookies()
-        if has_platform_auth_cookies(cookies, "tixcraft"):
-            return LoginState.LOGGED_IN
-
-        html = ""
-        with contextlib.suppress(Exception):
-            html = (await page.content()).lower()
-
-        if any(marker in html for marker in ("/user/logout", "/logout", "登出")):
-            return LoginState.LOGGED_IN
-        if any(marker in html for marker in ("/login", "user/login")):
-            return LoginState.LOGGED_OUT
-
-        return LoginState.UNKNOWN
+        # TIXUISID 可能已失效；只有頁面證據能確認伺服器仍接受此 session。
+        return parse_login_state(text)
 
     async def login(self, page: Page, username: str, secret_token: str) -> bool:
         with contextlib.suppress(Exception):

@@ -343,6 +343,7 @@ async def test_auto_login_cookie_does_not_call_adapter_login(
     mock_browser.stop = AsyncMock()
     mock_page = MagicMock()
     mock_page.url = "https://tixcraft.com/user/changePassword"
+    mock_page.content = AsyncMock(return_value='<a href="/user/logout">登出</a>')
     mock_page.context.cookies = AsyncMock(return_value=[
         {"domain": ".tixcraft.com", "name": "TIXUISID", "value": "test_tix_cookie_val"}
     ])
@@ -400,7 +401,9 @@ async def test_probe_login_state_three_platforms() -> None:
     state = await probe_login_state(mock_adapter, mock_page, cookies=kktix_cookies, platform="kktix")
     assert state == LoginState.LOGGED_IN
 
-    # Tixcraft
+    # Tixcraft 必須有頁面登入證據，cookie 本身不足以證明登入。
+    mock_page.url = "https://tixcraft.com/"
+    mock_page.content = AsyncMock(return_value='<a href="/user/logout">登出</a>')
     tix_cookies = [{"domain": ".tixcraft.com", "name": "TIXUISID", "value": "abcde"}]
     state = await probe_login_state(mock_adapter, mock_page, cookies=tix_cookies, platform="tixcraft")
     assert state == LoginState.LOGGED_IN
@@ -410,6 +413,7 @@ async def test_probe_login_state_three_platforms() -> None:
     state = await probe_login_state(mock_adapter, mock_page, cookies=ibon_cookies, platform="ibon")
     assert state == LoginState.LOGGED_IN
 
-    # Empty -> LOGGED_OUT
+    # 登入入口 -> LOGGED_OUT
+    mock_page.content = AsyncMock(return_value='<a href="/login">會員登入</a>')
     state = await probe_login_state(mock_adapter, mock_page, cookies=[], platform="tixcraft")
     assert state == LoginState.LOGGED_OUT

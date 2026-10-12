@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
 from collections.abc import Awaitable, Callable, Sequence
 from typing import TYPE_CHECKING, Any
 
@@ -57,29 +58,35 @@ async def first_visible(
     telemetry: TimelineRecorder | None = None,
     field: str = "",
 ) -> Locator | None:
-    """依候選順序回傳第一個可見元素；全數落空回 `None`（不拋例外）。"""
+    """先掃描已可見候選，全部尚未出現才等待；落空回 `None`。"""
     candidates = candidate_selectors(selectors)
     if not candidates:
         return None
     per_try = max(1, timeout_ms // len(candidates))
-    for rank, selector in enumerate(candidates, start=1):
-        locator = page.locator(selector).first
-        visible = False
-        with contextlib.suppress(Exception):
-            await locator.wait_for(state="visible", timeout=per_try)
-            visible = True
-        if not visible:
-            continue
-        if rank > 1 and telemetry is not None:
-            telemetry.record(
-                TimelineEventType.MARK,
-                SELECTOR_FALLBACK_MARK,
-                field=field or selector,
-                selector=selector,
-                rank=rank,
-                total=len(candidates),
-            )
-        return locator
+    # 不能為了不存在的舊 selector，讓已經就緒的登入欄位／圖片白等數秒。
+    # 保留第二輪等待，讓真正還在載入的 DOM 仍有原本的等待預算。
+    for wait in (False, True):
+        for rank, selector in enumerate(candidates, start=1):
+            locator = page.locator(selector).first
+            visible = False
+            with contextlib.suppress(Exception):
+                if wait:
+                    await locator.wait_for(state="visible", timeout=per_try)
+                    visible = True
+                else:
+                    visible = await locator.is_visible()
+            if not visible:
+                continue
+            if rank > 1 and telemetry is not None:
+                telemetry.record(
+                    TimelineEventType.MARK,
+                    SELECTOR_FALLBACK_MARK,
+                    field=field or selector,
+                    selector=selector,
+                    rank=rank,
+                    total=len(candidates),
+                )
+            return locator
     return None
 
 
@@ -98,6 +105,7 @@ async def first_present_visible(
         try:
             total = await locator.count()
         except Exception:
+            logging.getLogger(__name__).debug("DOM presence probe unavailable")
             continue
         for index in range(min(total, PRESENT_SCAN_LIMIT)):
             candidate = locator.nth(index)

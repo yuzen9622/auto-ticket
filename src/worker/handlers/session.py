@@ -17,6 +17,9 @@ from adapters.ticketing.auth_cookies import (
 )
 from adapters.ticketing.factory import build_adapter
 from adapters.ticketing.page_state import LoginState, PageKind
+from adapters.ticketing.tixcraft.pages import (
+    parse_login_state as parse_tixcraft_login_state,
+)
 from adapters.verification.ddddocr_provider import DdddOcrProvider
 from api.schemas.ws import ServerMessageType
 from broker.broker import SqliteTaskBroker
@@ -77,7 +80,7 @@ def has_kktix_auth_cookies(cookies: Sequence[dict[str, Any]] | None) -> bool:
 def summarize_cookies(
     cookies: list[dict[str, Any]], host_fragment: str = "kktix"
 ) -> tuple[int, bool]:
-    """只回報數量與「是否存在有效登入 session」——**絕不印出 cookie 內容**。"""
+    """只回報 cookie 數量與 session 線索，不驗證登入，也絕不印出內容。"""
     relevant = [c for c in cookies if host_fragment in str(c.get("domain", ""))]
     if host_fragment == "kktix":
         has_session = has_kktix_auth_cookies(relevant)
@@ -100,13 +103,15 @@ async def probe_login_state(
 
     被人機驗證擋住時一律回 UNKNOWN。
     若在登入頁，回傳 LOGGED_OUT。
-    三平台一致使用 page kind 與平台專屬 auth cookie 判斷。
+    拓元必須有頁面登入證據，不能用殘留的 TIXUISID 覆蓋 UNKNOWN。
     """
     adapter_probe = getattr(adapter, "probe_login_state", None)
     if adapter_probe is not None and callable(adapter_probe):
         with contextlib.suppress(Exception):
             state = await adapter.probe_login_state(page)
-            if state is not LoginState.UNKNOWN:
+            if isinstance(state, LoginState) and (
+                state is not LoginState.UNKNOWN or platform.lower() == "tixcraft"
+            ):
                 return state
 
     kind = await adapter.probe_page(page, getattr(page, "url", ""))
@@ -130,10 +135,11 @@ async def probe_login_state(
 
     plat = platform.lower()
     if plat == "tixcraft":
-        if "/user/logout" in html or "/logout" in html or "登出" in html:
-            return LoginState.LOGGED_IN
-        if "/login" in html or "user/login" in html or "登入" in html:
-            return LoginState.LOGGED_OUT
+        if urlsplit(getattr(page, "url", "")).hostname not in {
+            "tixcraft.com", "www.tixcraft.com"
+        }:
+            return LoginState.UNKNOWN
+        return parse_tixcraft_login_state(html)
     elif plat == "ibon":
         if "/account/logoff" in html or "logoff" in html or "登出" in html or "會員中心" in html:
             return LoginState.LOGGED_IN
@@ -245,7 +251,7 @@ async def execute_session_check(
             await page.goto(target_url, wait_until="domcontentloaded", timeout=15000)
 
         cookies = await page.context.cookies()
-        cookie_count, has_session = summarize_cookies(
+        cookie_count, _ = summarize_cookies(
             cookies, host_fragment=host_fragment
         )
 
@@ -270,7 +276,7 @@ async def execute_session_check(
             "platform": platform,
             "page_kind": page_kind,
             "cookie_count": cookie_count,
-            "has_session": has_session,
+            "has_session": login_state is LoginState.LOGGED_IN,
             "login_state": login_state.value,
         }
         await broker.complete(job.id, worker_id=worker_id, result=result)
@@ -403,14 +409,14 @@ async def execute_auto_login(
             adapter, page, cookies=cookies_before, platform=platform
         )
         if login_state_before is LoginState.LOGGED_IN:
-            cookie_count, has_session = summarize_cookies(
+            cookie_count, _ = summarize_cookies(
                 cookies_before, host_fragment=cfg["host_fragment"]
             )
             result = {
                 "success": True,
                 "page_kind": "LOGGED_IN",
                 "cookie_count": cookie_count,
-                "has_session": has_session,
+                "has_session": True,
                 "login_state": login_state_before.value,
             }
             await broker.complete(job.id, worker_id=worker_id, result=result)
@@ -427,7 +433,7 @@ async def execute_auto_login(
 
         probe = await adapter.probe_page(page, getattr(page, "url", ""))
         cookies = await page.context.cookies()
-        cookie_count, has_session = summarize_cookies(
+        cookie_count, _ = summarize_cookies(
             cookies, host_fragment=cfg["host_fragment"]
         )
         login_state = await probe_login_state(
@@ -449,7 +455,7 @@ async def execute_auto_login(
             "success": success,
             "page_kind": page_kind,
             "cookie_count": cookie_count,
-            "has_session": has_session,
+            "has_session": success,
             "login_state": login_state.value,
         }
         if success:
@@ -561,7 +567,7 @@ async def execute_manual_login(
                 last_notice = elapsed
 
             cookies = await page.context.cookies()
-            cookie_count, has_session = summarize_cookies(
+            cookie_count, _ = summarize_cookies(
                 cookies, host_fragment=host_fragment
             )
 
