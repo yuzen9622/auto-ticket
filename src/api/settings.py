@@ -12,8 +12,8 @@ DEFAULT_VAULT_ROOT = Path("data/credentials")
 DEFAULT_CORS_ORIGINS = (
     "http://127.0.0.1:5173",
     "http://localhost:5173",
-    "http://127.0.0.1:3000",
-    "http://localhost:3000",
+    "http://127.0.0.1:18346",
+    "http://localhost:18346",
 )
 
 # 預熱最早階段 PREPARE_BROWSER 落在 T-10min；多留 1 分鐘給 claim 與組裝。

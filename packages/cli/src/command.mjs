@@ -581,7 +581,7 @@ export function parseArgs(argv) {
       case "--web-port":
         throw new CliError(
           "UNKNOWN_FLAG",
-          `${arg} 不存在：首版固定 api=8000、web=3000，不提供埠位覆寫旗標。`,
+          `${arg} 不存在：固定 api=${hostMod.DEFAULT_PORTS.api}、web=${hostMod.DEFAULT_PORTS.web}，不提供埠位覆寫旗標。`,
         );
       default:
         throw new CliError("UNKNOWN_FLAG", `未知的旗標：${arg}`);

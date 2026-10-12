@@ -76,7 +76,7 @@ export async function apiFetch<T>(
     throw new ApiError(
       0,
       "network_error",
-      "無法連線到 API Server，請確認後端已啟動（預設 http://127.0.0.1:8000）。",
+      `無法連線到 API Server，請確認後端已啟動（${apiBaseUrl}）。`,
       null
     )
   }

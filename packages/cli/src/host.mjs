@@ -14,7 +14,7 @@ function cliError(code, message) {
 }
 
 // 首版固定埠位，不開放覆寫（見計畫「技術方案 §5」）。
-export const DEFAULT_PORTS = Object.freeze({ api: 8000, web: 3000 });
+export const DEFAULT_PORTS = Object.freeze({ api: 18347, web: 18346 });
 
 /**
  * 組出三個子行程共用的環境變數基底。純函式：只讀 `paths`，不做任何 I/O。

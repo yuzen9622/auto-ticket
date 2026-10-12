@@ -21,8 +21,8 @@ def parse_args(args: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--port",
         type=int,
-        default=8000,
-        help="Port to bind (default: 8000)",
+        default=18347,
+        help="Port to bind (default: 18347)",
     )
     # 路徑類旗標的 default 一律 None：真正的預設值在 `ApiSettings.from_env()`。
     # 在這裡抄第二份預設值，會讓 argparse 永遠蓋掉環境變數，打包安裝時就再也

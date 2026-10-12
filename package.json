@@ -6,7 +6,7 @@
     "setup": "uv sync && uv run playwright install chromium && pnpm --dir web install",
     "setup:browsers": "uv run playwright install chromium",
     "dev": "concurrently -n api,worker,web -c blue,magenta,green \"pnpm run dev:api\" \"pnpm run dev:worker\" \"pnpm run dev:web\"",
-    "dev:api": "uv run python scripts/serve_api.py --host 127.0.0.1 --port 8000",
+    "dev:api": "uv run python scripts/serve_api.py --host 127.0.0.1 --port 18347",
     "dev:worker": "uv run python scripts/worker.py",
     "dev:worker:headed": "uv run python scripts/worker.py --no-headless",
     "dev:web": "pnpm --dir web run dev",

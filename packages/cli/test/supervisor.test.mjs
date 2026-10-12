@@ -163,14 +163,14 @@ describe("supervise", () => {
     };
 
     const fetchImpl = async (url) => {
-      if (url.includes("8000")) {
+      if (url.includes("18347")) {
         return {
           ok: apiReady,
           status: apiReady ? 200 : 503,
           json: async () => ({ status: "ok", version: "1.0.0", broker_ok: true, worker_seen_at: null }),
         };
       }
-      if (url.includes("3000")) return { ok: webReady, status: webReady ? 200 : 503 };
+      if (url.includes("18346")) return { ok: webReady, status: webReady ? 200 : 503 };
       return { ok: false, status: 500 };
     };
 
@@ -271,7 +271,7 @@ describe("supervise", () => {
     expect(await supervisePromise).toBe(0);
 
     // POSIX 是對整個 process group 送訊號，所以 pid 帶負號；三個都要收到，
-    // 少一個就代表有孤兒行程繼續佔著 8000/3000 或 SQLite broker。
+    // 少一個就代表有孤兒行程繼續佔著 18347/18346 或 SQLite broker。
     const groups = h.killCalls.filter(([, sig]) => sig === "SIGTERM").map(([pid]) => pid);
     for (const child of started) {
       expect(groups).toContain(-child.pid);
@@ -314,7 +314,7 @@ describe("supervise", () => {
     expect(err?.name).toBe("CliError");
     expect(ExitCode[err.code]).toBe(ExitCode.START_TIMEOUT);
     expect(err.message).toContain("ENOENT");
-    // 已經起來的 api 與 worker 必須被收掉，否則它們會繼續佔著 8000。
+    // 已經起來的 api 與 worker 必須被收掉，否則它們會繼續佔著 18347。
     expect(killed.some(([, sig]) => sig === "SIGTERM")).toBe(true);
     await expect(fs.stat(h.paths.supervisorState)).rejects.toThrow();
   });
@@ -357,9 +357,9 @@ describe("supervise", () => {
       "另一版 auto-ticket 的 API",
       { ok: true, status: 200, json: async () => ({ status: "ok", version: "0.9.0", broker_ok: true }) },
     ],
-  ])("8000 上是%s → 不算就緒，worker 不會被提早啟動", async (_label, response) => {
+  ])("18347 上是%s → 不算就緒，worker 不會被提早啟動", async (_label, response) => {
     const h = makeHarness();
-    const fetchImpl = async (url) => (url.includes("8000") ? response : h.fetchImpl(url));
+    const fetchImpl = async (url) => (url.includes("18347") ? response : h.fetchImpl(url));
 
     await expect(
       supervise({

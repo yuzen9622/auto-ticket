@@ -118,6 +118,19 @@ class TestWorkerCliPrecedence:
 
 
 class TestApiCliPrecedence:
+    def test_default_port_and_dashboard_origins(self) -> None:
+        module = load_serve_api()
+        assert module.parse_args([]).port == 18347
+        origins = ApiSettings.from_env({}).cors_origins
+        assert "http://127.0.0.1:18346" in origins
+        assert "http://localhost:18346" in origins
+        assert "http://127.0.0.1:3000" not in origins
+        assert "http://localhost:3000" not in origins
+
+    def test_explicit_port_is_preserved(self) -> None:
+        module = load_serve_api()
+        assert module.parse_args(["--port", "19001"]).port == 19001
+
     def test_no_flags_and_no_env_matches_current_defaults(self) -> None:
         module = load_serve_api()
         settings = module.settings_from_args(module.parse_args([]))

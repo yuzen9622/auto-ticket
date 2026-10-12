@@ -26,7 +26,7 @@ vi.mock("../src/runtime-cache.mjs", () => ({ ensureRuntime: (...a) => ensureRunt
 vi.mock("../src/migration.mjs", () => ({ migrate: (...a) => migrate(...a) }));
 vi.mock("../src/supervisor.mjs", () => ({ supervise: (...a) => supervise(...a) }));
 vi.mock("../src/host.mjs", () => ({
-  DEFAULT_PORTS: { api: 8000, web: 3000 },
+  DEFAULT_PORTS: { api: 18347, web: 18346 },
   assertPortsFree: (...a) => assertPortsFree(...a),
   buildEnv: () => ({}),
   ensureBrowsers: (...a) => ensureBrowsers(...a),

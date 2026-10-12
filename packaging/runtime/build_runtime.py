@@ -55,8 +55,8 @@ MANIFEST_SCHEMA = 1
 
 # 前端的 API base 是**建置期內聯**的字面值。CI 只要不小心設了 NEXT_PUBLIC_*，
 # 錯誤的 base 就會被烤進 client chunk，而且發版前沒有任何執行期徵兆。
-WEB_API_BASE = "http://127.0.0.1:8000"
-WEB_WS_BASE = "ws://127.0.0.1:8000"
+WEB_API_BASE = "http://127.0.0.1:18347"
+WEB_WS_BASE = "ws://127.0.0.1:18347"
 
 TARGETS: dict[str, dict[str, str]] = {
     "darwin-arm64": {"uv_platform": "aarch64-apple-darwin", "python_exe": "bin/python3"},
@@ -113,7 +113,7 @@ def iter_text_candidates(root: Path) -> Iterable[Path]:
 def assert_web_loopback_base(next_dir: Path) -> None:
     """斷言 client bundle 裡真的是 loopback base。
 
-    首版把 API 埠固定在 8000，正因為 build 後改寫 Next 產物是條不受任何保證的路。
+    API 埠固定在 18347，正因為 build 後改寫 Next 產物是條不受任何保證的路。
     既然不改寫，就必須在打包前確認烤進去的值是對的——這是唯一的攔截點。
     """
     if not next_dir.is_dir():

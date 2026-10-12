@@ -2,7 +2,7 @@
 """端到端有頭模式 API + Worker 完整流程測試腳本。
 
 流程：
-1. 啟動本機 API Server (http://127.0.0.1:8000)
+1. 啟動本機 API Server (http://127.0.0.1:18347)
 2. 啟動 Worker (有頭模式 --no-headless，螢幕上會跳出真實 Chrome 視窗)
 3. 呼叫 API 建立購票排程任務 (POST /api/v1/tasks)
 4. 呼叫 API 立即開跑 (POST /api/v1/tasks/{id}/start)
@@ -26,7 +26,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "src"))
 
 API_HOST = "127.0.0.1"
-API_PORT = 8000
+API_PORT = 18347
 BASE_URL = f"http://{API_HOST}:{API_PORT}"
 DB_PATH = "data/auto-ticket.db"
 

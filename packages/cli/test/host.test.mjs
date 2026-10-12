@@ -38,14 +38,14 @@ function fakePaths(root = "/fake/home/.auto-ticket") {
 }
 
 describe("DEFAULT_PORTS", () => {
-  it("① 恆為 {api:8000, web:3000}", () => {
-    expect(DEFAULT_PORTS).toEqual({ api: 8000, web: 3000 });
+  it("① 恆為 {api:18347, web:18346}", () => {
+    expect(DEFAULT_PORTS).toEqual({ api: 18347, web: 18346 });
   });
 });
 
 describe("assertPortsFree", () => {
-  it("② 8000 被佔用 → CliError code=10 且訊息含埠號", async () => {
-    const netImpl = fakeNet(new Set([8000]));
+  it("② 18347 被佔用 → CliError code=10 且訊息含埠號", async () => {
+    const netImpl = fakeNet(new Set([18347]));
     await expect(assertPortsFree({ netImpl })).rejects.toMatchObject({
       code: "PORT_IN_USE",
     });
@@ -54,19 +54,24 @@ describe("assertPortsFree", () => {
       expect.unreachable();
     } catch (err) {
       expect(err.name).toBe("CliError");
-      expect(err.message).toMatch(/8000/);
+      expect(err.message).toMatch(/18347/);
     }
   });
 
-  it("3000 被佔用 → CliError code=10 且訊息含埠號", async () => {
-    const netImpl = fakeNet(new Set([3000]));
+  it("18346 被佔用 → CliError code=10 且訊息含埠號", async () => {
+    const netImpl = fakeNet(new Set([18346]));
     try {
       await assertPortsFree({ netImpl });
       expect.unreachable();
     } catch (err) {
       expect(ExitCode[err.code]).toBe(ExitCode.PORT_IN_USE);
-      expect(err.message).toMatch(/3000/);
+      expect(err.message).toMatch(/18346/);
     }
+  });
+
+  it("常見開發埠被佔用不影響啟動", async () => {
+    const netImpl = fakeNet(new Set([8000, 3000]));
+    await expect(assertPortsFree({ netImpl })).resolves.toBeUndefined();
   });
 
   it("兩個埠都空閒時不拋錯", async () => {
@@ -91,7 +96,7 @@ describe("buildEnv", () => {
     expect(env.PYTHONPATH.split(";").length).toBe(2);
   });
 
-  it("③ 產出 §8 表列全部變數，CORS_ORIGINS 指向 3000", () => {
+  it("③ 產出 §8 表列全部變數，CORS_ORIGINS 指向 18346", () => {
     const env = buildEnv({ paths: fakePaths(), runtimeDir: "/rt" });
     for (const key of [
       "AUTO_TICKET_DB_PATH",
@@ -113,7 +118,7 @@ describe("buildEnv", () => {
     expect(env.AUTO_TICKET_VAULT_ROOT).toBe("/fake/home/.auto-ticket/data/credentials");
     expect(env.AUTO_TICKET_TIMELINE_DIR).toBe("/fake/home/.auto-ticket/data/timelines");
     expect(env.AUTO_TICKET_BROWSER_PROFILE_ROOT).toBe("/fake/home/.auto-ticket/browser-profiles");
-    expect(env.AUTO_TICKET_CORS_ORIGINS).toBe("http://127.0.0.1:3000,http://localhost:3000");
+    expect(env.AUTO_TICKET_CORS_ORIGINS).toBe("http://127.0.0.1:18346,http://localhost:18346");
     expect(env.PLAYWRIGHT_BROWSERS_PATH).toBe("/fake/home/.auto-ticket/ms-playwright");
     expect(env.PYTHONNOUSERSITE).toBe("1");
     expect(env.PYTHONUTF8).toBe("1");

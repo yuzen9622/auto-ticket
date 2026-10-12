@@ -201,8 +201,8 @@ export async function supervise({
   nodePath = process.execPath,
   runtimeDir: runtimeDirOverride,
   // 埠位由 command.mjs 從 host.mjs 的凍結常數傳進來（領域模組之間不互相 import）。
-  // CLI 沒有任何旗標能改它；可注入純粹是為了讓整合測試不必霸佔 8000/3000。
-  ports = { api: 8000, web: 3000 },
+  // CLI 沒有任何旗標能改它；可注入純粹是為了讓整合測試不必霸佔 18347/18346。
+  ports = { api: 18347, web: 18346 },
   now = () => Date.now(),
   errorLog = console.error,
   workerGraceMs = WORKER_READY_GRACE_MS,
@@ -282,8 +282,8 @@ export async function supervise({
     }
   };
 
-  // 只看狀態碼不夠：Windows 上別的程式若綁在 0.0.0.0:8000，我們的 API 還在建表時，
-  // 127.0.0.1:8000 會先由它回應（連 404 都算 <500），worker 就被提早放行、跟 API
+  // 只看狀態碼不夠：Windows 上別的程式若綁在 0.0.0.0:18347，我們的 API 還在建表時，
+  // 127.0.0.1:18347 會先由它回應（連 404 都算 <500），worker 就被提早放行、跟 API
   // 搶著建表。要回應長得像我們的 /healthz、版本也對得上，才算是自己的 API 起來了。
   // 旁路目錄的版本不受 package.json 管，只驗形狀。
   const apiHealthy = (url) => () => async () => {
