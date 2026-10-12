@@ -39,7 +39,7 @@ autix
 
 If pnpm reports that no global bin directory is configured, run `pnpm setup` once and open a new terminal. Yarn 2 and later have no global install; use npm or pnpm instead.
 
-The first run downloads the platform runtime and Playwright Chromium, then opens the dashboard at <http://127.0.0.1:3000>. Later launches reuse the installed runtime.
+The first run downloads the platform runtime and Playwright Chromium, then opens the dashboard at <http://127.0.0.1:18346>. Later launches reuse the installed runtime.
 
 ## Requirements
 
@@ -76,7 +76,7 @@ For platform notes, port-conflict guidance, and macOS Gatekeeper instructions, s
 
 The previous command name, `auto-ticket`, still works as an alias of `autix`.
 
-The API uses `127.0.0.1:8000` and the dashboard uses `127.0.0.1:3000`. These ports are fixed in the first release. If either port is busy, stop the process using it and run the command again.
+The API uses `127.0.0.1:18347` and the dashboard uses `127.0.0.1:18346`. These fixed ports avoid common development defaults. If either port is busy, stop the process using it and run the command again.
 
 ## Local data and privacy
 
@@ -110,7 +110,7 @@ pnpm run setup
 pnpm run dev
 ```
 
-Open <http://localhost:3000> after the services start. Run the full repository verification suite before submitting a change:
+Open <http://localhost:18346> after the services start. Run the full repository verification suite before submitting a change:
 
 ```bash
 pnpm run check

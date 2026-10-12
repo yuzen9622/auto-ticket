@@ -39,7 +39,7 @@ autix
 
 pnpm 若提示沒有設定全域 bin 目錄，先執行一次 `pnpm setup` 再開新終端機。Yarn 2 以上沒有全域安裝，請改用 npm 或 pnpm。
 
-第一次執行會下載對應平台的 runtime 與 Playwright Chromium，然後開啟 <http://127.0.0.1:3000> 儀表板；後續啟動會重用已安裝的 runtime。
+第一次執行會下載對應平台的 runtime 與 Playwright Chromium，然後開啟 <http://127.0.0.1:18346> 儀表板；後續啟動會重用已安裝的 runtime。
 
 ## 系統需求
 
@@ -76,7 +76,7 @@ autix doctor
 
 舊指令名稱 `auto-ticket` 仍可使用，是 `autix` 的別名。
 
-API 固定使用 `127.0.0.1:8000`，儀表板固定使用 `127.0.0.1:3000`。首版不支援變更埠位；若埠位被占用，請停止占用程式後重試。
+API 固定使用 `127.0.0.1:18347`，儀表板固定使用 `127.0.0.1:18346`，避開常見的開發埠位。目前不支援變更埠位；若埠位被占用，請停止占用程式後重試。
 
 ## 本機資料與隱私
 
@@ -110,7 +110,7 @@ pnpm run setup
 pnpm run dev
 ```
 
-服務啟動後開啟 <http://localhost:3000>。提交變更前請執行完整驗證：
+服務啟動後開啟 <http://localhost:18346>。提交變更前請執行完整驗證：
 
 ```bash
 pnpm run check

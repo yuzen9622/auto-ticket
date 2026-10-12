@@ -53,9 +53,9 @@ CLI 與 runtime **嚴格同版**：CLI 只接受 `MANIFEST.json` 的 `version` �
 
 | 行程 | 指令 | 就緒條件 | 逾時 |
 | --- | --- | --- | --- |
-| api | `python -s <runtime>/app/scripts/serve_api.py --host 127.0.0.1 --port 8000` | `GET /healthz` 回 200 且 JSON 可解析 | 90s |
+| api | `python -s <runtime>/app/scripts/serve_api.py --host 127.0.0.1 --port 18347` | `GET /healthz` 回 200 且 JSON 可解析 | 90s |
 | worker | `python -s -m worker` | stdout 出現就緒 banner；無 banner 則以存活 10s 為準 | — |
-| web | `node <runtime>/web/server.js`（`PORT=3000` / `HOSTNAME=127.0.0.1`） | `GET /` 回應碼 < 500 | 60s |
+| web | `node <runtime>/web/server.js`（`PORT=18346` / `HOSTNAME=127.0.0.1`） | `GET /` 回應碼 < 500 | 60s |
 
 啟動序固定 api → worker → web，關閉反向。任一階段就緒逾時，會印出該行程日誌
 末 40 行、關掉所有已啟動的行程，並以結束碼 `7` 結束。
@@ -88,7 +88,7 @@ PYTHONUTF8        = 1
 | `AUTO_TICKET_VAULT_ROOT` | `~/.auto-ticket/data/credentials` |
 | `AUTO_TICKET_TIMELINE_DIR` | `~/.auto-ticket/data/timelines` |
 | `AUTO_TICKET_BROWSER_PROFILE_ROOT` | `~/.auto-ticket/browser-profiles` |
-| `AUTO_TICKET_CORS_ORIGINS` | `http://127.0.0.1:3000,http://localhost:3000` |
+| `AUTO_TICKET_CORS_ORIGINS` | `http://127.0.0.1:18346,http://localhost:18346` |
 | `PLAYWRIGHT_BROWSERS_PATH` | `~/.auto-ticket/ms-playwright` |
 
 這些變數在開發流程裡**都可以不設**：未設時一律落回 repo 相對的 `data/...` 與
@@ -101,7 +101,7 @@ PYTHONUTF8        = 1
 | `AUTO_TICKET_RUNTIME_URL` | 覆寫下載 baseUrl，指向本機 http server |
 | `AUTO_TICKET_RUNTIME_DIR` | 直接指向已解壓的 runtime，完全跳過下載 |
 
-## 固定埠 8000 / 3000
+## 固定埠 18347 / 18346
 
 首版沒有埠位旗標，理由見 [INSTALL.md](INSTALL.md)。被佔用時 `start` 以結束碼 `10`
 中止並具名報出佔用者；`doctor` 跑同一份檢查但只報告、不中止。

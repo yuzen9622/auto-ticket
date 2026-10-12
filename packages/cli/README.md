@@ -27,7 +27,7 @@ autix
 
 If pnpm reports that no global bin directory is configured, run `pnpm setup` once and open a new terminal. Yarn 2 and later have no global install; use npm or pnpm instead.
 
-The first run downloads the required runtime and Playwright Chromium, then opens <http://127.0.0.1:3000>. Later launches reuse the installed runtime.
+The first run downloads the required runtime and Playwright Chromium, then opens <http://127.0.0.1:18346>. Later launches reuse the installed runtime.
 
 ## Requirements
 
@@ -54,7 +54,7 @@ Intel Macs, Linux, and Windows on ARM are not supported. On Apple Silicon, use a
 
 `auto-ticket` still works as an alias of `autix`.
 
-The API and dashboard use fixed loopback ports `8000` and `3000` respectively. If a port is already in use, stop the process that owns it and try again.
+The API and dashboard use fixed loopback ports `18347` and `18346` respectively, avoiding common development defaults. If a port is already in use, stop the process that owns it and try again.
 
 ## Safety and privacy
 
