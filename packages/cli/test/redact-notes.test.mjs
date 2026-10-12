@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -98,6 +98,23 @@ describe("redactNotes", () => {
       input: OLD_NOTES,
       encoding: "utf8",
     })).toBe(EXPECTED);
+  });
+
+  it("CLI 可從含空白與 URL 特殊字元的路徑執行", () => {
+    // macOS 的暫存目錄可能經過 symlink；此案例只驗證 URL 編碼。
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), "release notes-#%-")));
+    try {
+      const script = join(dir, "redact_notes.mjs");
+      copyFileSync(SCRIPT, script);
+      copyFileSync(new URL("../../../scripts/release/sensitive-terms.mjs", import.meta.url),
+        join(dir, "sensitive-terms.mjs"));
+      expect(execFileSync(process.execPath, [script], {
+        input: OLD_NOTES,
+        encoding: "utf8",
+      })).toBe(EXPECTED);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it("發布流程的 --in / --out 可安全重跑", () => {

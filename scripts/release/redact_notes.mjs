@@ -9,6 +9,7 @@
  */
 
 import { readFileSync, writeFileSync } from "node:fs"
+import { pathToFileURL } from "node:url"
 import { sensitiveTermRe } from "./sensitive-terms.mjs"
 
 const KEPT_SECTIONS = ["Features", "Bug Fixes", "Performance Improvements"]
@@ -80,6 +81,6 @@ function main(argv) {
   return 0
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   process.exit(main(process.argv.slice(2)))
 }
