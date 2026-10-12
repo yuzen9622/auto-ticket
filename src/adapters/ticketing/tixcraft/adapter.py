@@ -13,6 +13,7 @@ from adapters.payment.base import PaymentOutcome, PaymentProvider, PaymentResult
 from adapters.ticketing.auth_cookies import has_platform_auth_cookies
 from adapters.ticketing.base import TicketingAdapter
 from adapters.ticketing.dom import (
+    is_queue_page,
     contains_cloudflare_challenge,
     first_present_visible,
     first_visible,
@@ -132,6 +133,8 @@ class TixcraftAdapter(TicketingAdapter):
     # ---------------------------------------------------------------- 頁面探測
 
     async def probe_page(self, page: Page, url: str | None = None) -> PageKind:
+        if await is_queue_page(page):
+            return PageKind.QUEUE
         if url is not None:
             curr = getattr(page, "url", "")
             if not curr or curr == "about:blank":
@@ -170,11 +173,7 @@ class TixcraftAdapter(TicketingAdapter):
         text = await page_text(page)
 
         # 1. Queue-It 等候室優先判定，絕不觸發任何導航
-        if (
-            "queue-it.net" in curr_url
-            or "queue-it" in text.lower()
-            or "#lbheaderh2" in text.lower()
-        ):
+        if await is_queue_page(page):
             return PageState.QUEUE
 
         # 2. 開賣後遇 Cloudflare 直接拋出 fail-closed 例外
@@ -596,6 +595,8 @@ class TixcraftAdapter(TicketingAdapter):
         節目介紹頁與場次頁只差 `/activity/detail/` → `/activity/game/`，直接換
         網址比點按鈕可靠：介紹頁的「立即購票」是 JS 綁定，點了不一定導頁。
         """
+        if await is_queue_page(page):
+            return True
         await page.goto(event_url, wait_until="domcontentloaded")
         curr_url = getattr(page, "url", "")
 
@@ -624,34 +625,36 @@ class TixcraftAdapter(TicketingAdapter):
     async def _pick_session_url(
         self, page: Page, session_preference: str | None
     ) -> str | None:
-        """挑一個還買得到的場次，回傳它的區域選擇頁網址。
+        """先唯一識別指定場次，再判斷是否可買；不得退回另一場。
 
         售完的場次那一列文字會出現「選購一空」，購票鈕仍在，點下去只會彈錯誤，
         因此要先用該列文字濾掉。
         """
         rows = await page.locator(TixcraftSelectors.GAME_LIST_ROWS).all()
-        fallback: str | None = None
+        matches: list[str | None] = []
         for row in rows:
             row_text = ""
             with contextlib.suppress(Exception):
                 row_text = await row.inner_text()
-            if any(word in row_text for word in TixcraftSelectors.SOLD_OUT_TEXTS):
-                continue
+            key = await row.get_attribute("data-key")
+            if session_preference:
+                wanted = session_preference.strip()
+                matched = (key == wanted[3:]) if wanted.startswith("id:") else bool(wanted and wanted in row_text)
+                if not matched:
+                    continue
+            sold_out = any(word in row_text for word in TixcraftSelectors.SOLD_OUT_TEXTS)
 
-            button = row.locator(TixcraftSelectors.SESSION_BUY_BUTTON).first
+            buttons = row.locator(TixcraftSelectors.SESSION_BUY_BUTTON)
             href = None
-            with contextlib.suppress(Exception):
-                href = await button.get_attribute(
-                    "data-href"
-                ) or await button.get_attribute("href")
-            if not href:
-                continue
-            url = urljoin(TIXCRAFT_BASE_URL, href)
-            if session_preference and session_preference in row_text:
-                return url
-            if fallback is None:
-                fallback = url
-        return fallback
+            if await buttons.count():
+                button = buttons.first
+                with contextlib.suppress(Exception):
+                    if await button.is_visible() and await button.get_attribute("disabled") is None:
+                        href = await button.get_attribute("data-href") or await button.get_attribute("href")
+            url = urljoin(TIXCRAFT_BASE_URL, href) if href and not sold_out else None
+            matches.append(url)
+        # Resolve identity before availability; never substitute another performance.
+        return matches[0] if len(matches) == 1 else None
 
     async def execute_payment(
         self, page: Page, payment_profile: CreditCardProfile | None

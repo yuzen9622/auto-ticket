@@ -15,9 +15,11 @@ from datetime import UTC, datetime
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any, cast
+from urllib.parse import urljoin
 
 from accounts.vault import get_env_credentials
 from adapters.payment.base import PaymentOutcome, PaymentProvider, PaymentResult
+from adapters.ticketing.dom import is_queue_page
 from adapters.ticketing.page_state import (
     CloudflareChallengeError,
     LoginState,
@@ -126,6 +128,7 @@ class _Runtime:
     # 就緒閘門確認過「可以下單」的那一個網址。頁面沒離開它就沒有重新導航的理由。
     session_ready_url: str | None = None
     is_pre_sale_standby: bool = False
+    queue_seen: bool = False
     sale_advance_attempts: int = 0
     last_sale_advance_at: float | None = None
     # 動作進度協議：每一格都對應一個「已經做過就不得再做一次」的副作用。
@@ -472,7 +475,13 @@ class PurchaseOrchestrator:
         announced = False
         challenge_seen_at: float | None = None
         challenge_rounds = 0
-        kind = await self.adapter.probe_page(page, self.spec.event_url)
+        preference = self.spec.session_preference or ""
+        probe_target = (
+            urljoin(self.spec.event_url, preference[4:])
+            if preference.startswith("url:")
+            else self.spec.event_url
+        )
+        kind = await self.adapter.probe_page(page, probe_target)
         attempt = 1
         while True:
             self.telemetry.record(
@@ -481,6 +490,12 @@ class PurchaseOrchestrator:
                 kind=str(getattr(kind, "value", kind)),
                 attempt=attempt,
             )
+
+            if kind is PageKind.QUEUE:
+                self._rt.queue_seen = True
+                self._rt.session_ready_url = self._page_url(page)
+                self.telemetry.record(TimelineEventType.MARK, "session_ready", mode="QUEUE")
+                return
 
             login_state = await self._probe_login_state(page)
             self.telemetry.record(
@@ -493,6 +508,12 @@ class PurchaseOrchestrator:
                 PageKind.LOGIN,
                 PageKind.CHALLENGE,
             )
+
+            if kind is PageKind.LOADING and not logged_out:
+                self._rt.session_ready_url = self._page_url(page)
+                self._rt.is_pre_sale_standby = True
+                self.telemetry.record(TimelineEventType.MARK, "session_ready", mode=kind.value)
+                return
 
             if kind is PageKind.REGISTRATION and not logged_out:
                 if challenge_seen_at is not None:
@@ -531,7 +552,7 @@ class PurchaseOrchestrator:
                     session_preference=self.spec.session_preference,
                 )
                 kind = await self.adapter.probe_page(page)
-                if kind is PageKind.REGISTRATION:
+                if kind in (PageKind.REGISTRATION, PageKind.QUEUE, PageKind.LOADING):
                     attempt += 1
                     continue
                 # 開賣前情境：活動主頁正常載入，且尚未開賣（如 ibon / 拓元在開賣前無法進入登記頁）
@@ -757,6 +778,10 @@ class PurchaseOrchestrator:
         """
         page = self._require_page()
         current_url = self._page_url(page)
+        if self._rt.queue_seen or await is_queue_page(page):
+            self._rt.queue_seen = True
+            self._rt.session_ready_url = current_url
+            return
         if current_url and current_url == self._rt.session_ready_url:
             self.telemetry.record(
                 TimelineEventType.MARK, "navigation_skipped", url=current_url
@@ -781,7 +806,11 @@ class PurchaseOrchestrator:
 
     async def _enter_ready(self, ctx: WarmupContext) -> None:
         page = self._require_page()
+        if await is_queue_page(page):
+            return
         opened = await self.adapter.detect_sale_opened(page, self.detect_timeout_ms)
+        if not opened:
+            self._rt.is_pre_sale_standby = True
         self.telemetry.record(
             TimelineEventType.MARK, "pre_sale_probe", opened=bool(opened)
         )
@@ -791,18 +820,32 @@ class PurchaseOrchestrator:
             TimelineEventType.MARK, "spin_wait_entered", drift_us=ctx.drift_us
         )
 
-    async def _advance_from_standby(self, page: Any) -> None:
+    async def _advance_from_standby(
+        self, page: Any, kind: PageKind | None = None
+    ) -> None:
+        if await is_queue_page(page):
+            return
+        kind = kind or await self.adapter.probe_page(page)
+        if kind in (PageKind.QUEUE, PageKind.CHALLENGE, PageKind.LOGIN, PageKind.LOADING):
+            return
         self._rt.sale_advance_attempts += 1
         self._rt.last_sale_advance_at = self._loop_time()
         error = None
         try:
-            ok = bool(
-                await self.adapter.navigate_to_event(
-                    page,
-                    self.spec.event_url,
-                    session_preference=self.spec.session_preference,
+            if kind is PageKind.REGISTRATION:
+                state = await self.adapter.detect_page_state(page)
+                if state is not PageState.WAITING_FOR_SALE:
+                    return
+                await page.reload(wait_until="domcontentloaded")
+                ok = True
+            else:
+                ok = bool(
+                    await self.adapter.navigate_to_event(
+                        page,
+                        self.spec.event_url,
+                        session_preference=self.spec.session_preference,
+                    )
                 )
-            )
         except CloudflareChallengeError:
             raise
         except Exception as exc:  # noqa: BLE001 — 開賣瞬間的導航逾時要重試，不是中止
@@ -815,16 +858,21 @@ class PurchaseOrchestrator:
             **({"error": error} if error else {}),
         )
 
-    async def _maybe_retry_sale_advance(self, page: Any) -> bool:
-        """只在 standby 起跑、仍停在活動頁、且距上次推進滿 sale_advance_retry_s 時重試。"""
-        if not self._rt.is_pre_sale_standby:
+    async def _maybe_retry_sale_advance(
+        self, page: Any, state: PageState = PageState.UNKNOWN
+    ) -> bool:
+        """未開放頁依節流間隔推進；渲染中、排隊與人工關卡保持原頁。"""
+        if state is PageState.LOADING:
+            return False
+        if not self._rt.is_pre_sale_standby and state is not PageState.WAITING_FOR_SALE:
             return False
         last = self._rt.last_sale_advance_at
         if last is not None and self._loop_time() - last < self.sale_advance_retry_s:
             return False
-        if await self.adapter.probe_page(page) is not PageKind.EVENT:
+        kind = await self.adapter.probe_page(page)
+        if state is not PageState.WAITING_FOR_SALE and kind is not PageKind.EVENT:
             return False
-        await self._advance_from_standby(page)
+        await self._advance_from_standby(page, kind)
         return True
 
     async def _trigger_purchase(self, ctx: WarmupContext) -> None:
@@ -888,7 +936,7 @@ class PurchaseOrchestrator:
                     if not await self._handle_ticket_selection(page):
                         return
                 case _:
-                    if not await self._maybe_retry_sale_advance(page):
+                    if not await self._maybe_retry_sale_advance(page, state):
                         await asyncio.sleep(self.micro_wait_s)
 
     #: 訂單送出之後就不該再回到這些「還在組訂單」的狀態。

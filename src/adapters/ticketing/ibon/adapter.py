@@ -14,6 +14,7 @@ from adapters.payment.base import PaymentOutcome, PaymentProvider, PaymentResult
 from adapters.ticketing.auth_cookies import has_platform_auth_cookies
 from adapters.ticketing.base import TicketingAdapter
 from adapters.ticketing.dom import (
+    is_queue_page,
     contains_cloudflare_challenge,
     first_present_visible,
     first_visible,
@@ -118,6 +119,8 @@ class IbonAdapter(TicketingAdapter):
     # ---------------------------------------------------------------- 頁面探測
 
     async def probe_page(self, page: Page, url: str | None = None) -> PageKind:
+        if await is_queue_page(page):
+            return PageKind.QUEUE
         if url is not None:
             curr = getattr(page, "url", "")
             if not curr or curr == "about:blank":
@@ -154,7 +157,7 @@ class IbonAdapter(TicketingAdapter):
         text = await page_text(page)
 
         # 1. Queue-It 等候室優先判定，絕不導航
-        if "queue-it.net" in curr_url or "queue-it" in text.lower() or "#lbheaderh2" in text.lower():
+        if await is_queue_page(page):
             return PageState.QUEUE
 
         # 2. 開賣後遇 Cloudflare 直接 fail-closed
@@ -187,7 +190,13 @@ class IbonAdapter(TicketingAdapter):
 
         # 7. 選擇票區（座位圖）
         if "utk0201_000.aspx" in curr_url:
-            return PageState.TICKET_SELECTION
+            if await first_present_visible(page, ["[aria-busy='true']", "[role='progressbar']", "#loading"]):
+                return PageState.LOADING
+            if await present_count(page, IbonSelectors.ZONE_ROWS):
+                return PageState.TICKET_SELECTION
+            if any(marker in text for marker in IbonSelectors.SOLD_OUT_TEXTS):
+                return PageState.TICKET_SELECTION
+            return PageState.WAITING_FOR_SALE
 
         # 8. 張數頁
         if any(seg in curr_url for seg in QUANTITY_PAGE_MARKERS):
@@ -786,6 +795,8 @@ class IbonAdapter(TicketingAdapter):
         顯示期間之外根本不渲染；靠點畫面上的購票鈕會在開賣前後都撲空。改成直接
         向同一支 API 要場次的訂購網址再導頁，開賣瞬間也少掉一次渲染等待。
         """
+        if await is_queue_page(page):
+            return True
         target_url = normalize_ibon_url(event_url)
         if "/activityinfo/details/" in target_url.lower():
             purchase_url = await self._resolve_session_url(
@@ -798,25 +809,8 @@ class IbonAdapter(TicketingAdapter):
         curr_url = getattr(page, "url", "").lower()
 
         if "/activityinfo/details/" in curr_url:
-            # API 沒給網址（例如還沒開放）時，退回頁面上的購票鈕。
-            buy_btn = await first_visible(
-                page,
-                IbonSelectors.ACTIVITY_DETAILS_BUY_BTN,
-                timeout_ms=self.timeout_ms,
-                telemetry=self.telemetry,
-            )
-            if buy_btn is None:
-                # 再次嘗試向 API 抓取開賣後的 purchase_url
-                purchase_url = await self._resolve_session_url(
-                    target_url, session_preference
-                )
-                if purchase_url is not None:
-                    await page.goto(purchase_url, wait_until="domcontentloaded")
-                    return True
-                return False
-            await buy_btn.click()
-            with contextlib.suppress(Exception):
-                await page.wait_for_url("**/UTK0201_000.aspx*", timeout=self.timeout_ms)
+            # An unqualified DOM buy button may belong to a different performance.
+            return False
 
         return True
 
@@ -832,19 +826,18 @@ class IbonAdapter(TicketingAdapter):
         except Exception:
             return None
 
-        buyable = [
-            s
-            for s in sessions
-            if s.get("purchase_url") and s.get("can_buy") and not s.get("sold_out")
-        ]
-        if not buyable:
-            return None
         if session_preference:
-            for session in buyable:
-                haystack = f"{session.get('name') or ''} {session.get('display_date') or ''}"
-                if session_preference in haystack:
-                    return str(session["purchase_url"])
-        return str(buyable[0]["purchase_url"])
+            wanted = session_preference.strip()
+            sessions = [s for s in sessions if (
+                str(s.get("key") or "") == wanted[3:] if wanted.startswith("id:")
+                else bool(wanted and wanted in f"{s.get('name') or ''} {s.get('display_date') or ''}")
+            )]
+        if len(sessions) != 1:
+            return None
+        session = sessions[0]
+        if not session.get("can_buy") or session.get("sold_out"):
+            return None
+        return str(session["purchase_url"]) if session.get("purchase_url") else None
 
     async def execute_payment(
         self, page: Page, payment_profile: CreditCardProfile | None

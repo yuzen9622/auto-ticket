@@ -45,6 +45,10 @@ ZERO_QUANTITY = "0"
 class PageKind(str, Enum):
     """目前停在哪一種頁面。票種的讀法在不同頁面上不同，不得混用。"""
 
+    QUEUE = "QUEUE"
+    """已進入等候室；預熱與導航也必須保留這一頁。"""
+    LOADING = "LOADING"
+    """登記頁正在渲染，不能當作需要選場次的活動母頁。"""
     EVENT = "EVENT"
     """公開活動主頁：票種是一張表格，只看得到售賣時段，看不到可購買數量。"""
     REGISTRATION = "REGISTRATION"
@@ -71,6 +75,10 @@ class PageState(str, Enum):
     票種快照後的結論，不是頁面上讀得到的物理特徵。
     """
 
+    LOADING = "LOADING"
+    """頁面尚在渲染，只等待，不導航。"""
+    WAITING_FOR_SALE = "WAITING_FOR_SALE"
+    """尚無可操作票列且沒有售完證據，開賣後定時重探。"""
     FAILURE_MODAL = "FAILURE_MODAL"
     """「別人搶先一步」「已無可配座位」——這一輪搶輸了，得換票種。"""
     GUEST_MODAL = "GUEST_MODAL"

@@ -17,12 +17,12 @@ import hashlib
 import re
 from collections.abc import Awaitable, Callable, Sequence
 from typing import TYPE_CHECKING, Any, ClassVar
-from urllib.parse import urlsplit
+from urllib.parse import urljoin, urlsplit
 
 from adapters.payment.base import PaymentOutcome, PaymentProvider, PaymentResult
 from adapters.ticketing.auth_cookies import has_platform_auth_cookies
 from adapters.ticketing.base import TicketingAdapter
-from adapters.ticketing.dom import try_solve_cloudflare_turnstile
+from adapters.ticketing.dom import is_queue_page, try_solve_cloudflare_turnstile
 from adapters.ticketing.kktix.captcha_selectors import CaptchaSelectors
 from adapters.ticketing.kktix.dom import (
     DEFAULT_OPTIONAL_PROBE_MS,
@@ -499,6 +499,9 @@ class KKTIXAdapter(TicketingAdapter):
         if not unique:
             return None
         # 只有一個登記頁時偏好沒有意義——單場次活動本來就只有一場可買。
+        if preference and preference.startswith("url:"):
+            matched = [s for s in unique if s["url"] == preference[4:]]
+            return matched[0]["url"] if len(matched) == 1 else None
         if len(unique) == 1:
             return unique[0]["url"]
         if preference:
@@ -517,7 +520,14 @@ class KKTIXAdapter(TicketingAdapter):
         沿用 CDP 借來的分頁時，再 goto 一次等於把人工通過的排隊、驗證與登入狀態
         敲掉重來——省這一次導航不是效能最佳化，是不可逆狀態的保全。
         """
-        target = to_registration_url(event_url)
+        if await is_queue_page(page):
+            return True
+        selected_url = (
+            session_preference[4:]
+            if session_preference and session_preference.startswith("url:")
+            else event_url
+        )
+        target = to_registration_url(urljoin(event_url, selected_url))
         reused = self._is_same_event_or_registration(self._current_url(page), target)
         if not reused:
             await page.goto(
@@ -529,7 +539,7 @@ class KKTIXAdapter(TicketingAdapter):
 
         # 多場次活動：母活動的登記頁沒有票種表單，真正的入口在各場次底下。
         # 這一步刻意留在預熱期做完——開賣瞬間才去找場次就來不及了。
-        if await self.detect_page_kind(page) is not KKTIXPageKind.REGISTRATION:
+        if await self.detect_page_kind(page) is KKTIXPageKind.EVENT:
             target = (
                 await self._enter_session_registration(
                     page, event_url, session_preference
@@ -556,7 +566,7 @@ class KKTIXAdapter(TicketingAdapter):
         with contextlib.suppress(Exception):
             await page.wait_for_selector(
                 EVENT_SESSION_LINKS,
-                timeout=self.navigation_timeout_ms,
+                timeout=min(self.timeout_ms, 1000),
                 state="attached",
             )
 
@@ -749,7 +759,9 @@ class KKTIXAdapter(TicketingAdapter):
         if app is None:
             return False
         units = await self._collect_ticket_units(page)
-        opened = len(units) > 0
+        opened = any(
+            option.available for option in await self.read_registration_tickets(page)
+        )
         self.telemetry.record(
             TimelineEventType.MARK, "sale_opened_probe", opened=opened, units=len(units)
         )
@@ -810,12 +822,22 @@ class KKTIXAdapter(TicketingAdapter):
         self, page: Page, html: str | None = None
     ) -> KKTIXPageKind:
         """判斷目前頁面種類。順序不可調換：登記頁同樣有活動標題。"""
+        if await is_queue_page(page):
+            return KKTIXPageKind.QUEUE
+        if await self._has(
+            page, KKTIXSelectors.REGISTRATION_APP
+        ) and not await self._is_rendered_registration(page, html):
+            return KKTIXPageKind.LOADING
         if await self._is_rendered_registration(page, html):
             return KKTIXPageKind.REGISTRATION
         if await self._has(page, KKTIXSelectors.LOGIN_KEY_FIELD) or await self._has(
             page, KKTIXSelectors.LOGIN_FORM
         ):
             return KKTIXPageKind.LOGIN
+        if "/registrations/new" in self._current_url(page) and not await self._has(
+            page, EVENT_SESSION_ITEMS
+        ):
+            return KKTIXPageKind.LOADING
         if (
             await self._has(page, KKTIXSelectors.EVENT_TICKET_TABLE_ROWS)
             or await self._has(page, KKTIXSelectors.EVENT_TITLE)
@@ -868,9 +890,7 @@ class KKTIXAdapter(TicketingAdapter):
             if KKTIXSelectors.MODAL_GUEST_SIGNIN_TEXT in modal_text:
                 return PageState.GUEST_MODAL
 
-        if await self._has(page, KKTIXSelectors.QUEUE_COUNTDOWN) or await self._has(
-            page, KKTIXSelectors.QUEUE_HEADING
-        ):
+        if await is_queue_page(page):
             return PageState.QUEUE
 
         on_order_url = ORDER_URL_MARKER in url and PAYMENT_URL_MARKER not in url
@@ -904,7 +924,15 @@ class KKTIXAdapter(TicketingAdapter):
             return PageState.VERIFICATION_CHALLENGE
 
         if await self._has(page, KKTIXSelectors.REGISTRATION_APP):
+            if not await self._is_rendered_registration(page):
+                return PageState.LOADING
             selected = await self.read_selected_quantity(page)
+            options = await self.read_registration_tickets(page)
+            all_sold_out = bool(options) and all(
+                self._is_sold_out(f"{o.name} {o.status_text}") for o in options
+            )
+            if selected == 0 and not any(o.available for o in options) and not all_sold_out:
+                return PageState.WAITING_FOR_SALE
             if selected == 0:
                 return PageState.TICKET_SELECTION
             for selectors in (
@@ -946,6 +974,8 @@ class KKTIXAdapter(TicketingAdapter):
         避免反覆輪詢對方站台。給了 `url` 但已經停在那一頁上時也不導航：
         就地判讀與重整後判讀讀到的是同一件事，重整卻會敲掉現場狀態。
         """
+        if await is_queue_page(page):
+            return KKTIXPageKind.QUEUE
         target = None if url is None else to_registration_url(url)
         if target is not None and not self._is_same_event_or_registration(
             self._current_url(page), target
@@ -1033,7 +1063,14 @@ class KKTIXAdapter(TicketingAdapter):
             )
             price = self._parse_price(price_text)
             sold_out = self._is_sold_out(f"{status_text} {name}")
-            has_plus = await self._has(unit, KKTIXSelectors.TICKET_PLUS_BTN)
+            plus = await self._first_present(unit, KKTIXSelectors.TICKET_PLUS_BTN)
+            has_plus = bool(
+                plus is not None
+                and await plus.is_visible()
+                and await plus.is_enabled()
+                and await plus.get_attribute("aria-disabled") != "true"
+                and "disabled" not in (await plus.get_attribute("class") or "").split()
+            )
             remaining_match = REMAINING_RE.search(status_text)
             remaining: int | None = None
             if remaining_match:

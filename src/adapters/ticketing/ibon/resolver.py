@@ -13,6 +13,7 @@ ibon 的前台是 Angular SPA，HTML 裡沒有活動資料；所有內容都來�
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import logging
 import re
 from datetime import datetime, timezone
@@ -90,17 +91,17 @@ def _parse_ibon_datetime(raw: Any) -> datetime | None:
     if not isinstance(raw, str) or not raw.strip():
         return None
     text = raw.strip()
-    for fmt in ("%Y-%m-%dT%H:%M:%S", "%Y/%m/%d %H:%M:%S", "%Y/%m/%d %H:%M", "%Y/%m/%d"):
-        try:
-            parsed = datetime.strptime(text[: len(fmt) + 4].strip(), fmt)
-        except ValueError:
-            continue
-        return parsed.replace(tzinfo=TAIPEI_TZ).astimezone(timezone.utc)
     with contextlib.suppress(ValueError):
         parsed = datetime.fromisoformat(text)
         if parsed.tzinfo is None:
             parsed = parsed.replace(tzinfo=TAIPEI_TZ)
         return parsed.astimezone(timezone.utc)
+    for fmt in ("%Y-%m-%dT%H:%M:%S", "%Y/%m/%d %H:%M:%S", "%Y/%m/%d %H:%M", "%Y/%m/%d"):
+        try:
+            parsed = datetime.strptime(text, fmt)
+        except ValueError:
+            continue
+        return parsed.replace(tzinfo=TAIPEI_TZ).astimezone(timezone.utc)
     return None
 
 
@@ -365,18 +366,24 @@ class IbonEventResolver(EventResolver):
             if not isinstance(row, dict):
                 continue
             starts_at = _parse_show_sale_date(row.get("ShowSaleDate"))
+            purchase_url = _absolute_go_ticket_url(row.get("Href"))
+            # Href may be absent before sale; identity must not change when it appears.
+            identity = "\0".join(str(row.get(field) or "").strip() for field in ("GameInfoName", "ShowSaleDate", "VenueRegion"))
+            key = hashlib.sha256(identity.encode()).hexdigest()[:24]
+            sale_start = _parse_ibon_datetime(row.get("StartDT"))
             sessions.append(
                 {
+                    "key": key,
                     "name": str(row.get("GameInfoName") or "").strip(),
                     "venue": str(row.get("VenueRegion") or "").strip() or None,
                     "display_date": str(row.get("ShowSaleDate") or "").strip(),
                     "starts_at": starts_at.isoformat() if starts_at else None,
                     "can_buy": bool(row.get("CanBuy")),
                     "sold_out": bool(row.get("SoldOut")),
-                    "purchase_url": _absolute_go_ticket_url(row.get("Href")),
+                    "purchase_url": purchase_url,
                     # 該場次自己的售票起訖，以及 ibon 伺服器回報的現在。分階段開賣
                     # 的活動只有這三個值對得起來，活動層的售票時間會提早整整一階段。
-                    "sale_start_at": str(row.get("StartDT") or "").strip() or None,
+                    "sale_start_at": sale_start.isoformat() if sale_start else None,
                     "sale_end_at": str(row.get("EndDT") or "").strip() or None,
                     "server_now": str(row.get("NowDT") or "").strip() or None,
                 }
@@ -432,6 +439,11 @@ class IbonEventResolver(EventResolver):
         if image:
             raw_metadata["image_url"] = image
 
+        upcoming = [
+            _parse_ibon_datetime(s.get("sale_start_at"))
+            for s in sessions if _session_window(s)[0]
+        ]
+        next_sale = min((value for value in upcoming if value is not None), default=None)
         return Event(
             id=event_id,
             platform=PlatformEnum.IBON,
@@ -440,7 +452,7 @@ class IbonEventResolver(EventResolver):
             title=title,
             canonical_url=self._event_url(activity_id),
             status=_ibon_status(detail, sessions),
-            sale_start_at=_parse_ibon_datetime(detail.get("ActivityTicketSDate")),
+            sale_start_at=next_sale or _parse_ibon_datetime(detail.get("ActivityTicketSDate")),
             sale_end_at=_parse_ibon_datetime(detail.get("ActivityTicketEDate")),
             event_start_at=event_start_at,
             ticket_types=[],

@@ -1449,7 +1449,7 @@ async def test_pre_sale_standby_triggers_navigation_at_sale_start(
     tmp_path: Path,
 ) -> None:
     """開賣前待命狀態在 T=0 開賣瞬間，會自動導航推進進登記頁。"""
-    adapter = StubAdapter()
+    adapter = StubAdapter(probe_kinds=[KKTIXPageKind.EVENT])
     orchestrator, _, browser, _ = build(tmp_path, adapter)
     orchestrator.fsm = PurchaseWorkflow(orchestrator.spec, orchestrator.telemetry)
     orchestrator.fsm.send("prepare_session")
@@ -1671,7 +1671,7 @@ async def test_sale_advance_retries_until_page_leaves_event(tmp_path: Path) -> N
     """開賣瞬間推進失敗（仍在活動頁）時應持續重試，直到頁面真的離開活動頁或預算耗盡。"""
     adapter = StubAdapter(
         page_states=[PageState.UNKNOWN] * 1000,
-        probe_kinds=[KKTIXPageKind.EVENT, KKTIXPageKind.EVENT],
+        probe_kinds=[KKTIXPageKind.EVENT] * 3,
     )
     orchestrator, _, browser, _ = build(tmp_path, adapter)
     orchestrator.fsm = PurchaseWorkflow(orchestrator.spec, orchestrator.telemetry)
@@ -1744,7 +1744,7 @@ async def test_sale_advance_survives_navigation_error(tmp_path: Path) -> None:
 
 async def test_sale_advance_propagates_cloudflare(tmp_path: Path) -> None:
     """Cloudflare 挑戰必須原樣往上拋，不得被吞掉或重試掩蓋。"""
-    adapter = StubAdapter()
+    adapter = StubAdapter(probe_kinds=[KKTIXPageKind.EVENT])
     orchestrator, _, browser, _ = build(tmp_path, adapter)
     orchestrator.fsm = PurchaseWorkflow(orchestrator.spec, orchestrator.telemetry)
     orchestrator.fsm.send("prepare_session")

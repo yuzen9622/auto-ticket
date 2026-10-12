@@ -43,6 +43,9 @@ class FakeLocator:
         self.selector = selector
         self.elements = list(elements)
 
+    def nth(self, index: int) -> FakeLocator:
+        return FakeLocator(self.page, self.selector, self.elements[index:index + 1])
+
     @property
     def first(self) -> FakeLocator:
         return FakeLocator(self.page, self.selector, self.elements[:1])
@@ -83,6 +86,9 @@ class FakeLocator:
 
     async def input_value(self) -> str:
         return str(self.element.get("value", ""))
+
+    async def is_enabled(self) -> bool:
+        return not any(el.has_attr("disabled") for el in [self.element, *self.element.parents] if getattr(el, "attrs", None) is not None)
 
     async def is_checked(self) -> bool:
         return self.element.get("checked") is not None

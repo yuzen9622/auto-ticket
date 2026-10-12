@@ -412,62 +412,46 @@ EVENT_PAGE_HTML = (
 )
 
 
+def serve_presale_pages(flow: Flow, spec: PurchaseTaskSpec, *, open_on_attempt: int = 1) -> None:
+    """Only simulate HTTP responses/redirects; keep adapter navigation intact."""
+    from bs4 import BeautifulSoup
+
+    original_goto = flow.page.goto
+    attempts = 0
+
+    async def goto(url: str, **kwargs: Any) -> None:
+        nonlocal attempts
+        await original_goto(url, **kwargs)
+        if "/registrations/new" in url and flow.clock.wall >= spec.sale_start_at:
+            attempts += 1
+            if attempts >= open_on_attempt:
+                flow.page.soup = BeautifulSoup(load_page_html("kktix_registration_new.html"), "html.parser")
+                return
+        # Before opening the provider redirects registration requests back to its event.
+        flow.page.url = spec.event_url
+        flow.page.soup = BeautifulSoup(EVENT_PAGE_HTML, "html.parser")
+
+    flow.page.goto = goto
+
+
 async def test_flow_pre_sale_standby_to_open_transitions_smoothly(flow: Flow) -> None:
-    """模擬從『未開賣待命』到『T=0 開賣瞬間自動推進』的全流程。"""
-    spec = make_spec(
-        flow.clock.wall + timedelta(milliseconds=200),
-    )
+    spec = make_spec(flow.clock.wall + timedelta(milliseconds=200))
     orch = flow.wire(start_html=EVENT_PAGE_HTML, spec=spec)
-
-    async def nav_on_sale(page: Any, url: str, session_preference: str | None = None) -> bool:
-        from bs4 import BeautifulSoup
-
-        if flow.clock.wall >= spec.sale_start_at:
-            flow.page.soup = BeautifulSoup(load_page_html("kktix_registration_new.html"), "html.parser")
-        return True
-
-    orch.adapter.navigate_to_event = nav_on_sale
-
+    serve_presale_pages(flow, spec)
     report = await orch.run()
     assert report.final_state == "COMPLETED"
     assert report.error is None
-    # 驗證歷程中確實記錄了 pre_sale_standby
     events = [e for e in flow.telemetry.events() if e.name == "session_ready"]
     assert any(e.detail.get("mode") == "pre_sale_standby" for e in events)
 
 
 async def test_flow_pre_sale_standby_retries_until_sale_really_opens(flow: Flow) -> None:
-    """開賣瞬間站台稍慢開放時，重試機制要撑到真的能推進為止。"""
-    spec = make_spec(
-        flow.clock.wall + timedelta(milliseconds=200),
-    )
+    spec = make_spec(flow.clock.wall + timedelta(milliseconds=200))
     orch = flow.wire(start_html=EVENT_PAGE_HTML, spec=spec)
     orch.sale_advance_retry_s = 0.0
-    after_sale_calls = 0
-
-    async def nav_on_sale(
-        page: Any, url: str, session_preference: str | None = None
-    ) -> bool:
-        nonlocal after_sale_calls
-        from bs4 import BeautifulSoup
-
-        if flow.clock.wall < spec.sale_start_at:
-            return True
-        after_sale_calls += 1
-        if after_sale_calls < 3:
-            flow.page.soup = BeautifulSoup(EVENT_PAGE_HTML, "html.parser")
-            return False
-        flow.page.soup = BeautifulSoup(
-            load_page_html("kktix_registration_new.html"), "html.parser"
-        )
-        return True
-
-    orch.adapter.navigate_to_event = nav_on_sale
-
+    serve_presale_pages(flow, spec, open_on_attempt=3)
     report = await orch.run()
     assert report.final_state == "COMPLETED"
     assert report.error is None
-    sale_advance_events = [
-        e for e in flow.telemetry.events() if e.name == "sale_advance"
-    ]
+    sale_advance_events = [e for e in flow.telemetry.events() if e.name == "sale_advance"]
     assert len(sale_advance_events) >= 3

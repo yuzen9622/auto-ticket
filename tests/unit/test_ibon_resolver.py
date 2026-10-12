@@ -176,7 +176,8 @@ async def test_ibon_status_is_announced_before_the_session_sale_window() -> None
 
     assert event.status == EventStatus.ANNOUNCED
     session = event.raw_metadata["sessions"][0]
-    assert session["sale_start_at"] == "2026-09-26T11:00:00"
+    assert session["sale_start_at"] == "2026-09-26T03:00:00+00:00"
+    assert event.sale_start_at.isoformat() == session["sale_start_at"]
     assert session["server_now"] == "2026-09-22T10:29:31.1795064"
 
 

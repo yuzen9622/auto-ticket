@@ -253,3 +253,15 @@ async def try_solve_cloudflare_turnstile(
     # 預設透過 page_text 檢查
     text = await page_text(page)
     return contains_cloudflare_challenge(text) is None
+
+
+async def is_queue_page(page: Page) -> bool:
+    """Read-only guard shared by warmup, navigation and the purchase loop."""
+    from urllib.parse import urlsplit
+
+    host = urlsplit(str(getattr(page, "url", "") or "")).hostname or ""
+    if host == "queue-it.net" or host.endswith(".queue-it.net"):
+        return True
+    return await first_present_visible(
+        page, ["#cf-time", "#cf-wrapper h1", ".queue-heading", "#waiting-room", "#lbHeaderH2"]
+    ) is not None
