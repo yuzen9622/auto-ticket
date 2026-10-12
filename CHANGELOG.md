@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.7.0](https://github.com/yuzen9622/auto-ticket/compare/v0.6.3...v0.7.0) (2026-10-12)
+
+
+### Features
+
+* **cli:** switch default ports to 18347 and 18346 ([2b6dd30](https://github.com/yuzen9622/auto-ticket/commit/2b6dd304d6bf7d7c3850d864f5055e2b183db464))
+
+
+### Bug Fixes
+
+* **release:** use pathToFileURL for redact_notes entrypoint check ([2a30609](https://github.com/yuzen9622/auto-ticket/commit/2a3060909e0fbd92e10a241b02a5a721112d1aac))
+* **ticketing:** require page controls for TixCraft login and avoid selector wait lag ([81b3fa1](https://github.com/yuzen9622/auto-ticket/commit/81b3fa189311d1978f9fd8c6f41364439f232ee8))
+* **web:** open task row action menu to the right ([c328db9](https://github.com/yuzen9622/auto-ticket/commit/c328db9ed12c9e8474c1424968bca62c9c3d1313))
+
+
+### Performance Improvements
+
+* **worker:** pre-warm OCR models asynchronously on startup ([76dca4e](https://github.com/yuzen9622/auto-ticket/commit/76dca4e918f8c657db9340d91c3641112d62cb35))
+
 ## [0.6.3](https://github.com/yuzen9622/auto-ticket/compare/v0.6.2...v0.6.3) (2026-10-12)
 
 
