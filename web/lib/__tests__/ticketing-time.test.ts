@@ -117,3 +117,9 @@ describe("minTicketingTimeLocal", () => {
     )
   })
 })
+
+it("preserves a future sale within the current minute", () => {
+  const sale = "2026-09-18T10:30:59Z"
+  expect(defaultTicketingTimeMs(sale, Date.now())).toBe(Date.parse(sale))
+  expect(new Date(defaultTicketingTimeLocal(sale, Date.now())).getTime()).toBe(Date.parse(sale))
+})

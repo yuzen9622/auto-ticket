@@ -539,3 +539,27 @@ describe("多平台帳號狀態檢查", () => {
     expect(screen.queryByRole("link", { name: "前往設定" })).toBeNull()
   })
 })
+
+it("同名場次送出不同 ID，未開賣場次使用自己的時間建立排程", async () => {
+  const user = userEvent.setup()
+  api.getEvent.mockResolvedValue(eventFixture({
+    platform: "ibon", status: "ON_SALE", sale_start_at: "2026-01-01T00:00:00Z",
+    raw_metadata: { sessions: [
+      { key: "A", name: "同名演出", starts_at: "2026-11-01", can_buy: true },
+      { key: "B", name: "同名演出", starts_at: "2026-11-02", can_buy: false, sale_start_at: "2026-10-01T04:00:00Z" },
+    ] },
+  }))
+  api.createTask.mockResolvedValue({ id: "task_B", status: "SCHEDULED" })
+  renderWithProviders(<TaskForm eventId="ev_mayday01" />)
+  await screen.findByLabelText("聯絡人姓名")
+  await fillContact(user)
+  await user.click(screen.getByRole("combobox", { name: "活動場次" }))
+  await user.click(await screen.findByRole("option", { name: /2026-11-02/ }))
+  const input = await screen.findByLabelText("搶票時間") as HTMLInputElement
+  expect(new Date(input.value).getTime()).toBe(Date.parse("2026-10-01T04:00:00Z"))
+  await user.click(screen.getByRole("button", { name: "確認搶票資訊" }))
+  await user.click(await screen.findByRole("button", { name: "送出任務" }))
+  await waitFor(() => expect(api.createTask).toHaveBeenCalledTimes(1))
+  expect(api.createTask.mock.calls[0][0].session_preference).toBe("id:B")
+  expect(Date.parse(api.createTask.mock.calls[0][0].sale_start_at)).toBe(Date.parse("2026-10-01T04:00:00Z"))
+})

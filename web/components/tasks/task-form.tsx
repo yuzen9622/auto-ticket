@@ -7,6 +7,7 @@ import { useTranslations } from "next-intl"
 import { useMutation, useQuery } from "@tanstack/react-query"
 import { toast } from "sonner"
 
+import { sessionPreference, sessionSale } from "@/lib/event-session"
 import { EventSummary } from "@/components/tasks/event-summary"
 import { AttendeeEditor } from "@/components/tasks/attendee-editor"
 import { ContactPicker } from "@/components/tasks/contact-picker"
@@ -49,7 +50,6 @@ import {
 import {
   defaultTicketingTimeLocal,
   floorToMinute,
-  isSellingNow,
   minTicketingTimeLocal,
 } from "@/lib/ticketing-time"
 
@@ -108,11 +108,7 @@ export function TaskForm({ eventId }: { eventId: string }) {
   const [errors, setErrors] = React.useState<Record<string, string>>({})
   const [confirming, setConfirming] = React.useState(false)
   // 已經在販售的活動走立即執行：不問搶票時間，建立後直接進登記頁。
-  const sellingNow = isSellingNow(
-    event?.status,
-    event?.sale_start_at,
-    currentMinute
-  )
+  const { saleStartAt, selling: sellingNow } = sessionSale(event, draft.session_preference, currentMinute)
 
   // 搶票時間只在「第一次拿到這場活動」時帶入；同一場活動的重新抓取不得蓋掉使用者輸入。
   const seededEventId = React.useRef<string | null>(null)
@@ -121,13 +117,13 @@ export function TaskForm({ eventId }: { eventId: string }) {
     if (!event || seededEventId.current === event.id) return
     seededEventId.current = event.id
     timeTouched.current = false
-    const selling = isSellingNow(event.status, event.sale_start_at, Date.now())
+    const { selling, saleStartAt: initialSale } = sessionSale(event, "", Date.now())
     setDraft((prev) => ({
       ...prev,
       // 已經在賣的活動沒有開賣可等，表單也不顯示這個欄位；留空避免送出過期的時間。
       ticketing_time_local: selling
         ? ""
-        : defaultTicketingTimeLocal(event.sale_start_at, Date.now()),
+        : defaultTicketingTimeLocal(initialSale, Date.now()),
       // 票價是完全相等比對，預設值 0 會把所有票排除掉。活動票種已經抓回來了，
       // 就用它預填，讓表單一打開就是「照票面價買」而不是一個買不到任何票的設定。
       //
@@ -193,6 +189,10 @@ export function TaskForm({ eventId }: { eventId: string }) {
       needsTicketingTime: !sellingNow,
       message: (key, values) => tErrors(key, values),
     })
+    const sessions = event?.raw_metadata?.sessions ?? []
+    if (sessions.length > 1 && !sessions.some((s) => sessionPreference(s) === draft.session_preference)) {
+      found.session_preference = t("sessionSelectPlaceholder")
+    }
     setErrors(found)
     return found
   }
@@ -569,19 +569,26 @@ export function TaskForm({ eventId }: { eventId: string }) {
                   <Label htmlFor="session-preference">{t("sessionPreference")}</Label>
                   <Select
                     value={draft.session_preference}
-                    onValueChange={(val) => patch({ session_preference: val })}
+                    onValueChange={(val) => {
+                      const sale = sessionSale(event, val, Date.now())
+                      timeTouched.current = false
+                      patch({
+                        session_preference: val,
+                        ticketing_time_local: sale.selling ? "" : defaultTicketingTimeLocal(sale.saleStartAt, Date.now()),
+                      })
+                    }}
                   >
                     <SelectTrigger id="session-preference" className="h-8">
                       <SelectValue placeholder={t("sessionSelectPlaceholder")} />
                     </SelectTrigger>
                     <SelectContent>
-                      {sessions.map((s, idx) => (
-                        <SelectItem key={idx} value={s.name}>
+                      {sessions.map((s) => (
+                        <SelectItem key={sessionPreference(s)} value={sessionPreference(s)}>
                           <div className="flex items-center gap-2">
                             <span className="font-medium">{s.name}</span>
-                            {s.start_at && (
+                            {(s.start_at || s.starts_at || s.display_date) && (
                               <span className="text-xs text-muted-foreground">
-                                （{s.start_at}）
+                                （{s.start_at || s.starts_at || s.display_date}）
                               </span>
                             )}
                           </div>
@@ -593,7 +600,7 @@ export function TaskForm({ eventId }: { eventId: string }) {
                     id="session-preference-hint"
                     className="text-xs text-muted-foreground"
                   >
-                    {t("sessionMultiHint")}
+                    {errors.session_preference ?? t("sessionMultiHint")}
                   </span>
                 </div>
               )
@@ -667,6 +674,7 @@ export function TaskForm({ eventId }: { eventId: string }) {
                   <Input
                     id="ticketing-time"
                     type="datetime-local"
+                    step={1}
                     value={draft.ticketing_time_local}
                     min={minTicketingTimeLocal(currentMinute)}
                     onChange={(e) => {
@@ -686,7 +694,7 @@ export function TaskForm({ eventId }: { eventId: string }) {
                     }
                   >
                     {errors.ticketingTime ??
-                      (event.sale_start_at
+                      (saleStartAt
                         ? t("ticketingTimeHint")
                         : t("saleStartMissing"))}
                   </span>
@@ -694,8 +702,8 @@ export function TaskForm({ eventId }: { eventId: string }) {
               )}
               <span className="tabular text-xs text-muted-foreground">
                 {t("originalSaleStart")}：
-                {event.sale_start_at
-                  ? formatDateTime(event.sale_start_at)
+                {saleStartAt
+                  ? formatDateTime(saleStartAt)
                   : common("none")}
               </span>
             </div>

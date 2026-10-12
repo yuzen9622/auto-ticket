@@ -5,8 +5,8 @@ export const MINUTE_MS = 60_000
 /**
  * 正規化到分鐘。
  *
- * `datetime-local` 只到分鐘，若拿含秒數的「現在」去比，剛帶入的預設值會在
- * 下一次驗證時被判成過期。所有比較都走這一層，誤差就不會變成假錯誤。
+ * 「現在開始」的預設值與過期驗證採分鐘容許範圍，避免剛帶入就被判過期。
+ * 未來的官方開賣時間另保留秒數，不能因取整而變成立即任務。
  */
 export function floorToMinute(ms: number): number {
   return Math.floor(ms / MINUTE_MS) * MINUTE_MS
@@ -18,7 +18,8 @@ export function msToLocalInput(ms: number): string {
   const pad = (n: number) => String(n).padStart(2, "0")
   return (
     `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}` +
-    `T${pad(d.getHours())}:${pad(d.getMinutes())}`
+    `T${pad(d.getHours())}:${pad(d.getMinutes())}` +
+    (d.getSeconds() ? `:${pad(d.getSeconds())}` : "")
   )
 }
 
@@ -54,8 +55,7 @@ export function defaultTicketingTimeMs(
   now: number
 ): number {
   const sale = parseServerDate(saleStartAt)?.getTime()
-  const base = sale !== undefined && sale > now ? sale : now
-  return floorToMinute(base)
+  return sale !== undefined && sale > now ? sale : floorToMinute(now)
 }
 
 export function defaultTicketingTimeLocal(

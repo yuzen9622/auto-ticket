@@ -151,6 +151,13 @@ export interface TicketingProviderOut {
 
 export interface EventSessionInfo {
   name: string
+  key?: string | null
+  starts_at?: string | null
+  display_date?: string | null
+  sale_start_at?: string | null
+  can_buy?: boolean
+  sold_out?: boolean
+  purchase_url?: string | null
   start_at?: string | null
   url?: string | null
 }
