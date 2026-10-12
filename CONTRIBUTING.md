@@ -39,6 +39,7 @@ warmup, 預熱, T-<數字>
 
 清單的唯一事實來源是 `scripts/release/sensitive-terms.mjs`，同一份清單也用於
 Release notes 遮蔽器（`scripts/release/redact_notes.mjs`）。
+公開 Release notes 保留遮蔽後的 changelog，並附上一份安裝與更新方法。
 
 擋的不是祕密，是「我們在盯哪裡」這類會讓票務平台據以調整的工程細節。改寫方式：
 

@@ -41,13 +41,13 @@ tail -f install.log
 
 ## 支援平台
 
-| 平台 | 支援 |
-| --- | --- |
-| macOS 13 Ventura 以上，Apple Silicon | ✅ |
-| macOS Intel | ❌ 首版不支援（見下） |
-| Windows 10 1803 以上，x64 | ✅ |
-| Linux | ❌ 首版不支援 |
-| Windows on ARM | ❌ 首版不支援 |
+| 平台                                | 支援  |
+| --------------------------------- | --- |
+| macOS 13 Ventura 以上，Apple Silicon | ✅   |
+| macOS Intel                       | ❌   |
+| Windows 10 1803 以上，x64            | ✅   |
+| Linux                             | ❌   |
+| Windows on ARM                    | ❌   |
 
 macOS 的下界是 13，因為 OCR 依賴的 `onnxruntime` 1.23.2 的 wheel 標的是 `macosx_13_0`。
 
@@ -71,9 +71,9 @@ Intel Mac 就得讓那台機器的加密庫停在一個更舊的版本，我們�
 
 `autix doctor` 會把以上逐條檢查並告訴你缺哪一項。
 
-## 固定埠 8000 / 3000
+## 固定埠 18347 / 18346
 
-首版把 API 固定在 `127.0.0.1:8000`、前端固定在 `127.0.0.1:3000`，**沒有**覆寫旗標。
+API 固定在 `127.0.0.1:18347`、前端固定在 `127.0.0.1:18346`，避開常見的開發埠位；目前**沒有**覆寫旗標。
 
 這是刻意的取捨。前端的 API 位址是 **Next.js 建置期內聯**的字面值，要支援可變埠只有
 兩條路：發佈後掃描改寫 `.next` 產物（不受 Next.js 任何保證，而且會讓完整性雜湊失去
@@ -84,10 +84,10 @@ Intel Mac 就得讓那台機器的加密庫停在一個更舊的版本，我們�
 
 ```bash
 # macOS
-lsof -nP -iTCP:8000 -sTCP:LISTEN
+lsof -nP -iTCP:18347 -sTCP:LISTEN
 
 # Windows
-netstat -ano | findstr :8000
+netstat -ano | findstr :18347
 ```
 
 ## macOS：第一次開啟被 Gatekeeper 擋下

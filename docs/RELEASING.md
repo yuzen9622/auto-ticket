@@ -147,16 +147,20 @@ ddddocr=ok classification_len>0
 `packaging/runtime/README.md`：onnxruntime 是 native extension，wheel 裝得進去卻
 import 失敗是這條鏈最常見的失敗形態，只有真的推論一次才看得出來。
 
-## Release notes 遮蔽
+## 公開 Release notes
 
-`scripts/release/redact_notes.mjs` 只保留 `Features` / `Bug Fixes` /
-`Performance Improvements` 三個 section，並對保留的每一行套用
-`scripts/release/sensitive-terms.mjs` 的 denylist，命中者整行換成通用字樣。
+`scripts/release/redact_notes.mjs` 保留 `Features`、`Bug Fixes`、
+`Performance Improvements` changelog，沿用敏感詞遮蔽，最後附上安裝與更新方法：
 
-遮蔽器**只保護 Release notes 這一頁**。repo 是公開的，commit 歷史與
-`src/adapters/ticketing/*/selectors.py` 本身就是公開內容，遮蔽器無法追溯性地保護
-它們。真正的長期控制是 `commit-hygiene` 在 PR 階段擋下敏感 subject——見
-`CONTRIBUTING.md`。深度工程筆記放 `docs/internal/`，該目錄不進版控。
+- 安裝：`npx @yuzen9622/auto-ticket` 或 `pnpm dlx @yuzen9622/auto-ticket`
+- 更新：`autix update`
+
+不附加付款聲明；先移除既有頁尾，重跑發布流程也不會累積重複區塊。
+完整變更紀錄仍由 release-please 維護在 `CHANGELOG.md`。
+
+這只控制 Release notes 這一頁，不改寫公開的 commit 歷史或程式碼。
+`commit-hygiene` 仍在 PR 階段擋下敏感 subject——見 `CONTRIBUTING.md`。
+深度工程筆記放 `docs/internal/`，該目錄不進版控。
 
 ## 人工前置條件
 
