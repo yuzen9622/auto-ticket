@@ -100,7 +100,7 @@ export function TaskRowActions({ task }: { task: TaskResponse }) {
             <MoreHorizontal className="h-4 w-4" />
           </Button>
         </DropdownMenuTrigger>
-        <DropdownMenuContent align="start">
+        <DropdownMenuContent side="right" align="start">
           <DropdownMenuLabel className="text-xs text-muted-foreground">
             {common("actions")}
           </DropdownMenuLabel>
