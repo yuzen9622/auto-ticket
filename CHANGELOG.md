@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.6.3](https://github.com/yuzen9622/auto-ticket/compare/v0.6.2...v0.6.3) (2026-10-12)
+
+
+### Bug Fixes
+
+* **cli:** detect child exits throughout supervisor startup ([2f0f5bb](https://github.com/yuzen9622/auto-ticket/commit/2f0f5bbd3deaf07e06a362a4b127bec787191902))
+* **purchase:** enforce cancellation and explicit workflow handoffs ([2692451](https://github.com/yuzen9622/auto-ticket/commit/2692451f3dc7adae40bc91a79f9a0d13c0f168df))
+* **purchase:** improve presale standby and session handling across platforms ([4e92b99](https://github.com/yuzen9622/auto-ticket/commit/4e92b99a38f4e80c875575cd934c168284042379))
+* **release:** authenticate draft asset checksum downloads ([aa6963f](https://github.com/yuzen9622/auto-ticket/commit/aa6963f6128d0890c2ac7afd25411ed5801f4a57))
+* **scheduler:** keep quantized HTTP dates diagnostic only ([f85776f](https://github.com/yuzen9622/auto-ticket/commit/f85776f6de1ed0ad551904b5f6afd2156646568f))
+* **web:** align session preference and sale timing in task form ([65d6513](https://github.com/yuzen9622/auto-ticket/commit/65d651380be715be7ebed1a898a884f452a8864e))
+
 ## [0.6.2](https://github.com/yuzen9622/auto-ticket/compare/v0.6.1...v0.6.2) (2026-09-29)
 
 
