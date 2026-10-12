@@ -7,6 +7,7 @@ import signal
 from collections.abc import Callable, Coroutine, Mapping
 from typing import Any
 
+from adapters.verification.ddddocr_provider import DdddOcrProvider
 from broker.broker import SqliteTaskBroker
 from broker.jobs import JobKind, JobRecord
 from broker.outbox import OutboxWriter
@@ -53,6 +54,8 @@ class WorkerLoop:
             dict(handlers) if handlers is not None else dict(DEFAULT_HANDLERS)
         )
 
+        # 自訂 handlers 的嵌入式使用者不一定需要 OCR；正式 Worker 則提前備妥。
+        self._warm_ocr_on_start = handlers is None
         self._active_jobs: dict[str, asyncio.Task[None]] = {}
         self._active_records: dict[str, JobRecord] = {}
         self._preempted: set[str] = set()
@@ -203,10 +206,19 @@ class WorkerLoop:
     def stop(self) -> None:
         self._stop_event.set()
 
+    async def _warm_ocr(self) -> None:
+        # ibon 登入採 beta；其他圖片辨識共用標準模型。兩者沿用 provider 快取。
+        for beta in (True, False):
+            if not await DdddOcrProvider(beta=beta).warmup():
+                logger.warning("OCR model preparation unavailable (beta=%s)", beta)
+
     async def run_forever(self) -> None:
         """正式運行迴圈：定期 claim、執行、heartbeat、reap_expired、優雅關閉。"""
         await self.initialize()
         outbox_task = asyncio.create_task(self._outbox.run())
+        ocr_task = (
+            asyncio.create_task(self._warm_ocr()) if self._warm_ocr_on_start else None
+        )
 
         loop = asyncio.get_running_loop()
         for sig in (signal.SIGINT, signal.SIGTERM):
@@ -244,6 +256,11 @@ class WorkerLoop:
                     *self._active_jobs.values(), return_exceptions=True
                 )
             self._active_jobs.clear()
+
+            if ocr_task is not None:
+                ocr_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await ocr_task
 
             outbox_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):

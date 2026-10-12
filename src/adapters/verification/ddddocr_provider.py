@@ -3,12 +3,13 @@
 
 採用 Lazy Singleton 延遲載入模型與 onnxruntime，避免在 API 行程或不使用 OCR
 的任務中產生昂貴的載入開銷。推論呼叫由 asyncio.to_thread 移至工作執行緒，
-避免阻塞事件迴圈。
+避免阻塞事件迴圈。Worker 可呼叫 warmup() 提前載入；匯入模組仍不載入模型。
 """
 
 from __future__ import annotations
 
 import asyncio
+import time
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
@@ -86,6 +87,34 @@ class DdddOcrProvider:
         if self.beta:
             return await _get_ocr(model_path, beta=True)
         return await _get_ocr(model_path)
+
+    async def warmup(self) -> bool:
+        """提前建立與 solve 共用的模型快取；失敗不阻擋 Worker 啟動。"""
+        started = time.perf_counter()
+        try:
+            if self.model_path is not None:
+                try:
+                    await self._load_engine(self.model_path)
+                except Exception:
+                    await self._load_engine(None)
+            else:
+                await self._load_engine(None)
+        except Exception as exc:
+            if self.telemetry is not None:
+                self.telemetry.record(
+                    TimelineEventType.MARK,
+                    "ocr_warmup_failed",
+                    error_type=type(exc).__name__,
+                )
+            return False
+        if self.telemetry is not None:
+            self.telemetry.record(
+                TimelineEventType.MARK,
+                "ocr_ready",
+                beta=self.beta,
+                elapsed_ms=round((time.perf_counter() - started) * 1000, 1),
+            )
+        return True
 
     async def solve(self, challenge: VerificationChallenge) -> VerificationResult:
         if challenge.kind is not ChallengeKind.IMAGE_CAPTCHA:

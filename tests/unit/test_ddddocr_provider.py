@@ -27,6 +27,31 @@ def _clear_ocr_engines():
 
 
 @pytest.mark.asyncio
+async def test_warmup_builds_engine_without_classifying_and_solve_reuses_it(monkeypatch):
+    stub = MagicMock()
+    stub.classification.return_value = "ABCD"
+    build = MagicMock(return_value=stub)
+    monkeypatch.setattr("adapters.verification.ddddocr_provider._build_ocr", build)
+    provider = DdddOcrProvider(beta=True)
+
+    assert await provider.warmup() is True
+    stub.classification.assert_not_called()
+    result = await provider.solve(VerificationChallenge(
+        kind=ChallengeKind.IMAGE_CAPTCHA, question="", image_bytes=b"offline"
+    ))
+    assert result.solved
+    build.assert_called_once_with(None, beta=True)
+
+
+@pytest.mark.asyncio
+async def test_warmup_failure_is_nonfatal(monkeypatch):
+    def unavailable(*args, **kwargs):
+        raise ImportError("unavailable")
+    monkeypatch.setattr("adapters.verification.ddddocr_provider._build_ocr", unavailable)
+    assert await DdddOcrProvider().warmup() is False
+
+
+@pytest.mark.asyncio
 async def test_rejects_text_quiz():
     provider = DdddOcrProvider()
     challenge = VerificationChallenge(kind=ChallengeKind.TEXT_QUIZ, question="What is 1+1?")

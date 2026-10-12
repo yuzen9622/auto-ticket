@@ -99,6 +99,79 @@ async def test_worker_loop_handles_exception_and_marks_failed(worker_env) -> Non
     assert "simulated worker crash" in (job.error or "")
 
 
+@pytest.mark.parametrize("warmup_fails", [False, True])
+async def test_ocr_warmup_does_not_block_jobs_and_is_drained(worker_env, monkeypatch, warmup_fails):
+    import asyncio
+
+    from worker.loop import DEFAULT_HANDLERS
+
+    db, broker, outbox, settings = worker_env
+    warming = asyncio.Event()
+    release = asyncio.Event()
+    executed = asyncio.Event()
+    drained = asyncio.Event()
+    variants = []
+
+    async def warmup(provider):
+        variants.append(provider.beta)
+        warming.set()
+        try:
+            await release.wait()
+            return not warmup_fails
+        finally:
+            drained.set()
+
+    async def handler(job, **kwargs):
+        await warming.wait()
+        assert not release.is_set()
+        await broker.complete(job.id, worker_id="warmup", result={})
+        executed.set()
+
+    monkeypatch.setattr("adapters.verification.ddddocr_provider.DdddOcrProvider.warmup", warmup)
+    monkeypatch.setitem(DEFAULT_HANDLERS, JobKind.AUTO_LOGIN, handler)
+    worker = WorkerLoop(db, broker, outbox, worker_id="warmup", settings=settings)
+    await broker.enqueue(kind=JobKind.AUTO_LOGIN, profile="live", payload={})
+    runner = asyncio.create_task(worker.run_forever())
+    try:
+        await asyncio.wait_for(executed.wait(), 1)
+        release.set()
+        await asyncio.wait_for(drained.wait(), 1)
+        # Both production model variants should be prepared.
+        for _ in range(10):
+            if len(variants) == 2:
+                break
+            await asyncio.sleep(0)
+        assert variants == [True, False]
+    finally:
+        worker.stop()
+        await runner
+    assert drained.is_set()
+
+
+async def test_stop_cancels_pending_ocr_warmup(worker_env, monkeypatch):
+    import asyncio
+
+    db, broker, outbox, settings = worker_env
+    warming, drained = asyncio.Event(), asyncio.Event()
+
+    async def warmup(provider):
+        warming.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            drained.set()
+
+    monkeypatch.setattr("adapters.verification.ddddocr_provider.DdddOcrProvider.warmup", warmup)
+    worker = WorkerLoop(db, broker, outbox, worker_id="warmup-stop", settings=settings)
+    runner = asyncio.create_task(worker.run_forever())
+    try:
+        await asyncio.wait_for(warming.wait(), 1)
+    finally:
+        worker.stop()
+        await runner
+    assert drained.is_set()
+
+
 @pytest.mark.parametrize("background_kind", [JobKind.EVENT_HYDRATE, JobKind.MANUAL_LOGIN])
 async def test_due_purchase_preempts_background(worker_env, background_kind):
     import asyncio
